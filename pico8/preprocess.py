@@ -22,7 +22,7 @@ BUTTONS = {
 
 _GLYPH_RE = re.compile("|".join(re.escape(g) for g in BUTTONS))
 _NEQ_RE = re.compile(r"!=")
-_BIN_RE = re.compile(r"(?<![\w.])0b([01]+)(?:\.([01]+))?")
+_BIN_RE = re.compile(r"(?<!\w)0b([01]+)(?:\.([01]+))?")
 _SHORTHAND_RE = re.compile(r"(?m)^([ \t]*)\?")
 
 

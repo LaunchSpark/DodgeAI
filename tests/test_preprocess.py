@@ -98,3 +98,18 @@ def test_binary_literal_not_matched_inside_identifier():
 def test_fixed_point_binary_literal_still_converts():
     # guard against over-correcting the identifier-boundary fix
     assert preprocess("0b1010010110100101.1") == "42405.5"
+
+
+def test_binary_literal_after_concat_operator():
+    # regression: the `.` in the lookbehind wrongly blocked `..0b...`
+    assert preprocess("a=a..0b1010") == "a=a..10"
+
+
+def test_binary_literal_after_unary_minus():
+    assert preprocess("x=-0b1010") == "x=-10"
+
+
+def test_binary_literal_still_not_matched_inside_identifier():
+    # guard against over-correcting the concat-operator fix
+    assert preprocess("local x0b101 = 5") == "local x0b101 = 5"
+    assert preprocess("local job0b1 = 5") == "local job0b1 = 5"
