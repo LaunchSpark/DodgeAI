@@ -65,13 +65,33 @@ watch.py                     phase 2: run a policy through PygameBackend
 
 ### `preprocess.py`
 
-A line-oriented text transform, not a parser. Handles:
+A paren-aware scanner that skips string literals and block comments. Not a full parser,
+but more than line-oriented regex — see the constraints below. Handles:
 
 - compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`), including on table fields
 - `!=` → `~=`
-- one-line `if (cond) stmt` → `if cond then stmt end`
+- one-line `if (cond) body` → `if cond then body end`
 - `?expr` → `print(expr)`
 - PICO-8 fixed-point binary literals (`0b1010010110100101.1`)
+- **button glyph constants** → button numbers:
+  `⬅️`=0, `➡️`=1, `⬆️`=2, `⬇️`=3, `🅾️`=4, `❎`=5
+
+Four properties of the real cart constrain the implementation:
+
+1. **Glyphs appear both as constants and as text.** 9 occurrences are bare identifiers
+   (`btnp(❎)` at lines 16, 215, 316, 322; `btnp(🅾️)` at 24, 207; arrows at 253, 267, 285,
+   286) and must become numbers. 5 occurrences are inside string literals (35, 411, 413,
+   509, 511) — HUD text telling the player which button to press — and must be left alone.
+   Substituting those would render "press 5 to play again". This also means **the bundled
+   font must include the 6 glyph shapes**, or the menus lose their button prompts.
+2. **A one-line `if` body extends to the end of the line and may hold several statements.**
+   Line 2131 is `if (r.sh>1.99) r.sh=2 initspawns()` — two statements, both in the body.
+3. **Conditions may nest parentheses.** Line 397 is
+   `if ((isdead or not hasplayed) or n!="gameplay") print2(...)`, so the closing paren must
+   be found by balance, not by first match.
+4. **Conditions may span lines and end in `then`.** Lines 248 and 262 open `if (` and run
+   six lines before closing with `then`. These are ordinary `if`s and must not be
+   transformed, so the scanner has to join continuation lines before deciding.
 
 This is the component most likely to harbour subtle bugs, so it is tested directly
 against snippets lifted from the real cart.
@@ -95,11 +115,20 @@ Implements the 38 builtins the cart calls. Notable decisions:
   once.
 - **Phase 2 boots straight into gameplay**, bypassing menus: set
   `_upd, _drw = updategame, drawgame`, write difficulty/patterns/powerups into the
-  `settings` and `smallsettings` tables, then call the game's own `reset()`. Phase 1 boots
-  normally so the menus are playable.
-- **Particles are switchable.** `part` is written every frame but only ever *read* by
-  `drawgame`, so under `NullBackend` particle work is skipped entirely — a speed win with
-  no behavioural change.
+  `settings` and `smallsettings` tables, then `hard_reset(seed)` (see Episodes — the
+  cart's own `reset()` alone does not give independent episodes). Phase 1 boots normally so
+  the menus are playable.
+- **The full `_draw` always runs, including `drawgame`.** This is a correctness
+  requirement, not a preference. `drawgame` calls `spawntrail` (line 457), which consumes
+  two `rnd()` calls per powerup enemy per frame, and `shatter` consumes eleven per enemy
+  death. Because the cart draws from a single RNG stream shared with gameplay, skipping any
+  of that shifts every later `rnd()` — changing which enemy types spawn. So under
+  `NullBackend` the drawing *primitives* become no-ops, but every function that can consume
+  RNG still executes. This is what keeps headless and rendered runs identical.
+
+  An optional `fast` mode may skip particle work for speed, and is documented as breaking
+  cross-mode determinism. If profiling later shows it matters, the principled fix is to
+  give cosmetic effects their own RNG stream rather than to skip them.
 
 ### Rendering
 
@@ -114,6 +143,11 @@ backends run identical Lua.
   the cart. Without a font, score and every menu label are invisible.
 - **`fillp` is approximated.** Used by `line2` to draw telegraphed hazards as dotted
   outlines. Cosmetic.
+- **The sprite sheet is loaded from the ROM.** `spr()` is called 11 times — the menu logo,
+  the mouse cursor, the settings header, the button icons and the death art. `machine.py`
+  passes the 128×128 sheet from ROM `0x0000–0x1fff` to the backend, decoded the same way
+  `extract_cart.py` already decodes it (two pixels per byte, low nibble first). Without it
+  phase 1 has no menus worth looking at.
 
 ## Phase 1 — playable
 
@@ -198,8 +232,26 @@ Two properties of this game shape that choice:
 ### Episodes
 
 Terminate on `isdead`. Truncate at a configurable frame cap (default 18,000 ≈ 5 minutes).
-Reset calls the game's own `reset()` with a fresh seed rather than rebuilding Lua state,
-so resets are cheap.
+
+**The cart's own `reset()` is not sufficient for independent episodes.** It deliberately
+carries pattern history across restarts: it snapshots every `p.counter`, calls
+`initpatterns()`, then recomputes each `p.prob` *from the carried counter* and adds `+2`.
+Recently-played patterns therefore stay suppressed into the next run, and boot state never
+equals post-reset state even when counters are zero. Left alone, this makes a seed's
+behaviour depend on which episodes preceded it — a silent, hard-to-diagnose source of
+non-reproducibility.
+
+`machine.hard_reset(seed)` instead performs a fixed sequence every episode:
+
+1. `srand(seed)`
+2. zero `patterns[i].counter` for all patterns
+3. `initpatterns()` — note this itself consumes RNG (line 1946 and the `range()` calls in
+   specials 6 and 7), which is why it must sit at a fixed position in the sequence
+4. restore each `p.prob` to its default (`(tpe==1 and 17 or 15) / flr(#p.var+1)`)
+5. call the cart's `reset()`
+6. reset the 128-byte GPIO memory, so highscore display does not vary between episodes
+
+This runs as an injected Lua chunk owned by `machine.py`. `dodge.lua` stays unmodified.
 
 ### Configuration
 
@@ -209,10 +261,26 @@ dodging; hard + everything is the full game. Also configurable: action repeat (d
 
 ## Testing
 
-- **`preprocess.py`** against snippets lifted from the real cart — all 28 one-line `if`s,
-  both binary literals, compound assignment on table fields.
+- **`preprocess.py`** against lines lifted verbatim from the real cart, chosen because each
+  defeats a naive rule:
+
+  | Line | Case |
+  | --- | --- |
+  | 285 | short-`if` + compound assignment + glyph constant (`if (btnp(⬇️)) cursi+=1`) |
+  | 397 | nested parens in the condition — needs balance matching, not first-`)` |
+  | 919 | compound assignment on a global inside a short-`if` body |
+  | 1052 | fixed-point binary literal inside a short-`if` body |
+  | 2131 | two-statement body (`r.sh=2 initspawns()`) |
+  | 248 | **negative case** — multi-line condition ending in `then`, must be left unchanged |
+  | 411 | **negative case** — glyph inside a string literal, must not become a number |
+
 - **Determinism:** same seed + same action sequence → byte-identical trajectory hashes.
-  This is the test that catches subtle shim bugs.
+  This is the test that catches subtle shim bugs. It must include an
+  **episode-independence** case: episodes A, B, A′ run in sequence, where A and A′ share a
+  seed, must produce identical trajectories — this is what catches carried pattern state.
+- **Backend parity:** the same seed and action sequence under `NullBackend` and
+  `PygameBackend` must produce identical trajectories, including an episode that spawns
+  powerups (which is where the `drawgame` RNG consumption bites).
 - **Observation correctness** (phase 2): inject an enemy at a known position into the Lua
   table, assert the correct grid cell in the correct channel lights up.
 - **Boot smoke test:** 1,000 frames with no input, no Lua errors, the player eventually dies.
@@ -245,3 +313,6 @@ dodging; hard + everything is the full game. Also configurable: action repeat (d
   cell. The `nearest` float channel covers that case.
 - **Renderer fidelity.** Font, `fillp` patterns and any audio are approximations or
   absent. Gameplay is unaffected.
+- **Single RNG stream.** The cart draws gameplay and cosmetic randomness from one stream,
+  so any change to how often visual effects run alters the game. This constrains what can
+  be optimised away; see the `_draw` note under `machine.py`.
