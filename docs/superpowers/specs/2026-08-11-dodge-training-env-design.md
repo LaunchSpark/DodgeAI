@@ -91,7 +91,9 @@ Four properties of the real cart constrain the implementation:
    be found by balance, not by first match.
 4. **Conditions may span lines and end in `then`.** Lines 248 and 262 open `if (` and run
    six lines before closing with `then`. These are ordinary `if`s and must not be
-   transformed, so the scanner has to join continuation lines before deciding.
+   transformed. The rule that separates them: a short `if` has its opening paren matched on
+   the *same physical line*, with non-`then` content after it. Both multi-line conditions
+   leave their parens open at end of line, so the check is local.
 
 This is the component most likely to harbour subtle bugs, so it is tested directly
 against snippets lifted from the real cart.
@@ -139,8 +141,12 @@ backends run identical Lua.
 - **`pal(c, c2, 1)` must be honoured.** The game draws everything in colours 12 and 1 and
   remaps them at the end of every `_draw`; that is how the 13 themes work. Without it the
   game renders flat blue.
-- **A 3×5 font is bundled.** PICO-8's font lives in `data.pod` inside the runtime, not in
-  the cart. Without a font, score and every menu label are invisible.
+- **Text is drawn as a scaled overlay.** PICO-8's font lives in `data.pod` inside the
+  runtime, not in the cart, and glyphs are 3×5 px — unreadable if rendered at native scale
+  with a system font. `print()` therefore records its calls during the frame, and they are
+  drawn with a system monospace font onto the *upscaled* window after the 128×128 surface
+  is blitted. Legible and cheap, at the cost of pixel authenticity. The 6 button glyphs are
+  drawn as simple icons, since they appear in HUD strings like `"press ❎ to play again"`.
 - **`fillp` is approximated.** Used by `line2` to draw telegraphed hazards as dotted
   outlines. Cosmetic.
 - **The sprite sheet is loaded from the ROM.** `spr()` is called 11 times — the menu logo,
