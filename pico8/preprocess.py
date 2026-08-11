@@ -6,8 +6,24 @@ That makes "never rewrite inside a literal" a property of the whole module
 rather than something each rule has to remember.
 """
 
+import re
+
 STR_MASK = "\x00"
 CMT_MASK = "\x01"
+
+BUTTONS = {
+    "⬅️": 0,          # left
+    "➡️": 1,          # right
+    "⬆️": 2,          # up
+    "⬇️": 3,          # down
+    "\U0001f17e️": 4,      # O
+    "❎": 5,                # X
+}
+
+_GLYPH_RE = re.compile("|".join(re.escape(g) for g in BUTTONS))
+_NEQ_RE = re.compile(r"!=")
+_BIN_RE = re.compile(r"0b([01]+)(?:\.([01]+))?")
+_SHORTHAND_RE = re.compile(r"(?m)^([ \t]*)\?")
 
 
 def mask_literals(src):
@@ -51,3 +67,34 @@ def apply_edits(src, edits):
     for start, end, repl in sorted(edits, key=lambda e: e[0], reverse=True):
         src = src[:start] + repl + src[end:]
     return src
+
+
+def _token_edits(src, mask):
+    edits = []
+
+    for m in _GLYPH_RE.finditer(mask):
+        edits.append((m.start(), m.end(), str(BUTTONS[m.group(0)])))
+
+    for m in _NEQ_RE.finditer(mask):
+        edits.append((m.start(), m.end(), "~="))
+
+    for m in _BIN_RE.finditer(mask):
+        value = float(int(m.group(1), 2))
+        if m.group(2):
+            value += int(m.group(2), 2) / (1 << len(m.group(2)))
+        text = str(int(value)) if value.is_integer() else str(value)
+        edits.append((m.start(), m.end(), text))
+
+    for m in _SHORTHAND_RE.finditer(mask):
+        end = mask.find("\n", m.end())
+        end = len(mask) if end == -1 else end
+        edits.append((m.end() - 1, m.end(), "print("))
+        edits.append((end, end, ")"))
+
+    return edits
+
+
+def preprocess(src):
+    """Translate a PICO-8 Lua source string into standard Lua 5.1."""
+    mask = mask_literals(src)
+    return apply_edits(src, _token_edits(src, mask))

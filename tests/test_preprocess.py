@@ -1,4 +1,7 @@
+import pytest
+
 from pico8.preprocess import STR_MASK, CMT_MASK, mask_literals, apply_edits
+from pico8.preprocess import preprocess
 
 
 def test_mask_preserves_length_and_newlines():
@@ -33,3 +36,43 @@ def test_apply_edits_runs_right_to_left():
     src = "abcdef"
     out = apply_edits(src, [(0, 1, "X"), (4, 6, "YY_Y")])
     assert out == "XbcdYY_Y"
+
+
+@pytest.mark.parametrize("src,expected", [
+    ("if btnp(❎) then x() end", "if btnp(5) then x() end"),
+    ("if btnp(\U0001f17e️) then x() end", "if btnp(4) then x() end"),
+    ("btnp(⬅️)", "btnp(0)"),
+    ("btnp(➡️)", "btnp(1)"),
+    ("btnp(⬆️)", "btnp(2)"),
+    ("btnp(⬇️)", "btnp(3)"),
+])
+def test_bare_glyphs_become_button_numbers(src, expected):
+    assert preprocess(src) == expected
+
+
+def test_glyphs_inside_strings_are_left_alone():
+    # dodge.lua:511 — HUD text telling the player which button to press
+    src = 'print2("press "..(input==1 and "❎" or "  ").." to play again",20,120)'
+    assert preprocess(src) == src
+
+
+def test_not_equal_becomes_lua_inequality():
+    assert preprocess("if a!=b then end") == "if a~=b then end"
+
+
+def test_not_equal_inside_string_is_left_alone():
+    assert preprocess('s="a!=b"') == 's="a!=b"'
+
+
+def test_fixed_point_binary_literal():
+    # dodge.lua:1051
+    assert preprocess("fillp(0b1010010110100101.1)") == "fillp(42405.5)"
+
+
+def test_plain_binary_literal():
+    assert preprocess("x=0b1010") == "x=10"
+
+
+def test_question_mark_shorthand():
+    # dodge.lua:6
+    assert preprocess(" ?_txt,_x,_y+1,1") == " print(_txt,_x,_y+1,1)"
