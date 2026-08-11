@@ -76,3 +76,25 @@ def test_plain_binary_literal():
 def test_question_mark_shorthand():
     # dodge.lua:6
     assert preprocess(" ?_txt,_x,_y+1,1") == " print(_txt,_x,_y+1,1)"
+
+
+def test_question_mark_shorthand_with_trailing_comment():
+    src = " ?_txt,_x,_y+1,1 -- draw label\n"
+    expected = " print(_txt,_x,_y+1,1) -- draw label\n"
+    assert preprocess(src) == expected
+
+
+def test_question_mark_shorthand_with_trailing_comment_no_newline():
+    src = " ?_txt,_x,_y+1,1 -- draw label"
+    expected = " print(_txt,_x,_y+1,1) -- draw label"
+    assert preprocess(src) == expected
+
+
+def test_binary_literal_not_matched_inside_identifier():
+    assert preprocess("local x0b101 = 5") == "local x0b101 = 5"
+    assert preprocess("local job0b1 = 5") == "local job0b1 = 5"
+
+
+def test_fixed_point_binary_literal_still_converts():
+    # guard against over-correcting the identifier-boundary fix
+    assert preprocess("0b1010010110100101.1") == "42405.5"

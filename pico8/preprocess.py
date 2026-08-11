@@ -22,7 +22,7 @@ BUTTONS = {
 
 _GLYPH_RE = re.compile("|".join(re.escape(g) for g in BUTTONS))
 _NEQ_RE = re.compile(r"!=")
-_BIN_RE = re.compile(r"0b([01]+)(?:\.([01]+))?")
+_BIN_RE = re.compile(r"(?<![\w.])0b([01]+)(?:\.([01]+))?")
 _SHORTHAND_RE = re.compile(r"(?m)^([ \t]*)\?")
 
 
@@ -69,6 +69,15 @@ def apply_edits(src, edits):
     return src
 
 
+def _statement_end(mask, pos):
+    """End of the statement: end of line, excluding any trailing comment."""
+    end = mask.find("\n", pos)
+    end = len(mask) if end == -1 else end
+    while end > pos and (mask[end - 1] == CMT_MASK or mask[end - 1] in " \t"):
+        end -= 1
+    return end
+
+
 def _token_edits(src, mask):
     edits = []
 
@@ -86,8 +95,7 @@ def _token_edits(src, mask):
         edits.append((m.start(), m.end(), text))
 
     for m in _SHORTHAND_RE.finditer(mask):
-        end = mask.find("\n", m.end())
-        end = len(mask) if end == -1 else end
+        end = _statement_end(mask, m.end())
         edits.append((m.end() - 1, m.end(), "print("))
         edits.append((end, end, ")"))
 
