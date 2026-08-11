@@ -78,6 +78,53 @@ def _statement_end(mask, pos):
     return end
 
 
+_COMPOUND_RE = re.compile(r"(?<![=<>~!+\-*/%])([+\-*/%])=(?!=)")
+
+
+def _lvalue_start(mask, pos):
+    """Walk left from an operator to the start of the assignment target.
+
+    Handles plain names, dotted fields, and index expressions whose contents
+    may themselves contain operators (enemiestats[e.p+1]).
+    """
+    i = pos
+    while i > 0 and mask[i - 1] in " \t":
+        i -= 1
+    while i > 0:
+        c = mask[i - 1]
+        if c == "]":
+            depth, j = 0, i
+            while j > 0:
+                if mask[j - 1] == "]":
+                    depth += 1
+                elif mask[j - 1] == "[":
+                    depth -= 1
+                    if depth == 0:
+                        j -= 1
+                        break
+                j -= 1
+            i = j
+        elif c.isalnum() or c in "_.":
+            i -= 1
+        else:
+            break
+    return i
+
+
+def _compound_edits(src, mask):
+    edits = []
+    for m in _COMPOUND_RE.finditer(mask):
+        op = m.group(1)
+        start = _lvalue_start(mask, m.start())
+        end = _statement_end(mask, m.end())
+        lhs = src[start:m.start()].strip()
+        rhs = src[m.end():end].strip()
+        if not lhs or not rhs:
+            continue
+        edits.append((start, end, f"{lhs} = {lhs} {op} ({rhs})"))
+    return edits
+
+
 def _token_edits(src, mask):
     edits = []
 
@@ -104,5 +151,6 @@ def _token_edits(src, mask):
 
 def preprocess(src):
     """Translate a PICO-8 Lua source string into standard Lua 5.1."""
-    mask = mask_literals(src)
-    return apply_edits(src, _token_edits(src, mask))
+    for pass_fn in (_token_edits, _compound_edits):
+        src = apply_edits(src, pass_fn(src, mask_literals(src)))
+    return src

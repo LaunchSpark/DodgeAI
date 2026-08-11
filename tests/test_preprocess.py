@@ -113,3 +113,35 @@ def test_binary_literal_still_not_matched_inside_identifier():
     # guard against over-correcting the concat-operator fix
     assert preprocess("local x0b101 = 5") == "local x0b101 = 5"
     assert preprocess("local job0b1 = 5") == "local job0b1 = 5"
+
+
+@pytest.mark.parametrize("src,expected", [
+    ("cursi+=1", "cursi = cursi + (1)"),
+    ("shake*=0.95", "shake = shake * (0.95)"),
+    ("_p.age+=1", "_p.age = _p.age + (1)"),
+    ("_e.x-=0.5*frz", "_e.x = _e.x - (0.5*frz)"),
+    ("enemiestats[i]+=1", "enemiestats[i] = enemiestats[i] + (1)"),
+])
+def test_compound_assignment_shapes(src, expected):
+    assert preprocess(src) == expected
+
+
+def test_compound_assignment_with_operator_inside_index():
+    # dodge.lua:2222 — the index expression contains a '+' of its own
+    assert preprocess("enemiestats[e.p+1]-=2") == \
+        "enemiestats[e.p+1] = enemiestats[e.p+1] - (2)"
+
+
+def test_compound_assignment_with_nested_index():
+    # dodge.lua:621
+    assert preprocess("patterns[ix].prob-=6*patterns[ix].counter") == \
+        "patterns[ix].prob = patterns[ix].prob - (6*patterns[ix].counter)"
+
+
+def test_compound_assignment_stops_before_trailing_comment():
+    assert preprocess("size+=0.045 -- ramp") == "size = size + (0.045) -- ramp"
+
+
+def test_equality_and_comparison_are_untouched():
+    assert preprocess("if a==b and c>=d and e<=f then end") == \
+        "if a==b and c>=d and e<=f then end"
