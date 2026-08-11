@@ -17,111 +17,11 @@ Usage:
 """
 
 import argparse
-import json
-import re
 import sys
 from pathlib import Path
 
-# --- ROM layout -------------------------------------------------------------
-# 0x0000  gfx        sprites 0-127   (sprite sheet rows 0-63)
-# 0x1000  gfx2       sprites 128-255 (rows 64-127; shared with map rows 32-63)
-# 0x2000  map        map rows 0-31
-# 0x3000  gff        sprite flags
-# 0x3100  music
-# 0x3200  sfx
-# 0x4300  code       PXA-compressed Lua
-# 0x8000  end
-GFX, MAP, GFF, MUSIC, SFX, CODE, END = 0x0000, 0x2000, 0x3000, 0x3100, 0x3200, 0x4300, 0x8000
-
-# PICO-8 stores its glyphs as single bytes 0x80+ (P8SCII); .p8 files carry them
-# as UTF-8. Kept as a list because several are multi-codepoint emoji, so a plain
-# string would not index one glyph per byte.
-P8SCII = [
-    "█", "▒", "🐱", "⬇️", "░", "✽", "●", "♥",
-    "☉", "웃", "⌂", "⬅️", "😐", "♪", "🅾️", "◆",
-    "…", "➡️", "★", "⧗", "⬆️", "ˇ", "∧", "❎",
-    "▤", "▥",
-]
-GLYPHS = {0x80 + i: ch for i, ch in enumerate(P8SCII)}
-
-
-def read_cartdat(js_path):
-    """Pull the `_cartdat = [...]` array out of the JS export."""
-    text = js_path.read_text(encoding="utf-8", errors="replace")
-    m = re.search(r"_cartdat\s*=\s*(\[.*?\])\s*;", text, re.S)
-    if not m:
-        sys.exit(f"no _cartdat array found in {js_path}")
-    rom = bytes(json.loads(m.group(1)))
-    if len(rom) != END:
-        sys.exit(f"expected a {END}-byte ROM, got {len(rom)}")
-
-    name = re.search(r"_cartname\s*=\s*\[\s*[`'\"](.*?)[`'\"]", text)
-    return rom, (name.group(1) if name else "cart.p8")
-
-
-class BitReader:
-    """PXA reads bits LSB-first within each byte."""
-
-    def __init__(self, data):
-        self.data, self.pos, self.bit = data, 0, 0
-
-    def read_bit(self):
-        v = (self.data[self.pos] >> self.bit) & 1
-        self.bit += 1
-        if self.bit == 8:
-            self.bit, self.pos = 0, self.pos + 1
-        return v
-
-    def read_bits(self, n):
-        v = 0
-        for i in range(n):
-            v |= self.read_bit() << i
-        return v
-
-
-def decompress_code(rom):
-    """Decompress the code section (LZ77 + move-to-front literals)."""
-    section = rom[CODE:END]
-    if section[:4] != b"\x00pxa":
-        sys.exit("code section is not PXA-compressed; unsupported")
-
-    unc_size = (section[4] << 8) | section[5]
-    br = BitReader(section[8:])
-    mtf = list(range(256))
-    out = bytearray()
-
-    while len(out) < unc_size:
-        if br.read_bit():
-            # literal: unary-prefixed index into the move-to-front table
-            extra = 0
-            while br.read_bit():
-                extra += 1
-            idx = br.read_bits(4 + extra) + (((1 << extra) - 1) << 4)
-            ch = mtf.pop(idx)
-            mtf.insert(0, ch)
-            out.append(ch)
-        else:
-            # back-reference: 5, 10 or 15 bits of offset
-            offset_bits = (5 if br.read_bit() else 10) if br.read_bit() else 15
-            offset = br.read_bits(offset_bits) + 1
-            if offset == 1 and offset_bits != 5:
-                # escape hatch: raw bytes until a NUL
-                while True:
-                    ch = br.read_bits(8)
-                    if ch == 0:
-                        break
-                    out.append(ch)
-            else:
-                count = 3
-                while True:
-                    part = br.read_bits(3)
-                    count += part
-                    if part != 7:
-                        break
-                for _ in range(count):
-                    out.append(out[-offset])
-
-    return "".join(GLYPHS.get(b, chr(b)) for b in out)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from pico8.cart import GFX, MAP, GFF, MUSIC, SFX, CODE, END, GLYPHS, read_rom, decompress_code
 
 
 def gfx_lines(rom):
@@ -198,7 +98,7 @@ def main():
     ap.add_argument("--rom", action="store_true", help="also dump the raw 32KB ROM")
     args = ap.parse_args()
 
-    rom, cartname = read_cartdat(args.js)
+    rom, cartname = read_rom(args.js)
     stem = Path(cartname).stem
     code = decompress_code(rom)
     args.out.mkdir(parents=True, exist_ok=True)
