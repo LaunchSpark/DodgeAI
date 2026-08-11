@@ -145,3 +145,49 @@ def test_compound_assignment_stops_before_trailing_comment():
 def test_equality_and_comparison_are_untouched():
     assert preprocess("if a==b and c>=d and e<=f then end") == \
         "if a==b and c>=d and e<=f then end"
+
+
+def test_short_if_simple():
+    assert preprocess("if (input==0) spr(192,71,56,1,2)") == \
+        "if (input==0) then spr(192,71,56,1,2) end"
+
+
+def test_short_if_with_compound_assignment():
+    # dodge.lua:285 — glyph, short if and compound assignment on one line
+    assert preprocess("if (btnp(⬇️)) cursi+=1") == \
+        "if (btnp(3)) then cursi = cursi + (1) end"
+
+
+def test_short_if_with_nested_parens_in_condition():
+    # dodge.lua:397 — closing paren must be found by balance, not first match
+    src = 'if ((isdead or not hasplayed) or n!="gameplay") print2("<  >",65,y)'
+    assert preprocess(src) == \
+        'if ((isdead or not hasplayed) or n~="gameplay") then print2("<  >",65,y) end'
+
+
+def test_short_if_with_two_statement_body():
+    # dodge.lua:2131 — the body is everything to end of line
+    assert preprocess("if (r.sh>1.99) r.sh=2 initspawns()") == \
+        "if (r.sh>1.99) then r.sh=2 initspawns() end"
+
+
+def test_short_if_end_goes_before_trailing_comment():
+    assert preprocess("if (a) b() -- why") == "if (a) then b() end -- why"
+
+
+def test_short_if_preserves_indentation_of_body():
+    assert preprocess("  if (a) b()") == "  if (a) then b() end"
+
+
+def test_explicit_then_is_not_transformed():
+    assert preprocess("if (a) then b() end") == "if (a) then b() end"
+
+
+def test_multiline_condition_is_not_transformed():
+    # dodge.lua:248 — parens stay open at end of line, so this is an ordinary if
+    src = "if (stat(34)==1 and\n    70>stat(32)) or\n    (btnp(0) and cursi==i2)\n then\n  x()\n end"
+    assert preprocess(src) == src
+
+
+def test_bare_if_without_parens_is_not_transformed():
+    assert preprocess("if a then b() end") == "if a then b() end"

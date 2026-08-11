@@ -149,8 +149,48 @@ def _token_edits(src, mask):
     return edits
 
 
+_SHORT_IF_RE = re.compile(r"(?m)^[ \t]*if[ \t]*\(")
+
+
+def _match_paren(mask, open_pos, limit):
+    """Index of the paren matching mask[open_pos], or None if not before limit."""
+    depth = 0
+    for i in range(open_pos, limit):
+        if mask[i] == "(":
+            depth += 1
+        elif mask[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+    return None
+
+
+def _short_if_edits(src, mask):
+    edits = []
+    for m in _SHORT_IF_RE.finditer(mask):
+        line_end = mask.find("\n", m.end())
+        line_end = len(mask) if line_end == -1 else line_end
+
+        close = _match_paren(mask, m.end() - 1, line_end)
+        if close is None:
+            continue                      # condition spans lines: ordinary if
+
+        body = mask[close + 1:line_end]
+        if not body.strip() or body.strip().startswith("then"):
+            continue
+
+        body_end = _statement_end(mask, close + 1)
+        edits.append((close + 1, close + 1, " then"))
+        edits.append((body_end, body_end, " end"))
+    return edits
+
+
 def preprocess(src):
-    """Translate a PICO-8 Lua source string into standard Lua 5.1."""
-    for pass_fn in (_token_edits, _compound_edits):
+    """Translate a PICO-8 Lua source string into standard Lua 5.1.
+
+    Pass order is load-bearing: compound assignment must run before the
+    short-if rule, or the appended `end` lands inside the expression.
+    """
+    for pass_fn in (_token_edits, _compound_edits, _short_if_edits):
         src = apply_edits(src, pass_fn(src, mask_literals(src)))
     return src
