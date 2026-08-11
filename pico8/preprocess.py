@@ -165,6 +165,27 @@ def _match_paren(mask, open_pos, limit):
     return None
 
 
+_THEN_RE = re.compile(r"\bthen\b")
+
+
+def _has_top_level_then(mask, start, end):
+    """True if a whole-word `then` appears at paren-depth 0 in mask[start:end].
+
+    Depth is tracked by walking parens left-to-right so a `then` that sits
+    inside a still-open group (there shouldn't be one, since callers only
+    pass ranges with balanced parens) doesn't count, and a `then` after a
+    closed group -- e.g. "(a) or (b) then" -- does.
+    """
+    depth = 0
+    i = start
+    for m in _THEN_RE.finditer(mask, start, end):
+        depth += mask.count("(", i, m.start()) - mask.count(")", i, m.start())
+        i = m.start()
+        if depth == 0:
+            return True
+    return False
+
+
 def _short_if_edits(src, mask):
     edits = []
     for m in _SHORT_IF_RE.finditer(mask):
@@ -176,7 +197,15 @@ def _short_if_edits(src, mask):
             continue                      # condition spans lines: ordinary if
 
         body = mask[close + 1:line_end]
-        if not body.strip() or body.strip().startswith("then"):
+        if not body.strip():
+            continue
+
+        # Distinguish short-if from long-form: a `then` at paren-depth 0
+        # anywhere on this line (after `if`) means the condition is a
+        # multi-group expression (e.g. "(a) or (b) then") and the `then`
+        # we're seeing is the real long-form keyword, not part of a short
+        # if's body.
+        if _has_top_level_then(mask, m.end() - 1, line_end):
             continue
 
         body_end = _statement_end(mask, close + 1)

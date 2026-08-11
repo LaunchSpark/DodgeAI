@@ -191,3 +191,31 @@ def test_multiline_condition_is_not_transformed():
 
 def test_bare_if_without_parens_is_not_transformed():
     assert preprocess("if a then b() end") == "if a then b() end"
+
+
+def test_multi_group_condition_with_or_is_not_transformed():
+    # dodge.lua:193 — first balanced close-paren is mid-condition, not the
+    # end of it; the top-level `then` after the second group means this is
+    # already long-form and must be left untouched by the short-if pass.
+    # The `!=` -> `~=` rewrite is a separate, unrelated pass and still
+    # applies normally.
+    src = "if (target==2 and trsy<=-128) or (target!=2 and trsy>=128) then"
+    expected = "if (target==2 and trsy<=-128) or (target~=2 and trsy>=128) then"
+    assert preprocess(src) == expected
+
+
+def test_multi_group_condition_with_and_is_not_transformed():
+    src = "if (target==2 and trsy<=-128) and (target!=2 and trsy>=128) then"
+    expected = "if (target==2 and trsy<=-128) and (target~=2 and trsy>=128) then"
+    assert preprocess(src) == expected
+
+
+def test_short_if_body_starting_with_then_prefixed_identifier():
+    # "thensomething" is not the keyword `then` — word-bounded match required
+    assert preprocess("if (a) thensomething=1") == \
+        "if (a) then thensomething=1 end"
+
+
+def test_short_if_body_contains_string_with_word_then():
+    assert preprocess('if (a) print("then")') == \
+        'if (a) then print("then") end'
