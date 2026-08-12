@@ -211,6 +211,11 @@ class PygameBackend(Backend):
         scaled = pygame.transform.scale(self.surface, self.window.get_size())
         self.window.blit(scaled, (0, 0))
         self._draw_text()
+        # The cart's own boot splash calls flip() ~66 times from top-level
+        # code before play.py's main loop ever runs, so without pumping the
+        # event queue here the window would sit unresponsive that whole time
+        # and Windows may mark it "not responding".
+        pygame.event.pump()
         pygame.display.flip()
         self.text_queue.clear()
 
