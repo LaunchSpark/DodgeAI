@@ -15,11 +15,15 @@ import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.env_util import make_vec_env
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
 from .env import DodgeEnv
 from .observe import FRAME_OBSERVATION_SIZE, FRAME_STACK_SIZE
 from .policies import ARCHITECTURES, architecture_name, policy_kwargs
 from .telemetry import DashboardSnapshot, EVENT_KEYS, ModelEntry
+
+
+RATE_WINDOW_SECONDS = 0.5
 
 
 @dataclass
@@ -121,6 +125,12 @@ class DashboardCallback(BaseCallback):
         self.episode_reward = {}
         self.last_step_time = time.monotonic()
         self.last_timesteps = 0
+        # Throughput is measured over a window rather than per callback. A
+        # single call can span less than the clock's resolution, and dividing
+        # by that produces millions of steps per second -- worse with several
+        # envs, since each call advances the step count by n_envs.
+        self._rate_started = time.monotonic()
+        self._rate_steps = 0
 
     def _on_training_start(self):
         self.last_timesteps = self.num_timesteps
@@ -150,14 +160,20 @@ class DashboardCallback(BaseCallback):
         dones = self.locals.get("dones", ())
         rewards = np.atleast_1d(self.locals.get("rewards", 0.0))
 
+        self._rate_steps += step_delta
+        rate_window = now - self._rate_started
+
         with self.session.lock:
             data = self.session.data
             data.elapsed_seconds += elapsed
-            instant_fps = step_delta / elapsed
-            data.steps_per_second = (
-                instant_fps if data.steps_per_second == 0
-                else data.steps_per_second * 0.9 + instant_fps * 0.1
-            )
+            if rate_window >= RATE_WINDOW_SECONDS:
+                measured = self._rate_steps / rate_window
+                data.steps_per_second = (
+                    measured if data.steps_per_second == 0
+                    else data.steps_per_second * 0.7 + measured * 0.3
+                )
+                self._rate_started = now
+                self._rate_steps = 0
             data.rollout_progress = (self.n_calls % self.session.rollout_steps) / self.session.rollout_steps
 
             for index, info in enumerate(infos):
@@ -227,7 +243,8 @@ class PPOTrainingSession:
         model_dir=Path("artifacts/models"),
         logs_dir=Path("artifacts/tensorboard"),
         total_steps=250_000,
-        rollout_steps=512,
+        n_envs=4,
+        rollout_steps=128,
         difficulty=1,
         patterns=False,
         powerups=False,
@@ -241,6 +258,13 @@ class PPOTrainingSession:
         self.model_dir = Path(model_dir)
         self.logs_dir = Path(logs_dir)
         self.total_steps = total_steps
+        if n_envs < 1:
+            raise ValueError("n_envs must be at least 1")
+        # PPO's buffer is n_envs * rollout_steps samples per update. The
+        # defaults keep that at 512 while collecting it from four independently
+        # seeded games, so each game only advances 128 decisions before the
+        # policy learns and openings stay varied.
+        self.n_envs = n_envs
         self.rollout_steps = rollout_steps
         self.architecture = architecture
         self.model_architecture = architecture
@@ -317,7 +341,17 @@ class PPOTrainingSession:
                 load_path = self.pending_load
                 self.pending_load = None
             self._clear_snapshot("loading" if load_path else "starting")
-            env = make_vec_env(DodgeEnv, n_envs=1, seed=self.seed, env_kwargs=self.env_kwargs)
+            env = make_vec_env(
+                DodgeEnv,
+                n_envs=self.n_envs,
+                seed=self.seed,
+                env_kwargs=self.env_kwargs,
+                # DummyVecEnv steps envs sequentially in this process, which
+                # gives varied experience but no CPU parallelism. Each Dodge env
+                # runs its own LuaJIT machine, so real processes are what make
+                # extra envs faster rather than merely more diverse.
+                vec_env_cls=SubprocVecEnv if self.n_envs > 1 else DummyVecEnv,
+            )
             try:
                 self.model = self._load_model(load_path, env) if load_path else self._new_model(env)
                 self.rollout_steps = self.model.n_steps

@@ -135,6 +135,39 @@ def test_watch_uses_unique_update_snapshot_and_random_seed(tmp_path, monkeypatch
     assert session.last_watch_label == "hybrid-cnn | Update 37 | Seed 1849201"
 
 
+@pytest.mark.parametrize("n_envs,expected", [(1, "DummyVecEnv"), (4, "SubprocVecEnv")])
+def test_parallel_envs_use_separate_processes(tmp_path, monkeypatch, n_envs, expected):
+    """Extra envs are only faster if they are actually stepped in parallel.
+
+    DummyVecEnv would step each Dodge machine sequentially in this process,
+    which diversifies experience but adds no throughput.
+    """
+    from dodge import training
+
+    captured = {}
+
+    def fake_make_vec_env(env_cls, **kwargs):
+        captured.update(kwargs)
+        raise RuntimeError("stop before spawning")
+
+    monkeypatch.setattr(training, "make_vec_env", fake_make_vec_env)
+    session = training.PPOTrainingSession(
+        model_dir=tmp_path, logs_dir=tmp_path, n_envs=n_envs, autostart=False,
+    )
+    # make_vec_env is called before the loop's try block, so the sentinel
+    # exception escapes _run instead of being recorded as a session error.
+    with pytest.raises(RuntimeError, match="stop before spawning"):
+        session._run()
+    assert captured["n_envs"] == n_envs
+    assert captured["vec_env_cls"].__name__ == expected
+
+
+def test_rejects_a_non_positive_env_count(tmp_path):
+    from dodge.training import PPOTrainingSession
+    with pytest.raises(ValueError):
+        PPOTrainingSession(model_dir=tmp_path, n_envs=0, autostart=False)
+
+
 def test_watch_runs_episodes_without_a_frame_cap(tmp_path, monkeypatch):
     """Watching is not training, so an episode ends only when the agent dies."""
     import watch_ppo

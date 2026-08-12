@@ -8,6 +8,7 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.env_util import make_vec_env
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
 from dodge.env import DodgeEnv
 from dodge.policies import ARCHITECTURES, policy_kwargs
@@ -16,7 +17,8 @@ from dodge.policies import ARCHITECTURES, policy_kwargs
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--steps", type=int, default=250_000)
-    parser.add_argument("--envs", type=int, default=1)
+    parser.add_argument("--envs", type=int, default=4,
+                        help="games stepped in parallel processes (default 4)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--difficulty", choices=("easy", "normal", "hard"), default="easy")
     parser.add_argument("--patterns", action="store_true")
@@ -43,8 +45,11 @@ def main():
 
     args.models_dir.mkdir(parents=True, exist_ok=True)
     args.logs_dir.mkdir(parents=True, exist_ok=True)
+    # Separate processes are what make extra envs faster; DummyVecEnv would
+    # step each Dodge machine sequentially in this one.
     env = make_vec_env(DodgeEnv, n_envs=args.envs, seed=args.seed,
-                       env_kwargs=env_kwargs)
+                       env_kwargs=env_kwargs,
+                       vec_env_cls=SubprocVecEnv if args.envs > 1 else DummyVecEnv)
     checkpoint = CheckpointCallback(
         save_freq=max(10_000 // args.envs, 1),
         save_path=str(args.models_dir),

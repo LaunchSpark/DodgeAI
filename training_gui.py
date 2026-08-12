@@ -652,7 +652,11 @@ def main(argv=None):
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--steps", type=int, default=250_000,
                         help="PPO timesteps before automatic completion")
-    parser.add_argument("--rollout-steps", type=int, default=512)
+    parser.add_argument("--envs", type=int, default=4,
+                        help="games stepped in parallel processes (default 4)")
+    parser.add_argument("--rollout-steps", type=int, default=128,
+                        help="steps per env per PPO update; the buffer holds "
+                             "envs * rollout-steps samples (default 4 * 128)")
     parser.add_argument("--architecture", choices=("hybrid-cnn", "mlp"),
                         default="hybrid-cnn")
     parser.add_argument("--difficulty", choices=("easy", "normal", "hard"), default="easy")
@@ -677,12 +681,13 @@ def main(argv=None):
     session = PPOTrainingSession(
         seed=args.seed,
         total_steps=args.steps,
+        n_envs=args.envs,
         rollout_steps=args.rollout_steps,
         difficulty={"easy": 1, "normal": 2, "hard": 3}[args.difficulty],
-            patterns=args.patterns,
-            powerups=args.powerups,
-            architecture=args.architecture,
-        )
+        patterns=args.patterns,
+        powerups=args.powerups,
+        architecture=args.architecture,
+    )
     TrainingDashboard(session).run()
     return 0
 

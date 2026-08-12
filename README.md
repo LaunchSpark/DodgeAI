@@ -61,6 +61,25 @@ held in memory only, so restarting the dashboard starts a fresh curve.
 Use `python training_gui.py --screenshot out.png` to render one frame of sample telemetry
 without training — useful for working on the dashboard itself.
 
+### Parallel environments
+
+Training defaults to four games stepped in parallel processes:
+
+    python training_gui.py --envs 4 --rollout-steps 128
+
+PPO's buffer holds `envs * rollout-steps` samples per update, so those defaults keep the
+update size at 512 while gathering it from four independently seeded games. Each game
+advances only 128 decisions before the policy learns, which keeps openings varied.
+
+Environments run in separate processes (`SubprocVecEnv`). This matters because every Dodge
+environment hosts its own LuaJIT machine: stepping them in one process would diversify
+experience without adding throughput. Measured on a 4-core machine, four environments run
+about 2.5x the steps per second of one — short of 4x, since process overhead and the
+policy update are not parallelised.
+
+Raising `--envs` past the core count tends to cost more than it returns. The dashboard's
+steps/second readout is the number to watch when trying other values.
+
 ## PPO bots
 
 Both architectures observe the previous and current decision frames, ordered previous
