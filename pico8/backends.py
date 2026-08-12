@@ -43,9 +43,26 @@ class NullBackend(Backend):
     def flip(self): pass
 
 
+import re
+
 import pygame
 
 from .palette import PICO8
+from .preprocess import BUTTONS
+
+_GLYPH_SPLIT = re.compile("(" + "|".join(re.escape(g) for g in BUTTONS) + ")")
+
+# What each button glyph is drawn as, since no system font has them. Built
+# from BUTTONS itself (rather than retyped) so the keys here are guaranteed
+# to be the exact same glyph strings split_glyphs() ever hands back.
+_LABEL_BY_BUTTON = {0: "<", 1: ">", 2: "^", 3: "v", 4: "O", 5: "X"}
+GLYPH_LABEL = {glyph: _LABEL_BY_BUTTON[button] for glyph, button in BUTTONS.items()}
+
+
+def split_glyphs(text):
+    """Split a PICO-8 string into ('text'|'glyph', chunk) pairs."""
+    return [("glyph" if chunk in BUTTONS else "text", chunk)
+            for chunk in _GLYPH_SPLIT.split(text) if chunk]
 
 
 class PygameBackend(Backend):
@@ -64,6 +81,8 @@ class PygameBackend(Backend):
         self.scale = scale
         self.window = pygame.display.set_mode((self.SIZE * scale, self.SIZE * scale))
         pygame.display.set_caption(caption)
+        self.font = pygame.font.SysFont("consolas,dejavusansmono,monospace",
+                                        max(8, 4 * scale))
 
         self.surface = pygame.Surface((self.SIZE, self.SIZE), depth=8)
         self.surface.set_palette(PICO8)
@@ -100,10 +119,11 @@ class PygameBackend(Backend):
     def cls(self, col=0):
         self.surface.fill(self.draw_pal[int(col) & 15])
         # Note: real PICO-8's cls() does not touch the camera offset. See
-        # dodge.lua's updatemenu(): camera(shakex, shakey) is called, then
-        # cls(12), then _drw() -- if cls() reset the camera here, the
-        # screen-shake effect on the pause/settings screen would be
-        # silently discarded on every frame it's active.
+        # dodge.lua's global _draw() (dodge.lua:2214-2262): camera(shakex,
+        # shakey) is called, then cls(12), then _drw() -- if cls() reset the
+        # camera here, the screen-shake effect applied on real gameplay hits
+        # (shake += 0.07 in dodge.lua:565, 746, 875) would be silently
+        # discarded on every frame it's active.
 
     def pset(self, x, y, c=None):
         px, py = self._pt(x, y)
@@ -195,4 +215,24 @@ class PygameBackend(Backend):
         self.text_queue.clear()
 
     def _draw_text(self):
-        pass                                 # implemented in Task 10
+        """Draw queued text onto the upscaled window.
+
+        PICO-8 characters occupy a 4x6 cell, so a chunk of n characters is
+        n*4 pixels wide in game space; that is the advance used here.
+        """
+        s = self.scale
+        for text, x, y, colour in self.text_queue:
+            rgb = PICO8[self.display_pal[colour]]
+            cursor = x
+            for kind, chunk in split_glyphs(text):
+                if kind == "glyph":
+                    label = GLYPH_LABEL[chunk]
+                    box = pygame.Rect(cursor * s, y * s, 7 * s, 5 * s)
+                    pygame.draw.rect(self.window, rgb, box, width=max(1, s // 2))
+                    glyph = self.font.render(label, True, rgb)
+                    self.window.blit(glyph, glyph.get_rect(center=box.center))
+                    cursor += 8
+                else:
+                    self.window.blit(self.font.render(chunk, True, rgb),
+                                     (cursor * s, y * s))
+                    cursor += len(chunk) * 4

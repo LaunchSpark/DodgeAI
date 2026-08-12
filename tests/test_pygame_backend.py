@@ -96,11 +96,13 @@ def test_colour_zero_is_transparent_in_sprites(backend):
 def test_camera_persists_across_cls():
     """cls() must not reset the camera offset.
 
-    dodge.lua's pause/settings screen calls camera(shakex, shakey) to apply
-    a screen shake and only then cls(12) followed by _drw() -- see the tail
-    of updatemenu() in dodge.lua. If cls() reset the camera, that shake
-    would be silently discarded every frame it's active. Real PICO-8's
-    cls() does not touch the camera offset, so this backend must not either.
+    dodge.lua's global _draw() (dodge.lua:2214-2262) calls camera(shakex,
+    shakey) to apply a screen shake and only then cls(12) followed by
+    _drw(). The shake itself comes from real gameplay hits (shake += 0.07
+    in dodge.lua:565, 746, 875), not from a pause/settings effect. If cls()
+    reset the camera, that shake would be silently discarded every frame
+    it's active. Real PICO-8's cls() does not touch the camera offset, so
+    this backend must not either.
     """
     b = PygameBackend(scale=1)
     try:
