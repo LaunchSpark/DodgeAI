@@ -322,3 +322,19 @@ dodging; hard + everything is the full game. Also configurable: action repeat (d
 - **Single RNG stream.** The cart draws gameplay and cosmetic randomness from one stream,
   so any change to how often visual effects run alters the game. This constrains what can
   be optimised away; see the `_draw` note under `machine.py`.
+- **The preprocessor is correct for this cart, not for arbitrary PICO-8 source.** Three
+  shapes are knowingly unhandled. All three are absent from `dodge.lua`, verified by
+  grepping the whole file, and the cart is a frozen build artefact rather than something
+  edited by hand — so the risk is accepted rather than designed around:
+  1. Two compound assignments on one line produce overlapping edits.
+  2. A compound assignment followed by more code on the same line has the trailing tokens
+     swallowed into its right-hand side, because the RHS runs to end of line:
+     `if a then c+=1 end` would become `if a then c = c + (1 end)`. Fixing this needs
+     statement-terminator awareness (`end`, `then`, `;`).
+  3. A short `if` whose body contains a nested long-form `if ... then ... end` is left
+     untransformed, because the "no top-level `then` on this line" rule cannot tell that
+     `then` belongs to a body statement rather than to the condition.
+
+  A fourth was fixed rather than accepted, because it did occur: a condition built from
+  several parenthesised groups (`if (a) or (b) then`, `dodge.lua:193`) was misread as a
+  short `if`, since the first balanced paren is not the end of the condition.
