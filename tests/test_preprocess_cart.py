@@ -1,3 +1,5 @@
+import faulthandler
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -14,6 +16,25 @@ def translated():
     return preprocess(SOURCE.read_text(encoding="utf-8"))
 
 
+@contextmanager
+def faulthandler_disabled():
+    """Silence pytest's faulthandler around a call known to trigger a
+    Windows SEH exception inside LuaJIT (e.g. loadstring on invalid Lua).
+
+    LuaJIT uses structured exception handling internally; on Windows this
+    trips faulthandler's fatal-error dump even though nothing actually
+    crashed and the process continues normally. Scoped narrowly so genuine
+    crashes elsewhere in the suite are still reported.
+    """
+    was_enabled = faulthandler.is_enabled()
+    faulthandler.disable()
+    try:
+        yield
+    finally:
+        if was_enabled:
+            faulthandler.enable()
+
+
 def test_whole_cart_is_valid_lua(translated):
     """Compile (do not run) the translated cart under LuaJIT."""
     runtime = luajit.LuaRuntime()
@@ -26,7 +47,8 @@ def test_compile_check_rejects_invalid_lua():
     """Guard against a vacuous assertion: the check must be able to fail."""
     runtime = luajit.LuaRuntime()
     compile_error = runtime.eval("function(s) local f, e = loadstring(s) return e end")
-    error = compile_error("this is not valid lua $$$")
+    with faulthandler_disabled():
+        error = compile_error("this is not valid lua $$$")
     assert error is not None
     assert isinstance(error, str)
 
