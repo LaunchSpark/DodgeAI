@@ -1,0 +1,5 @@
+-r requirements.txt
+numpy>=1.26
+gymnasium>=1.0
+stable-baselines3>=2.6
+tensorboard>=2.16

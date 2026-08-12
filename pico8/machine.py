@@ -68,11 +68,59 @@ class Machine:
         self.globals._draw()
         self.backend.flip()
 
-    def start_game(self):
-        """Skip the menus and begin a round immediately."""
+    def start_game(self, difficulty=2, patterns=True, powerups=True):
+        """Skip the menus and begin a round immediately.
+
+        ``difficulty`` uses the cart's native values: 1 easy, 2 normal, 3 hard.
+        A freshly constructed Machine gives training a fully independent round;
+        the cart's own reset intentionally carries some state across restarts.
+        """
+        if difficulty not in (1, 2, 3):
+            raise ValueError("difficulty must be 1 (easy), 2 (normal), or 3 (hard)")
         g = self.globals
+        g.smallsettings[2] = difficulty
+        g.smallsettings[3] = bool(patterns)
+        g.smallsettings[4] = bool(powerups)
         g._upd, g._drw = g.updategame, g.drawgame
         g.reset()
+        # Make the native spawn check succeed on the first gameplay frame.
+        # spawnenemies() resets ed to zero, preserving its usual cadence after that.
+        g.ed = g.est * 60 * (2 - g.frz)
+        # Mouse mode teleports the player to stat(32/33). Training uses the
+        # real keyboard movement model with velocity and friction.
+        g.input = 1
+        g.prevxpos, g.prevypos = self.mouse_x, self.mouse_y
+
+    def install_training_hooks(self):
+        """Count game events without modifying the generated cart source."""
+        self.lua.execute("""
+            training_events = {
+                enemies_destroyed = 0,
+                explosion_pickups = 0,
+                freeze_pickups = 0,
+                shrink_pickups = 0
+            }
+
+            local original_collide = collide
+            function collide(enemy)
+                if enemy.p == 2 then
+                    training_events.explosion_pickups = training_events.explosion_pickups + 1
+                elseif enemy.p == 3 then
+                    training_events.freeze_pickups = training_events.freeze_pickups + 1
+                elseif enemy.p == 4 then
+                    training_events.shrink_pickups = training_events.shrink_pickups + 1
+                end
+                return original_collide(enemy)
+            end
+
+            local original_difficultycurve = difficultycurve
+            function difficultycurve(half)
+                if half then
+                    training_events.enemies_destroyed = training_events.enemies_destroyed + 1
+                end
+                return original_difficultycurve(half)
+            end
+        """)
 
 
 def boot(js_path=Path("logic.js"), backend=None, seed=0):

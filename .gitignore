@@ -1,3 +1,12 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+artifacts/
+
+# Third-party game content is never tracked. logic.js is the cartridge export
+# you supply; dodge.lua and dodge.p8 are generated from it by
+# tools/extract_cart.py and can be regenerated at any time.
+logic.js
+dodge.lua
+dodge.p8
+dodge.rom

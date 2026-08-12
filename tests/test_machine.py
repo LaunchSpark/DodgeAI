@@ -91,6 +91,21 @@ def test_enemies_actually_spawn():
     assert len(m.globals.enemies) > 0
 
 
+def test_first_enemy_spawns_on_first_gameplay_frame():
+    m = machine.boot(backend=NullBackend(), seed=5)
+    m.start_game()
+
+    assert len(m.globals.enemies) == 0
+    m.step()
+
+    assert len(m.globals.enemies) == 1
+    assert m.globals.ed == 0
+
+    m.step()
+    assert len(m.globals.enemies) == 1
+    assert m.globals.ed == 1
+
+
 def test_same_seed_gives_the_same_trajectory():
     # px/py cannot distinguish seeds here: an idle mouse-mode player is pinned
     # to the (fixed) cursor position, and player movement never consumes rnd().
@@ -126,6 +141,14 @@ def test_buttons_move_the_player():
     for _ in range(20):
         m.step()
     assert m.globals.px > x0
+
+
+def test_start_game_stays_in_keyboard_mode_without_mouse_motion():
+    m = machine.boot(backend=NullBackend(), seed=8)
+    m.start_game()
+    for _ in range(3):
+        m.step()
+    assert m.globals.input == 1
 
 
 def test_btnp_repeats_after_15_frames_then_every_4():
