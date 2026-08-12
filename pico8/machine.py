@@ -49,7 +49,7 @@ class Machine:
                 self._held[i] += 1
                 held = self._held[i]
                 if held == 1 or (held > api.BTNP_DELAY and
-                                 (held - api.BTNP_DELAY) % api.BTNP_INTERVAL == 0):
+                                 (held - 1 - api.BTNP_DELAY) % api.BTNP_INTERVAL == 0):
                     mask |= 1 << i
             else:
                 self._held[i] = 0

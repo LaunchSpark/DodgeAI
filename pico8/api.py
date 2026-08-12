@@ -49,7 +49,6 @@ def install(machine, lua):
     def noop(*args):
         return None
 
-    b = machine.backend
     g.btn = btn
     g.btnp = btnp
     g.stat = stat
@@ -61,17 +60,17 @@ def install(machine, lua):
     g.music = noop
     g.printh = noop
 
-    g.cls = lambda col=None: b.cls(int(_num(col)))
-    g.pset = lambda x, y, c=None: b.pset(x, y, c)
-    g.rect = lambda x0, y0, x1, y1, c=None: b.rect(x0, y0, x1, y1, c)
-    g.rectfill = lambda x0, y0, x1, y1, c=None: b.rectfill(x0, y0, x1, y1, c)
-    g.circfill = lambda x, y, r=None, c=None: b.circfill(x, y, _num(r, 4), c)
-    g.ovalfill = lambda x0, y0, x1, y1, c=None: b.ovalfill(x0, y0, x1, y1, c)
-    g.line = lambda x0, y0, x1, y1, c=None: b.line(x0, y0, x1, y1, c)
-    g.spr = lambda n, x, y, w=None, h=None, *rest: b.spr(int(n), x, y, _num(w, 1), _num(h, 1))
-    g.print = lambda text, x=None, y=None, c=None: b.print_(text, _num(x), _num(y), c)
-    g.pal = lambda c0=None, c1=None, mode=None: b.pal(c0, c1, int(_num(mode)))
+    g.cls = lambda col=None: machine.backend.cls(int(_num(col)))
+    g.pset = lambda x, y, c=None: machine.backend.pset(x, y, c)
+    g.rect = lambda x0, y0, x1, y1, c=None: machine.backend.rect(x0, y0, x1, y1, c)
+    g.rectfill = lambda x0, y0, x1, y1, c=None: machine.backend.rectfill(x0, y0, x1, y1, c)
+    g.circfill = lambda x, y, r=None, c=None: machine.backend.circfill(x, y, _num(r, 4), c)
+    g.ovalfill = lambda x0, y0, x1, y1, c=None: machine.backend.ovalfill(x0, y0, x1, y1, c)
+    g.line = lambda x0, y0, x1, y1, c=None: machine.backend.line(x0, y0, x1, y1, c)
+    g.spr = lambda n, x, y, w=None, h=None, *rest: machine.backend.spr(int(n), x, y, _num(w, 1), _num(h, 1))
+    g.print = lambda text, x=None, y=None, c=None: machine.backend.print_(text, _num(x), _num(y), c)
+    g.pal = lambda c0=None, c1=None, mode=None: machine.backend.pal(c0, c1, int(_num(mode)))
     g.palt = noop
-    g.fillp = lambda pattern=None: b.fillp(pattern)
-    g.camera = lambda x=None, y=None: b.camera(_num(x), _num(y))
+    g.fillp = lambda pattern=None: machine.backend.fillp(pattern)
+    g.camera = lambda x=None, y=None: machine.backend.camera(_num(x), _num(y))
     g.flip = lambda: machine.flip()

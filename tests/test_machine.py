@@ -4,9 +4,30 @@ import pytest
 
 luajit = pytest.importorskip("lupa.luajit21")
 from pico8 import machine
-from pico8.backends import NullBackend
+from pico8.backends import Backend, NullBackend
 
 pytestmark = pytest.mark.skipif(not Path("logic.js").exists(), reason="logic.js not present")
+
+
+class RecordingBackend(Backend):
+    """Records which drawing methods were called, without doing anything."""
+
+    def __init__(self):
+        self.calls = []
+
+    def cls(self, col): self.calls.append("cls")
+    def pset(self, x, y, c): self.calls.append("pset")
+    def rect(self, x0, y0, x1, y1, c): self.calls.append("rect")
+    def rectfill(self, x0, y0, x1, y1, c): self.calls.append("rectfill")
+    def circfill(self, x, y, r, c): self.calls.append("circfill")
+    def ovalfill(self, x0, y0, x1, y1, c): self.calls.append("ovalfill")
+    def line(self, x0, y0, x1, y1, c): self.calls.append("line")
+    def spr(self, n, x, y, w, h): self.calls.append("spr")
+    def print_(self, text, x, y, c): self.calls.append("print_")
+    def pal(self, c0, c1, mode): self.calls.append("pal")
+    def fillp(self, pattern): self.calls.append("fillp")
+    def camera(self, x, y): self.calls.append("camera")
+    def flip(self): self.calls.append("flip")
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -105,3 +126,49 @@ def test_buttons_move_the_player():
     for _ in range(20):
         m.step()
     assert m.globals.px > x0
+
+
+def test_btnp_repeats_after_15_frames_then_every_4():
+    # PICO-8: press fires immediately, then repeat starts at frame 16 of the
+    # hold (a 15-frame delay after the press) and every 4 frames after that.
+    m = machine.boot(backend=NullBackend(), seed=13)
+    m.set_buttons(1 << 0)           # hold button 0 continuously
+    fire_frames = []
+    for held_frame in range(1, 41):
+        m.step()
+        assert bool(m.btnp_mask & 1) == bool(m.globals.btnp(0)), (
+            "two btnp() reads within the same frame must agree"
+        )
+        if m.btnp_mask & 1:
+            fire_frames.append(held_frame)
+    assert fire_frames == [1, 16, 20, 24, 28, 32, 36, 40]
+
+    # Release then re-press: the new press should fire immediately, not wait
+    # out the repeat delay again.
+    m.set_buttons(0)
+    for _ in range(5):
+        m.step()
+    assert m.btnp_mask & 1 == 0
+    m.set_buttons(1 << 0)
+    m.step()
+    assert m.btnp_mask & 1, "re-pressing after a release should fire btnp immediately"
+
+
+def test_swapping_backend_after_construction_redirects_draw_calls():
+    old_backend = RecordingBackend()
+    new_backend = RecordingBackend()
+    m = machine.boot(backend=old_backend, seed=17)
+    # Booting itself already draws (a boot/attract-mode animation runs at
+    # cart-load time); that's legitimate and predates the swap below, so it
+    # is not what this test is about. Only calls made *after* the swap are
+    # under test.
+    calls_before_swap = len(old_backend.calls)
+
+    m.backend = new_backend
+    m.step()
+
+    assert len(old_backend.calls) == calls_before_swap, (
+        "draw calls made after the backend swap should not land on the stale "
+        f"backend, but {len(old_backend.calls) - calls_before_swap} more landed there"
+    )
+    assert new_backend.calls, "draw calls should land on the swapped-in backend"
