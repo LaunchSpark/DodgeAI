@@ -371,3 +371,42 @@ def test_legacy_policy_weights_migrate_to_current_frame_inputs():
     )
     assert target.num_timesteps == 1234
     assert target._n_updates == 50
+
+
+def test_checkpoint_without_player_channels_migrates(tmp_path):
+    """A hybrid checkpoint from before the player channels must still load.
+
+    Its grid convolution has 16 input channels against the current 18, which
+    is a hard shape error rather than something SB3 can reconcile.
+    """
+    import torch
+    from stable_baselines3.common.save_util import load_from_zip_file
+    from dodge.policies import HAZARD_CHANNELS, HYBRID_INPUT_CHANNELS, policy_kwargs
+    from dodge.training import GRID_CONV_WEIGHT, DashboardPPO, PPOTrainingSession
+
+    saved = DashboardPPO("MlpPolicy", _matching_vec_env(1), n_steps=8,
+                         batch_size=8, n_epochs=1, device="cpu",
+                         policy_kwargs=policy_kwargs("hybrid-cnn"))
+    # Narrow the grid convolution back to the pre-player shape.
+    state = saved.policy.state_dict()
+    for name in list(state):
+        if name.endswith(GRID_CONV_WEIGHT.split(".", 1)[-1]) and state[name].dim() == 4:
+            state[name] = state[name][:, :HAZARD_CHANNELS].clone()
+    path = tmp_path / "legacy.zip"
+    saved.save(path)
+    data, params, variables = load_from_zip_file(path, device="cpu")
+    params["policy"] = {name: value for name, value in state.items()}
+    data["num_timesteps"] = 4242
+    from stable_baselines3.common.save_util import save_to_zip_file
+    save_to_zip_file(path, data=data, params=params, pytorch_variables=variables)
+
+    session = PPOTrainingSession(model_dir=tmp_path, logs_dir=tmp_path,
+                                 n_envs=1, autostart=False, device="cpu")
+    model = session._load_model(path, _matching_vec_env(1))
+
+    weight = model.policy.features_extractor.grid_net[0].weight
+    assert weight.shape[1] == HYBRID_INPUT_CHANNELS
+    torch.testing.assert_close(weight[:, :HAZARD_CHANNELS],
+                               state[GRID_CONV_WEIGHT])
+    assert weight[:, HAZARD_CHANNELS:].abs().sum() > 0, "player weights initialised"
+    assert model.num_timesteps == 4242

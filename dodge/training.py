@@ -16,12 +16,14 @@ import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.env_util import make_vec_env
+from stable_baselines3.common.save_util import load_from_zip_file
 from stable_baselines3.common.utils import get_device
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
 from .env import DodgeEnv
 from .observe import FRAME_OBSERVATION_SIZE, FRAME_STACK_SIZE
-from .policies import ARCHITECTURES, architecture_name, policy_kwargs
+from .policies import (ARCHITECTURES, HYBRID_INPUT_CHANNELS,
+                       architecture_name, policy_kwargs)
 from .telemetry import DashboardSnapshot, EVENT_KEYS, ModelEntry
 
 
@@ -130,6 +132,40 @@ def migrate_single_frame_policy(source, target):
     target.num_timesteps = source.num_timesteps
     target._n_updates = source._n_updates
     target._episode_num = source._episode_num
+    return target
+
+
+GRID_CONV_WEIGHT = "features_extractor.grid_net.0.weight"
+
+
+def migrate_grid_channels(source_params, target, path, device="cpu"):
+    """Load a checkpoint whose grid convolution has fewer input channels.
+
+    The player channels were appended after the hazard channels precisely so
+    that an older checkpoint's weights occupy the leading slice. Everything
+    else is copied by name and shape; the player connections start from the new
+    policy's own initialization, as if those inputs had just been added.
+    """
+    target_state = target.policy.state_dict()
+    for name, target_value in target_state.items():
+        source_value = source_params.get(name)
+        if source_value is None:
+            continue
+        if source_value.shape == target_value.shape:
+            target_value.copy_(source_value)
+        elif (source_value.dim() == 4 and target_value.dim() == 4
+                and source_value.shape[0] == target_value.shape[0]
+                and source_value.shape[2:] == target_value.shape[2:]
+                and source_value.shape[1] < target_value.shape[1]):
+            target_value[:, :source_value.shape[1]].copy_(source_value)
+    target.policy.load_state_dict(target_state)
+
+    # Keep the run's progress; the optimizer restarts, since its state refers
+    # to a tensor that changed shape.
+    data, _, _ = load_from_zip_file(path, device=device)
+    target.num_timesteps = data.get("num_timesteps", 0)
+    target._n_updates = data.get("_n_updates", 0)
+    target._episode_num = data.get("_episode_num", 0)
     return target
 
 
@@ -357,6 +393,17 @@ class PPOTrainingSession:
         )
 
     def _load_model(self, path, env):
+        # Inspected before construction: a checkpoint from before the player
+        # channels has a narrower first convolution, and building the policy
+        # around it raises a shape error rather than something recoverable.
+        _, params, _ = load_from_zip_file(path, device=self.device)
+        grid_weight = params.get("policy", {}).get(GRID_CONV_WEIGHT)
+        if grid_weight is not None and \
+                grid_weight.shape[1] != HYBRID_INPUT_CHANNELS:
+            model = self._new_model(env, architecture="hybrid-cnn")
+            return migrate_grid_channels(params["policy"], model, path,
+                                         device=self.device)
+
         # Loaded without an env first, because a legacy checkpoint's observation
         # space may not match and load(path, env=...) rejects that outright.
         source = DashboardPPO.load(path, device=self.device)

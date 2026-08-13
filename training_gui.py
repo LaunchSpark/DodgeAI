@@ -303,7 +303,8 @@ class DashboardRenderer:
         return {"close": close, "defaults": defaults, "tracks": tracks,
                 "modal": modal}
 
-    def draw_model_menu(self, surface, name, entries, selected_index, offset):
+    def draw_model_menu(self, surface, name, entries, selected_index, offset,
+                        name_focused=False, name_cursor=None, name_selected=False):
         veil = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
         veil.fill((0, 0, 0, 165))
         surface.blit(veil, (0, 0))
@@ -323,10 +324,29 @@ class DashboardRenderer:
         name_rect = pygame.Rect(modal.x + 20, modal.y + 82, modal.w - 150, 38)
         save_rect = pygame.Rect(name_rect.right + 10, name_rect.y, 100, 38)
         pygame.draw.rect(surface, (26, 27, 27), name_rect, border_radius=5)
-        pygame.draw.rect(surface, (83, 81, 75), name_rect, width=1, border_radius=5)
-        visible_name = name[-32:] if name else "Model name"
-        self._text(surface, self.font_body, visible_name,
-                   TEXT if name else MUTED, (name_rect.x + 11, name_rect.y + 9))
+        pygame.draw.rect(surface, CYAN if name_focused else (83, 81, 75),
+                         name_rect, width=2 if name_focused else 1,
+                         border_radius=5)
+        inner = pygame.Surface((name_rect.w - 20, name_rect.h - 8), pygame.SRCALPHA)
+        if name:
+            cursor = len(name) if name_cursor is None else max(0, min(name_cursor, len(name)))
+            text_image = self.font_body.render(name, True, TEXT)
+            cursor_x = self.font_body.size(name[:cursor])[0]
+            scroll = max(0, cursor_x - inner.get_width() + 2)
+            if name_selected:
+                selection = pygame.Rect(-scroll, 3, text_image.get_width(),
+                                        self.font_body.get_height() + 2)
+                pygame.draw.rect(inner, (31, 92, 108), selection)
+            inner.blit(text_image, (-scroll, 4))
+            if name_focused and not name_selected and pygame.time.get_ticks() % 1000 < 600:
+                pygame.draw.line(inner, CYAN, (cursor_x - scroll, 3),
+                                 (cursor_x - scroll, 3 + self.font_body.get_height()), 1)
+        else:
+            self._text(inner, self.font_body, "Model name", MUTED, (0, 4))
+            if name_focused and pygame.time.get_ticks() % 1000 < 600:
+                pygame.draw.line(inner, CYAN, (0, 3),
+                                 (0, 3 + self.font_body.get_height()), 1)
+        surface.blit(inner, (name_rect.x + 10, name_rect.y + 4))
         pygame.draw.rect(surface, CYAN, save_rect, border_radius=5)
         self._text(surface, self.font_body_bold, "Save", (22, 39, 43),
                    save_rect.center, "center")
@@ -585,6 +605,9 @@ class TrainingDashboard:
         self.selected_model = 0
         self.model_offset = 0
         self.model_regions = {}
+        self.model_name_focused = False
+        self.model_name_cursor = len(self.model_name)
+        self.model_name_selected = False
         self.reward_menu_open = False
         self.reward_regions = {}
         self.reward_config_path = getattr(self.session, "reward_config_path",
@@ -618,6 +641,38 @@ class TrainingDashboard:
         self.selected_model = 0
         self.model_offset = 0
         self.model_menu_open = True
+        self._focus_model_name(select_all=True)
+
+    def _focus_model_name(self, select_all=False):
+        self.model_name_focused = True
+        self.model_name_cursor = len(self.model_name)
+        self.model_name_selected = bool(select_all and self.model_name)
+        pygame.key.start_text_input()
+
+    def _blur_model_name(self):
+        self.model_name_focused = False
+        self.model_name_selected = False
+        pygame.key.stop_text_input()
+
+    def _close_models(self):
+        self.model_menu_open = False
+        self._blur_model_name()
+
+    def _insert_model_text(self, text):
+        if not self.model_name_focused or not text:
+            return
+        text = "".join(character for character in text if character.isprintable())
+        if not text:
+            return
+        if self.model_name_selected:
+            self.model_name = ""
+            self.model_name_cursor = 0
+            self.model_name_selected = False
+        available = 48 - len(self.model_name)
+        text = text[:available]
+        cursor = self.model_name_cursor
+        self.model_name = self.model_name[:cursor] + text + self.model_name[cursor:]
+        self.model_name_cursor += len(text)
 
     def _save_model(self):
         try:
@@ -641,7 +696,7 @@ class TrainingDashboard:
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
             self._show_toast(str(error))
             return
-        self.model_menu_open = False
+        self._close_models()
         self._show_toast(f"Loaded {entry.name}")
 
     def _click(self, position):
@@ -668,7 +723,9 @@ class TrainingDashboard:
             regions = self.model_regions
             if regions.get("close", pygame.Rect(0, 0, 0, 0)).collidepoint(position) or \
                     regions.get("cancel", pygame.Rect(0, 0, 0, 0)).collidepoint(position):
-                self.model_menu_open = False
+                self._close_models()
+            elif regions.get("name", pygame.Rect(0, 0, 0, 0)).collidepoint(position):
+                self._focus_model_name()
             elif regions.get("save", pygame.Rect(0, 0, 0, 0)).collidepoint(position):
                 self._save_model()
             elif regions.get("load", pygame.Rect(0, 0, 0, 0)).collidepoint(position):
@@ -676,6 +733,7 @@ class TrainingDashboard:
             else:
                 for index, row in regions.get("rows", []):
                     if row.collidepoint(position):
+                        self._blur_model_name()
                         self.selected_model = index
                         break
             return
@@ -699,19 +757,49 @@ class TrainingDashboard:
 
     def _model_key(self, event):
         if event.key == pygame.K_ESCAPE:
-            self.model_menu_open = False
+            self._close_models()
         elif event.key == pygame.K_RETURN:
             self._save_model()
-        elif event.key == pygame.K_BACKSPACE:
-            self.model_name = self.model_name[:-1]
+        elif self.model_name_focused and event.key == pygame.K_a \
+                and event.mod & pygame.KMOD_CTRL:
+            self.model_name_selected = bool(self.model_name)
+            self.model_name_cursor = len(self.model_name)
+        elif self.model_name_focused and event.key == pygame.K_BACKSPACE:
+            if self.model_name_selected:
+                self.model_name = ""
+                self.model_name_cursor = 0
+                self.model_name_selected = False
+            elif self.model_name_cursor > 0:
+                cursor = self.model_name_cursor
+                self.model_name = self.model_name[:cursor - 1] + self.model_name[cursor:]
+                self.model_name_cursor -= 1
+        elif self.model_name_focused and event.key == pygame.K_DELETE:
+            if self.model_name_selected:
+                self.model_name = ""
+                self.model_name_cursor = 0
+                self.model_name_selected = False
+            elif self.model_name_cursor < len(self.model_name):
+                cursor = self.model_name_cursor
+                self.model_name = self.model_name[:cursor] + self.model_name[cursor + 1:]
+        elif self.model_name_focused and event.key in (pygame.K_LEFT, pygame.K_RIGHT,
+                                                        pygame.K_HOME, pygame.K_END):
+            self.model_name_selected = False
+            if event.key == pygame.K_LEFT:
+                self.model_name_cursor = max(0, self.model_name_cursor - 1)
+            elif event.key == pygame.K_RIGHT:
+                self.model_name_cursor = min(len(self.model_name), self.model_name_cursor + 1)
+            elif event.key == pygame.K_HOME:
+                self.model_name_cursor = 0
+            else:
+                self.model_name_cursor = len(self.model_name)
         elif event.key == pygame.K_UP and self.model_entries:
+            self._blur_model_name()
             self.selected_model = max(0, self.selected_model - 1)
             self.model_offset = min(self.model_offset, self.selected_model)
         elif event.key == pygame.K_DOWN and self.model_entries:
+            self._blur_model_name()
             self.selected_model = min(len(self.model_entries) - 1, self.selected_model + 1)
             self.model_offset = max(self.model_offset, self.selected_model - 4)
-        elif event.unicode and event.unicode.isprintable() and len(self.model_name) < 48:
-            self.model_name += event.unicode
 
     def draw(self):
         toast = self.toast if time.monotonic() < self.toast_until else None
@@ -729,7 +817,9 @@ class TrainingDashboard:
             if self.model_menu_open:
                 self.model_regions = self.renderer.draw_model_menu(
                     self.surface, self.model_name, self.model_entries,
-                    self.selected_model, self.model_offset
+                    self.selected_model, self.model_offset,
+                    self.model_name_focused, self.model_name_cursor,
+                    self.model_name_selected,
                 )
                 if toast:
                     self.renderer._draw_toast(self.surface, toast)
@@ -751,6 +841,8 @@ class TrainingDashboard:
                             self.reward_menu_open = False
                         elif event.key == pygame.K_ESCAPE:
                             running = False
+                    elif event.type == pygame.TEXTINPUT and self.model_menu_open:
+                        self._insert_model_text(event.text)
                     elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                         self._click(event.pos)
                     elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
@@ -773,6 +865,7 @@ class TrainingDashboard:
                 self.session.tick(dt)
                 self.draw()
         finally:
+            pygame.key.stop_text_input()
             self.session.close()
             pygame.quit()
 

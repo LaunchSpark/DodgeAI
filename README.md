@@ -157,7 +157,14 @@ exposed. Loading an older 1,026-input checkpoint migrates its analogous weights 
 current-frame inputs while normally initializing the added previous-frame connections.
 
 The default `hybrid-cnn` policy converts each frame's categorical map into eight one-hot
-spatial channels. Its CNN branch uses `32 -> 64 -> 64` filters and emits 128 features;
+spatial channels, plus one channel per frame marking the player's own cell. That player
+channel matters more than its size suggests: the hazard map says nothing about where the
+agent is, so without it every convolution reasoned about threats with no idea what they
+were near, and player position only arrived through a separate branch after the spatial
+layout had been flattened away. It costs nothing in the environment, since those
+coordinates are already part of the observation. Hazard channels keep their original
+order and count, so a checkpoint from before this migrates by copying into the leading
+channels while the player connections start fresh. Its CNN branch uses `32 -> 64 -> 64` filters and emits 128 features;
 a small MLP encodes the four player coordinates into 32 features. Separate
 `128 -> 64` actor and critic heads consume the combined representation. This preserves
 neighbor relationships while allowing the two frames to express movement. The original

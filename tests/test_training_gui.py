@@ -100,6 +100,9 @@ class _StubSession:
     def close(self):
         pass
 
+    def available_models(self):
+        return []
+
 
 def _dashboard(tmp_path):
     from training_gui import TrainingDashboard
@@ -183,6 +186,40 @@ def test_closing_the_panel(tmp_path):
     dashboard = _dashboard(tmp_path)
     dashboard._click(dashboard.reward_regions["close"].center)
     assert not dashboard.reward_menu_open
+    pygame.quit()
+
+
+def test_model_name_field_is_focused_and_replaced_by_typing(tmp_path):
+    from training_gui import TrainingDashboard
+
+    dashboard = TrainingDashboard(_StubSession(tmp_path / "rewards.json"), hidden=True)
+    dashboard._open_models()
+    dashboard.draw()
+
+    assert dashboard.model_name_focused
+    assert dashboard.model_name_selected
+    dashboard._insert_model_text("patient-dodger")
+    assert dashboard.model_name == "patient-dodger"
+    assert dashboard.model_name_cursor == len("patient-dodger")
+    pygame.quit()
+
+
+def test_model_name_field_supports_caret_editing_and_click_focus(tmp_path):
+    from training_gui import TrainingDashboard
+
+    dashboard = TrainingDashboard(_StubSession(tmp_path / "rewards.json"), hidden=True)
+    dashboard._open_models()
+    dashboard.draw()
+    dashboard.model_name = "bot-one"
+    dashboard.model_name_cursor = 3
+    dashboard.model_name_selected = False
+    dashboard._insert_model_text("-new")
+    assert dashboard.model_name == "bot-new-one"
+
+    dashboard._blur_model_name()
+    dashboard._click(dashboard.model_regions["name"].center)
+    assert dashboard.model_name_focused
+    assert dashboard.model_name_cursor == len(dashboard.model_name)
     pygame.quit()
 
 
