@@ -40,6 +40,10 @@ class DashboardSnapshot:
     progress_phase: str = "rollout"
     rollout_progress: float = 0.0
     learning_progress: float = 0.0
+    # Share of the policy trunk that emitted zero for an entire rollout. Rises
+    # toward 1.0 when units die; at 1.0 the policy is a constant distribution
+    # and training is doing nothing, which nothing else here reveals.
+    dead_units: float = 0.0
     # Every series spans the whole run, so the charts can show improvement
     # rather than only the present moment.
     reward: RunSeries = field(default_factory=RunSeries)

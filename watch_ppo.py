@@ -26,7 +26,8 @@ def main():
     parser.add_argument("--scale", type=int, default=5)
     parser.add_argument("--difficulty", choices=("easy", "normal", "hard"), default="easy")
     parser.add_argument("--patterns", action="store_true")
-    parser.add_argument("--powerups", action="store_true")
+    parser.add_argument("--powerups", action=argparse.BooleanOptionalAction,
+                        default=True)
     parser.add_argument("--action-repeat", type=int, default=4)
     parser.add_argument("--sample", action="store_true",
                         help="sample actions instead of choosing the most likely action")

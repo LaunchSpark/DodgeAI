@@ -210,3 +210,59 @@ def test_velocity_comes_from_the_two_decision_frames():
     vx, vy = _sense_features(coordinates, grids)[0][:2]
     assert vx * GRID_SIZE == pytest.approx(2.0)   # 8px right = 2 cells
     assert vy * GRID_SIZE == pytest.approx(0.0)
+
+
+def test_dead_unit_fraction_finds_a_collapsed_policy_trunk():
+    """The failure this exists to catch: a policy that ignores its input.
+
+    A trunk whose units are all zero makes action_net emit its bias and
+    nothing else, so the agent plays one fixed distribution forever. Entropy
+    stays high throughout, which is why it needs its own measurement.
+    """
+    from dodge.policies import dead_unit_fraction
+    from stable_baselines3 import PPO
+
+    class StaticEnv(gymnasium.Env):
+        observation_space = observation_space()
+        action_space = spaces.Discrete(9)
+
+        def reset(self, *, seed=None, options=None):
+            super().reset(seed=seed)
+            return np.zeros((OBSERVATION_SIZE,), dtype=np.float32), {}
+
+        def step(self, action):
+            return np.zeros((OBSERVATION_SIZE,), dtype=np.float32), 0.0, False, False, {}
+
+    model = PPO("MlpPolicy", StaticEnv(), n_steps=8, batch_size=8, n_epochs=1,
+                policy_kwargs=policy_kwargs("hybrid-cnn"), seed=1, device="cpu")
+    observations = torch.rand(64, OBSERVATION_SIZE)
+
+    assert dead_unit_fraction(model.policy, observations) < 0.5
+
+    # Drive every trunk output negative; LeakyReLU keeps them non-zero, so
+    # force the layer to a hard zero the way a plain ReLU would.
+    trunk = model.policy.mlp_extractor.policy_net
+    with torch.no_grad():
+        trunk[-2].weight.zero_()
+        trunk[-2].bias.fill_(-50.0)
+    trunk[-1] = torch.nn.ReLU()
+    assert dead_unit_fraction(model.policy, observations) == 1.0
+
+    with torch.no_grad():
+        probabilities = model.policy.get_distribution(observations).distribution.probs
+    assert float(probabilities.std(dim=0).max()) == 0.0, (
+        "a dead trunk must show up as an input-independent policy"
+    )
+
+
+def test_activations_leak_so_a_unit_cannot_die():
+    """A plain ReLU unit that is negative everywhere never gets gradient again."""
+    from dodge.policies import activation
+
+    values = torch.tensor([[-5.0, -0.5, 0.0, 2.0]], requires_grad=True)
+    output = activation()(values)
+    output.sum().backward()
+
+    assert (output[0, :2] != 0).all(), "negative inputs must stay non-zero"
+    assert (values.grad != 0).all(), "every unit must keep a live gradient"
+    assert output[0, 3] == 2.0, "positive inputs pass through unchanged"

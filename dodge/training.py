@@ -24,11 +24,14 @@ from .env import DodgeEnv
 from .observe import FRAME_OBSERVATION_SIZE, FRAME_STACK_SIZE
 from .policies import (ARCHITECTURES, COORDINATE_INPUTS,
                        HYBRID_INPUT_CHANNELS, architecture_name,
-                       policy_kwargs)
+                       dead_unit_fraction, policy_kwargs)
 from .telemetry import DashboardSnapshot, EVENT_KEYS, ModelEntry
 
 
 RATE_WINDOW_SECONDS = 0.5
+
+# Observations drawn from the rollout buffer to judge unit death against.
+DEAD_UNIT_SAMPLES = 512
 
 # Only the convolutional policy is worth moving to a GPU. Measured on a GTX
 # 1070: the hybrid-cnn update runs 5.1x faster there (7.20s -> 1.40s), while the
@@ -302,15 +305,33 @@ class DashboardCallback(BaseCallback):
         except (AttributeError, RuntimeError, TypeError):
             entropy = 0.0
 
+        dead_units = self._dead_unit_fraction()
+
         with self.session.lock:
             data = self.session.data
             data.rollout_progress = 1.0
+            data.dead_units = dead_units
             data.entropy.append(entropy)
             for key, count in self.rollout_events.items():
                 event = data.events[key]
                 event.rollout = count
                 event.history.append(count)
                 self.rollout_events[key] = 0
+
+    def _dead_unit_fraction(self):
+        """Measure policy-trunk death against the rollout the update will use.
+
+        Judged over the whole buffer rather than the last step, since a unit is
+        only dead if nothing in the batch wakes it.
+        """
+        try:
+            observations = self.model.rollout_buffer.observations
+            flat = observations.reshape(-1, observations.shape[-1])
+            sample = flat[::max(1, len(flat) // DEAD_UNIT_SAMPLES)]
+            tensor, _ = self.model.policy.obs_to_tensor(sample)
+            return dead_unit_fraction(self.model.policy, tensor)
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            return 0.0
 
     def _on_training_end(self):
         with self.session.lock:
@@ -330,7 +351,7 @@ class PPOTrainingSession:
         rollout_steps=256,
         difficulty=1,
         patterns=False,
-        powerups=False,
+        powerups=True,
         action_repeat=4,
         architecture="hybrid-cnn",
         device="auto",
@@ -341,6 +362,8 @@ class PPOTrainingSession:
         self.seed = seed
         self.model_dir = Path(model_dir)
         self.logs_dir = Path(logs_dir)
+        if total_steps < 1:
+            raise ValueError("total_steps must be at least 1")
         self.total_steps = total_steps
         if n_envs < 1:
             raise ValueError("n_envs must be at least 1")
@@ -508,26 +531,23 @@ class PPOTrainingSession:
                 self.rollout_steps = self.model.n_steps
                 self.model_architecture = architecture_name(self.model)
                 callback = DashboardCallback(self)
-                self.model.learn(
-                    total_timesteps=self.total_steps,
-                    callback=callback,
-                    reset_num_timesteps=load_path is None,
-                    tb_log_name=self.model_architecture,
-                )
-                if self.shutdown_event.is_set():
-                    break
-                if self.restart_event.is_set():
-                    continue
-
-                latest = self.model_dir / f"{self.model_architecture}-latest"
-                self.model.save(latest)
-                with self.lock:
-                    self.data.status = "complete"
-                    self.data.progress_phase = "complete"
-                    self.data.rollout_progress = 1.0
+                reset_num_timesteps = load_path is None
                 while not self.shutdown_event.is_set() and not self.restart_event.is_set():
-                    self._process_save_requests(self.model)
-                    time.sleep(0.05)
+                    self.model.learn(
+                        total_timesteps=self.total_steps,
+                        callback=callback,
+                        reset_num_timesteps=reset_num_timesteps,
+                        tb_log_name=self.model_architecture,
+                    )
+                    reset_num_timesteps = False
+                    if self.shutdown_event.is_set() or self.restart_event.is_set():
+                        break
+
+                    # Training is open-ended. Each completed chunk is only an
+                    # autosave boundary; the same model and optimizer continue
+                    # immediately into the next chunk.
+                    latest = self.model_dir / f"{self.model_architecture}-latest"
+                    self.model.save(latest)
             except Exception as error:
                 with self.lock:
                     self.data.status = "error"
@@ -694,8 +714,7 @@ class PPOTrainingSession:
         ]
         if self.env_kwargs["patterns"]:
             command.append("--patterns")
-        if self.env_kwargs["powerups"]:
-            command.append("--powerups")
+        command.append("--powerups" if self.env_kwargs["powerups"] else "--no-powerups")
         subprocess.Popen(command, cwd=project)
         self.last_watch_label = f"{model_name} | Update {update} | Seed {seed}"
         return True

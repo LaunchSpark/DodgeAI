@@ -23,6 +23,25 @@ from .observe import (
 ARCHITECTURES = ("hybrid-cnn", "mlp")
 HYBRID_FEATURES_DIM = 160
 
+# Every activation leaks rather than clamping to zero.
+#
+# A plain ReLU unit whose pre-activation is negative for every observation
+# receives exactly zero gradient, so it can never come back. Measured on a
+# 2.3M-step run: 56% of the 160 shared features were permanently dead and
+# *every* unit in the policy trunk was, which left the network emitting one
+# fixed action distribution regardless of what it saw. Nothing in the loss can
+# recover from that, and nothing in the existing telemetry showed it -- entropy
+# stayed near uniform the whole time, because a constant distribution is still
+# a high-entropy one.
+#
+# A small negative slope keeps the gradient alive without changing the shape of
+# anything, so old checkpoints still load.
+NEGATIVE_SLOPE = 0.01
+
+
+def activation():
+    return nn.LeakyReLU(NEGATIVE_SLOPE)
+
 # Hazard channels come first, in the same order and count as before, so a
 # checkpoint trained without the player channels migrates by copying into the
 # leading channels. A convolution learns an arbitrary combination across its
@@ -151,20 +170,20 @@ class DodgeHybridExtractor(BaseFeaturesExtractor):
         super().__init__(observation_space, features_dim=HYBRID_FEATURES_DIM)
         self.grid_net = nn.Sequential(
             nn.Conv2d(HYBRID_INPUT_CHANNELS, 32, kernel_size=3, padding=1),
-            nn.ReLU(),
+            activation(),
             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
-            nn.ReLU(),
+            activation(),
             nn.Conv2d(64, 64, kernel_size=3, stride=2, padding=1),
-            nn.ReLU(),
+            activation(),
             nn.Flatten(),
             nn.Linear(64 * 8 * 8, 128),
-            nn.ReLU(),
+            activation(),
         )
         self.coordinate_net = nn.Sequential(
             nn.Linear(COORDINATE_INPUTS, 32),
-            nn.ReLU(),
+            activation(),
             nn.Linear(32, 32),
-            nn.ReLU(),
+            activation(),
         )
 
     @staticmethod
@@ -204,9 +223,25 @@ def policy_kwargs(architecture):
         return {
             "features_extractor_class": DodgeHybridExtractor,
             "net_arch": {"pi": [128, 64], "vf": [128, 64]},
-            "activation_fn": nn.ReLU,
+            "activation_fn": lambda: nn.LeakyReLU(NEGATIVE_SLOPE),
         }
     raise ValueError(f"Unknown policy architecture: {architecture}")
+
+
+def dead_unit_fraction(policy, observations):
+    """Share of policy-trunk units that output zero for every observation given.
+
+    A unit that is zero across a whole rollout is one a plain ReLU could never
+    revive, and once they all are the policy is a constant. Cheap enough to run
+    once per update, and the only signal that catches this: entropy does not,
+    since a constant distribution can be a high-entropy one.
+    """
+    with torch.no_grad():
+        features = policy.extract_features(observations)
+        if isinstance(features, tuple):     # separate pi/vf extractors
+            features = features[0]
+        latent = policy.mlp_extractor.policy_net(features)
+        return float((latent == 0).all(dim=0).to(torch.float32).mean())
 
 
 def architecture_name(model):

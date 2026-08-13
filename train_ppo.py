@@ -25,7 +25,8 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--difficulty", choices=("easy", "normal", "hard"), default="easy")
     parser.add_argument("--patterns", action="store_true")
-    parser.add_argument("--powerups", action="store_true")
+    parser.add_argument("--powerups", action=argparse.BooleanOptionalAction,
+                        default=True)
     parser.add_argument("--action-repeat", type=int, default=4)
     parser.add_argument("--rollout-steps", type=int, default=256)
     parser.add_argument("--architecture", choices=ARCHITECTURES, default="hybrid-cnn")

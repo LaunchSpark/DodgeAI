@@ -42,6 +42,11 @@ def test_model_list_only_contains_ppo_checkpoints(tmp_path):
     assert session.available_models() == [ModelEntry("one", tmp_path / "one.zip", "PPO")]
 
 
+def test_training_enables_powerups_by_default(tmp_path):
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+    assert session.env_kwargs["powerups"] is True
+
+
 def test_dashboard_ppo_reports_each_learning_minibatch():
     import gymnasium as gym
     from gymnasium import spaces
@@ -108,6 +113,52 @@ def test_live_session_pauses_saves_and_resumes(tmp_path):
     assert not session.worker.is_alive()
 
 
+def test_training_continues_after_autosave_boundary(tmp_path, monkeypatch):
+    from dodge import training
+
+    class StubEnv:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    class StubModel:
+        n_steps = 64
+
+        def __init__(self, session):
+            self.session = session
+            self.learn_calls = []
+            self.saved = []
+
+        def learn(self, **kwargs):
+            self.learn_calls.append(kwargs)
+            if len(self.learn_calls) == 2:
+                self.session.shutdown_event.set()
+            return self
+
+        def save(self, path):
+            self.saved.append(path)
+
+    env = StubEnv()
+    session = training.PPOTrainingSession(
+        model_dir=tmp_path / "models", logs_dir=tmp_path / "logs",
+        total_steps=128, autostart=False, device="cpu",
+    )
+    model = StubModel(session)
+    monkeypatch.setattr(training, "make_vec_env", lambda *args, **kwargs: env)
+    monkeypatch.setattr(training, "architecture_name", lambda value: "hybrid-cnn")
+    monkeypatch.setattr(session, "_new_model", lambda value: model)
+
+    session._run()
+
+    assert len(model.learn_calls) == 2
+    assert [call["reset_num_timesteps"] for call in model.learn_calls] == [True, False]
+    assert model.saved == [tmp_path / "models" / "hybrid-cnn-latest"]
+    assert session.data.status != "complete"
+    assert env.closed
+
+
 def test_watch_uses_unique_update_snapshot_and_random_seed(tmp_path, monkeypatch):
     session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
     saved_paths = []
@@ -133,6 +184,7 @@ def test_watch_uses_unique_update_snapshot_and_random_seed(tmp_path, monkeypatch
     assert command[command.index("--update") + 1] == "37"
     assert command[command.index("--seed") + 1] == "1849201"
     assert command[command.index("--model-name") + 1] == "hybrid-cnn"
+    assert "--powerups" in command
     assert session.last_watch_label == "hybrid-cnn | Update 37 | Seed 1849201"
 
 
@@ -251,6 +303,13 @@ def test_rejects_a_non_positive_env_count(tmp_path):
     from dodge.training import PPOTrainingSession
     with pytest.raises(ValueError):
         PPOTrainingSession(model_dir=tmp_path, n_envs=0, autostart=False, device="cpu")
+
+
+def test_rejects_a_non_positive_training_chunk(tmp_path):
+    from dodge.training import PPOTrainingSession
+    with pytest.raises(ValueError):
+        PPOTrainingSession(model_dir=tmp_path, total_steps=0,
+                           autostart=False, device="cpu")
 
 
 def test_watch_runs_episodes_without_a_frame_cap(tmp_path, monkeypatch):

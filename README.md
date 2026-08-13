@@ -50,7 +50,9 @@ rendered game window. Each watch launch saves an immutable snapshot, chooses a n
 episode seed, and labels the game window with its exact PPO update and seed. The active
 model name is shown in Learning Statistics and carried into the watch snapshot
 filename and window title. Saving names the active in-memory policy; loading changes the
-active policy to the selected model.
+active policy to the selected model. Training continues until the dashboard is closed;
+`--steps` controls how often the current policy is automatically written to its
+`*-latest.zip` checkpoint, not when the session ends.
 
 Every chart spans the whole run rather than a recent window, so improvement stays visible
 as training goes on. Each draws the raw per-episode values faintly beneath a smoothed
@@ -81,6 +83,27 @@ alpha surface for each of eleven chart fills, and by redrawing 2,560 background 
 never change; the overlays are now plot-sized and the backdrop is cached per window size.
 Input is still polled at 60Hz so clicks and drags stay responsive — only the redraw is
 throttled.
+
+### Dead units
+
+Learning Statistics reports the share of the policy trunk that produced zero for
+an entire rollout, amber past 10% and red past a third. It is there because a
+2.3M-step run died silently: 56% of the shared features and **every** unit in the
+policy trunk went permanently zero, so the network emitted one fixed action
+distribution no matter what it saw. Under `deterministic=True` — what Watch Agent
+uses — that distribution's argmax never changes, and the agent stands perfectly
+still.
+
+Nothing else on the dashboard showed it. Reward, steps/second and update count
+all looked normal, and entropy stayed near uniform the whole time, because a
+constant distribution is still a high-entropy one. Only survival time drifted,
+and slowly enough to read as noise.
+
+Every activation is now a `LeakyReLU`, so a unit whose pre-activation is negative
+everywhere still receives gradient and can recover. If dead units climb anyway,
+the next levers are a lower or annealed learning rate and normalising the
+extractor's output; the run to watch is one where the figure rises steadily
+rather than one where it starts high.
 
 ### Reward weights
 
@@ -282,9 +305,10 @@ Install the optional training stack and start the beginner curriculum:
     pip install -r requirements-train.txt
     python train_ppo.py --steps 250000
 
-This defaults to easy difficulty with patterns and powerups disabled. Enable the full game
-incrementally with `--powerups`, `--patterns`, or `--difficulty normal`. Models are written
-to `artifacts/models/` and appear in the dashboard's Models selector.
+This defaults to easy difficulty with powerups enabled and patterns disabled. Add patterns
+with `--patterns`, increase difficulty with `--difficulty normal`, or use `--no-powerups`
+for a stripped-down comparison. Models are written to `artifacts/models/` and appear in
+the dashboard's Models selector.
 
 ## Layout
 

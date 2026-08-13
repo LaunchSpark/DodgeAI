@@ -420,6 +420,20 @@ class DashboardRenderer:
             "cancel": cancel_rect,
         }
 
+    @staticmethod
+    def _dead_unit_color(fraction):
+        """Amber once a tenth of the policy trunk is gone, red past a third.
+
+        Worth its own colour because nothing else on this dashboard shows it:
+        a run whose policy has died keeps producing plausible entropy, reward
+        and step counts while learning nothing at all.
+        """
+        if fraction >= 0.34:
+            return RED
+        if fraction >= 0.10:
+            return YELLOW
+        return TEXT
+
     def _draw_stats(self, surface, rect, data):
         self._card(surface, rect, "Learning Statistics")
         self._text(surface, self.font_title, "Learning Statistics", TEXT,
@@ -435,11 +449,13 @@ class DashboardRenderer:
             ("Steps / second", f"{data.steps_per_second:,.0f}"),
             ("Best game score", f"{data.best_score:.1f}"),
             ("Learning time", format_duration(data.elapsed_seconds)),
+            ("Dead units", f"{data.dead_units:.0%}", self._dead_unit_color(data.dead_units)),
         )
         y = rect.y + 51
-        for label, value in rows:
+        for label, value, *tint in rows:
+            color = tint[0] if tint else TEXT
             self._text(surface, self.font_small, label, MUTED, (rect.x + 13, y))
-            self._text(surface, self.font_small, value, TEXT, (rect.right - 13, y), "topright")
+            self._text(surface, self.font_small, value, color, (rect.right - 13, y), "topright")
             y += 19
         bar = pygame.Rect(rect.x + 13, rect.bottom - 19, rect.w - 26, 5)
         pygame.draw.rect(surface, GRID, bar, border_radius=2)
@@ -927,7 +943,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--steps", type=int, default=250_000,
-                        help="PPO timesteps before automatic completion")
+                        help="PPO timesteps between automatic latest-model saves")
     parser.add_argument("--device", default="auto",
                         help="torch device for the policy update: auto, cpu or cuda")
     parser.add_argument("--envs", type=int, default=8,
@@ -939,7 +955,8 @@ def main(argv=None):
                         default="hybrid-cnn")
     parser.add_argument("--difficulty", choices=("easy", "normal", "hard"), default="easy")
     parser.add_argument("--patterns", action="store_true")
-    parser.add_argument("--powerups", action="store_true")
+    parser.add_argument("--powerups", action=argparse.BooleanOptionalAction,
+                        default=True)
     parser.add_argument("--screenshot", type=Path,
                         help="render one dashboard frame to this PNG and exit")
     args = parser.parse_args(argv)
