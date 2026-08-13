@@ -31,7 +31,9 @@ class EventCount:
 @dataclass
 class DashboardSnapshot:
     status: str = "starting"
-    model_name: str = "hybrid-cnn"
+    # Placeholder only: the session overwrites this from the running
+    # policy name. Kept a literal so this module stays free of torch.
+    model_name: str = "field-cnn"
     update: int = 0
     seed: int = 42
     steps_per_second: float = 0.0

@@ -23,7 +23,16 @@ from .observe import (
 )
 
 
-ARCHITECTURES = ("hybrid-cnn", "field-cnn", "mlp")
+# Ordered best-first; the head of this list is what everything defaults to.
+#
+# field-cnn leads because it is the shape the failures drove us to. It emits a
+# danger field per future instant instead of nine logits, which makes "lethal
+# now, clear in two seconds" expressible -- the sentence a sweeping pattern
+# requires. It sees the whole arena rather than a 44px window, carries a sixth
+# of hybrid-cnn parameters, has no dense layer to die in, and its internal
+# state is a picture you can watch.
+ARCHITECTURES = ("field-cnn", "hybrid-cnn", "mlp")
+DEFAULT_ARCHITECTURE = ARCHITECTURES[0]
 HYBRID_FEATURES_DIM = 160
 
 # Every activation leaks rather than clamping to zero.

@@ -84,6 +84,10 @@ def test_live_session_pauses_saves_and_resumes(tmp_path):
         logs_dir=tmp_path / "logs",
         total_steps=512,
         rollout_steps=64,
+        # This exercises the session lifecycle, not a policy shape. mlp is the
+        # cheapest, and on CPU the default field-cnn takes ~4x longer per
+        # forward because it never downsamples -- enough to time this out.
+        architecture="mlp",
     )
     try:
         # Reward is recorded per finished episode, not per rollout, so wait for
@@ -181,17 +185,19 @@ def test_watch_uses_unique_update_snapshot_and_random_seed(tmp_path, monkeypatch
     assert session.watch_agent()
     assert saved_paths[0].name == ".pending-seed-1849201.zip"
     assert saved_paths[0].parent.name == "watch"
-    final = tmp_path / "watch" / "hybrid-cnn-update-000037-seed-1849201.zip"
+    architecture = session.architecture
+    final = (tmp_path / "watch"
+             / f"{architecture}-update-000037-seed-1849201.zip")
     assert final.exists()
     command = commands[0][0]
     assert command[command.index("--update") + 1] == "37"
     assert command[command.index("--seed") + 1] == "1849201"
-    assert command[command.index("--model-name") + 1] == "hybrid-cnn"
+    assert command[command.index("--model-name") + 1] == architecture
     assert command[command.index("--difficulty") + 1] == "hard"
     assert command[command.index("--action-repeat") + 1] == "7"
     assert "--patterns" in command
     assert "--no-powerups" in command
-    assert session.last_watch_label == "hybrid-cnn | Update 37 | Seed 1849201"
+    assert session.last_watch_label == f"{architecture} | Update 37 | Seed 1849201"
 
 
 def test_game_config_restarts_with_the_live_policy(tmp_path, monkeypatch):

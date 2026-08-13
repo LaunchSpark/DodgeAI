@@ -16,7 +16,7 @@ import pygame
 
 from dodge import rewards
 from dodge.rewards import SLIDERS as REWARD_SLIDERS
-from dodge.policies import ARCHITECTURES
+from dodge.policies import ARCHITECTURES, DEFAULT_ARCHITECTURE
 from dodge.telemetry import PROGRESS_ROWS, sample_snapshot
 
 try:
@@ -754,7 +754,7 @@ class TrainingDashboard:
         self.toast = None
         self.toast_until = 0.0
         self.model_menu_open = False
-        self.model_name = "hybrid-cnn"
+        self.model_name = DEFAULT_ARCHITECTURE
         self.model_entries = []
         self.selected_model = 0
         self.model_offset = 0
@@ -1120,7 +1120,7 @@ def main(argv=None):
                         help="steps per env per PPO update; the buffer holds "
                              "envs * rollout-steps samples (default 8 * 256)")
     parser.add_argument("--architecture", choices=ARCHITECTURES,
-                        default="hybrid-cnn")
+                        default=DEFAULT_ARCHITECTURE)
     parser.add_argument("--difficulty", choices=("easy", "normal", "hard"), default="easy")
     parser.add_argument("--patterns", action="store_true")
     parser.add_argument("--powerups", action=argparse.BooleanOptionalAction,

@@ -11,7 +11,8 @@ from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
 from dodge.env import DodgeEnv
-from dodge.policies import ARCHITECTURES, policy_class, policy_kwargs
+from dodge.policies import (ARCHITECTURES, DEFAULT_ARCHITECTURE,
+                            policy_class, policy_kwargs)
 from dodge.training import minibatch_size
 
 
@@ -29,7 +30,8 @@ def main():
                         default=True)
     parser.add_argument("--action-repeat", type=int, default=4)
     parser.add_argument("--rollout-steps", type=int, default=256)
-    parser.add_argument("--architecture", choices=ARCHITECTURES, default="hybrid-cnn")
+    parser.add_argument("--architecture", choices=ARCHITECTURES,
+                        default=DEFAULT_ARCHITECTURE)
     parser.add_argument("--name", default=None)
     parser.add_argument("--models-dir", type=Path, default=Path("artifacts/models"))
     parser.add_argument("--logs-dir", type=Path, default=Path("artifacts/tensorboard"))

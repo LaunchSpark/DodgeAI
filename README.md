@@ -109,9 +109,10 @@ rather than one where it starts high.
 
 ### Field CNN
 
-A second policy shape, chosen at launch:
+The default policy shape. `--architecture hybrid-cnn` or `mlp` selects the
+others:
 
-    python training_gui.py --architecture field-cnn
+    python training_gui.py --architecture hybrid-cnn
 
 Its checkpoints save, list and load through the dashboard's Models panel
 exactly like `hybrid-cnn`'s. Stable-Baselines3 records the policy class in the
@@ -136,6 +137,7 @@ the player, read the field along those paths, and let the totals be the logits
 | | hybrid-cnn | field-cnn |
 | --- | --- | --- |
 | Parameters | 644,842 | **104,984** |
+| Training throughput | 475 steps/s | 130 steps/s |
 | Largest single layer | `Linear(4096, 128)`, 87% of the model | none over 37k |
 | Output | 9 logits | 32x32 danger field |
 

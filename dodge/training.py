@@ -22,7 +22,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
 from .env import DodgeEnv
 from .observe import FRAME_OBSERVATION_SIZE, FRAME_STACK_SIZE
-from .policies import (ARCHITECTURES, COORDINATE_INPUTS,
+from .policies import (ARCHITECTURES, COORDINATE_INPUTS, DEFAULT_ARCHITECTURE,
                        HYBRID_INPUT_CHANNELS, architecture_name,
                        dead_unit_fraction, policy_class, policy_kwargs)
 from .telemetry import DashboardSnapshot, EVENT_KEYS, ModelEntry
@@ -353,7 +353,7 @@ class PPOTrainingSession:
         patterns=False,
         powerups=True,
         action_repeat=4,
-        architecture="hybrid-cnn",
+        architecture=DEFAULT_ARCHITECTURE,
         device="auto",
         autostart=True,
     ):
