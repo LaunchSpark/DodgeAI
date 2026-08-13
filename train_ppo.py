@@ -11,7 +11,7 @@ from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
 from dodge.env import DodgeEnv
-from dodge.policies import ARCHITECTURES, policy_kwargs
+from dodge.policies import ARCHITECTURES, policy_class, policy_kwargs
 from dodge.training import minibatch_size
 
 
@@ -60,7 +60,7 @@ def main():
         name_prefix=model_name,
     )
     model = PPO(
-        "MlpPolicy",
+        policy_class(args.architecture),
         env,
         learning_rate=3e-4,
         n_steps=args.rollout_steps,

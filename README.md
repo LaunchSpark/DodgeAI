@@ -44,9 +44,11 @@ Start PPO training in the Dodge dashboard:
     python training_gui.py
 
 Training runs on a background thread so the window stays responsive. Pause/Resume controls
-rollout collection, Rewards opens the reward weights, Models saves or loads real
+rollout collection, Rewards opens the reward weights, and Game Config stages difficulty,
+powerups, patterns, and decision-interval changes. Applying game settings checkpoints the
+live policy, rebuilds its environments, and resumes the same model. Models saves or loads real
 Stable-Baselines3 `.zip` checkpoints, and Watch Agent opens the current policy in a second
-rendered game window. Each watch launch saves an immutable snapshot, chooses a new random
+rendered game window with the active game configuration. Each watch launch saves an immutable snapshot, chooses a new random
 episode seed, and labels the game window with its exact PPO update and seed. The active
 model name is shown in Learning Statistics and carried into the watch snapshot
 filename and window title. Saving names the active in-memory policy; loading changes the
@@ -104,6 +106,62 @@ everywhere still receives gradient and can recover. If dead units climb anyway,
 the next levers are a lower or annealed learning rate and normalising the
 extractor's output; the run to watch is one where the figure rises steadily
 rather than one where it starts high.
+
+### Field CNN
+
+`--architecture field-cnn` is a second policy shape. The network's only output
+is a scalar danger per arena cell; it never picks an action. Choosing is
+arithmetic — simulate where each of the nine actions takes the player, read the
+field along those paths, and let the totals be the logits — so every bit of
+learning pressure lands on the field.
+
+| | hybrid-cnn | field-cnn |
+| --- | --- | --- |
+| Parameters | 644,842 | **90,851** |
+| Largest single layer | `Linear(4096, 128)`, 87% of the model | none over 37k |
+| Output | 9 logits | 32x32 danger field |
+
+Three reasons for the shape. It never flattens, so it drops the dense layer
+that held 87% of the hybrid model's weights and was the layer that died.
+Translation equivariance survives to the output, so "dodge a threat closing
+from the left" is learned once rather than separately at each position. And the
+field is a picture, which after a collapse that hid behind healthy-looking
+entropy for two million steps is worth something on its own.
+
+Early results over ten updates are mixed and should not be read as a verdict:
+explained variance is markedly better (0.62-0.77 against 0.33-0.49), while
+survival is behind at that point. Both were still climbing.
+
+Its known ceiling, established by the analytic version below: a scalar over
+positions cannot express pursuit. "Step sideways because it is chasing you" is
+a fact about trajectories, not about any cell. Sampling along each action's
+path recovers part of it; if that binds, the fix is a field conditioned on
+time, not a deeper trunk.
+
+### Gradient bot
+
+    python gradient_bot.py              # measure against random
+    python gradient_bot.py --watch      # play one episode in a window
+
+The same controller reading a hand-written field instead of a learned one, in
+`dodge/gradient.py`. It exists to calibrate: nothing here knew what a good
+survival time was, so no agent's score could be judged.
+
+Its forward model is exact — player and enemy motion both reproduce the cart to
+0.000px over 24 frames, pinned by tests — which is what makes it a useful
+control. When it plays badly, the danger heuristic is at fault and nothing
+else. Two findings came out of it:
+
+* The cart punishes camping ([dodge.lua:711](dodge.lua#L711)). Linger with the
+  player box overlapping 60..68 on both axes for 50 frames and it spawns an
+  enemy at every spawn point. This is invisible in the observation — nothing
+  about four new enemies says they were summoned — and it is why the first
+  version of this bot scored *below* random while standing at the centre. It
+  is also what the old centre-peaked reward was paying the agent to do.
+* Homing must be predicted against the candidate path, not the player's
+  current position. Freezing it there quietly rewards running directly away
+  from a pursuer, because the predicted enemy carries on toward the spot the
+  player has left. Against a chaser the escape is lateral.
 
 ### Reward weights
 

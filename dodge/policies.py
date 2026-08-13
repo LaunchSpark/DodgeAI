@@ -20,7 +20,7 @@ from .observe import (
 )
 
 
-ARCHITECTURES = ("hybrid-cnn", "mlp")
+ARCHITECTURES = ("hybrid-cnn", "field-cnn", "mlp")
 HYBRID_FEATURES_DIM = 160
 
 # Every activation leaks rather than clamping to zero.
@@ -216,9 +216,32 @@ class DodgeHybridExtractor(BaseFeaturesExtractor):
         )
 
 
+def policy_class(architecture):
+    """The SB3 policy class, which is not always the default one.
+
+    field-cnn replaces the action head entirely -- its logits are readings of
+    a danger field rather than a learned projection -- so it needs its own
+    ActorCriticPolicy subclass, not just a features extractor.
+    """
+    if architecture == "field-cnn":
+        from .field import DodgeFieldPolicy
+        return DodgeFieldPolicy
+    return "MlpPolicy"
+
+
 def policy_kwargs(architecture):
     if architecture == "mlp":
         return {}
+    if architecture == "field-cnn":
+        from .field import DodgeFieldExtractor
+        return {
+            "features_extractor_class": DodgeFieldExtractor,
+            # No policy trunk: the field readings are the logits, so anything
+            # between them and the distribution would be a head learning to
+            # second-guess the controller.
+            "net_arch": {"pi": [], "vf": [64]},
+            "activation_fn": lambda: nn.LeakyReLU(NEGATIVE_SLOPE),
+        }
     if architecture == "hybrid-cnn":
         return {
             "features_extractor_class": DodgeHybridExtractor,
@@ -245,6 +268,9 @@ def dead_unit_fraction(policy, observations):
 
 
 def architecture_name(model):
-    if isinstance(model.policy.features_extractor, DodgeHybridExtractor):
+    extractor = model.policy.features_extractor
+    if type(extractor).__name__ == "DodgeFieldExtractor":
+        return "field-cnn"
+    if isinstance(extractor, DodgeHybridExtractor):
         return "hybrid-cnn"
     return "mlp"

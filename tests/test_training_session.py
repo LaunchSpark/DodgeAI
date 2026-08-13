@@ -161,6 +161,9 @@ def test_training_continues_after_autosave_boundary(tmp_path, monkeypatch):
 
 def test_watch_uses_unique_update_snapshot_and_random_seed(tmp_path, monkeypatch):
     session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+    session.env_kwargs.update(
+        difficulty=3, patterns=True, powerups=False, action_repeat=7
+    )
     saved_paths = []
     commands = []
 
@@ -184,8 +187,38 @@ def test_watch_uses_unique_update_snapshot_and_random_seed(tmp_path, monkeypatch
     assert command[command.index("--update") + 1] == "37"
     assert command[command.index("--seed") + 1] == "1849201"
     assert command[command.index("--model-name") + 1] == "hybrid-cnn"
-    assert "--powerups" in command
+    assert command[command.index("--difficulty") + 1] == "hard"
+    assert command[command.index("--action-repeat") + 1] == "7"
+    assert "--patterns" in command
+    assert "--no-powerups" in command
     assert session.last_watch_label == "hybrid-cnn | Update 37 | Seed 1849201"
+
+
+def test_game_config_restarts_with_the_live_policy(tmp_path, monkeypatch):
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+    session.model = object()
+    checkpoint = tmp_path / "runtime" / "game-config.zip"
+    saved = []
+
+    def fake_save(path, return_update=False):
+        saved.append(path)
+        return checkpoint
+
+    monkeypatch.setattr(session, "_save_to_path", fake_save)
+
+    assert session.configure_game(
+        difficulty=3, patterns=True, powerups=False, action_repeat=7
+    )
+    assert saved == [checkpoint]
+    assert session.pending_load == checkpoint
+    assert session.game_config() == {
+        "difficulty": 3,
+        "patterns": True,
+        "powerups": False,
+        "action_repeat": 7,
+    }
+    assert session.data.status == "reconfiguring"
+    assert session.restart_event.is_set()
 
 
 @pytest.mark.parametrize("n_envs,expected", [(1, "DummyVecEnv"), (4, "SubprocVecEnv")])

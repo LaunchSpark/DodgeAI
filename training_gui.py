@@ -57,6 +57,27 @@ EVENT_SPECS = (
     ("deaths", "Deaths", RED),
 )
 
+GAME_DEFAULTS = {
+    "difficulty": 1,
+    "patterns": False,
+    "powerups": True,
+    "action_repeat": 4,
+}
+
+
+@dataclass(frozen=True)
+class GameSliderSpec:
+    name: str
+    label: str
+    minimum: int
+    maximum: int
+
+
+GAME_SLIDERS = (
+    GameSliderSpec("difficulty", "Difficulty", 1, 3),
+    GameSliderSpec("action_repeat", "Decision interval", 1, 8),
+)
+
 
 @lru_cache(maxsize=1)
 def accelerator_name():
@@ -258,6 +279,7 @@ class DashboardRenderer:
         configs = (
             ("Resume" if paused else "Pause", YELLOW, (55, 48, 30)),
             ("Rewards", ORANGE, (46, 32, 24)),
+            ("Game Config", GREEN, (30, 48, 28)),
             ("Watch Agent", WHITE, (48, 48, 46)),
             ("Models", (70, 145, 174), (235, 244, 246)),
         )
@@ -325,6 +347,82 @@ class DashboardRenderer:
                    defaults.center, "center")
         return {"close": close, "defaults": defaults, "tracks": tracks,
                 "modal": modal}
+
+    @staticmethod
+    def _game_value(spec, value):
+        if spec.name == "difficulty":
+            return {1: "Easy", 2: "Normal", 3: "Hard"}[int(value)]
+        return f"{int(value)} frames"
+
+    def draw_game_menu(self, surface, config):
+        veil = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+        veil.fill((0, 0, 0, 165))
+        surface.blit(veil, (0, 0))
+
+        width = min(560, surface.get_width() - 50)
+        height = min(430, surface.get_height() - 50)
+        modal = pygame.Rect(0, 0, width, height)
+        modal.center = surface.get_rect().center
+        self._card(surface, modal)
+        self._text(surface, self.font_title, "Game Configuration", TEXT,
+                   (modal.x + 20, modal.y + 17))
+        close = pygame.Rect(modal.right - 44, modal.y + 9, 34, 34)
+        self._text(surface, self.font_title, "X", MUTED, close.center, "center")
+        self._text(surface, self.font_small,
+                   "Applied together while the current policy continues", MUTED,
+                   (modal.x + 20, modal.y + 47))
+
+        toggles = {}
+        y = modal.y + 78
+        for name, label in (("powerups", "Powerups"), ("patterns", "Patterns")):
+            row = pygame.Rect(modal.x + 20, y, modal.w - 40, 42)
+            self._text(surface, self.font_body, label, TEXT,
+                       (row.x, row.centery), "midleft")
+            switch = pygame.Rect(row.right - 50, row.centery - 12, 50, 24)
+            enabled = bool(config[name])
+            pygame.draw.rect(surface, GREEN if enabled else (66, 64, 60), switch,
+                             border_radius=12)
+            knob_x = switch.right - 12 if enabled else switch.x + 12
+            pygame.draw.circle(surface, WHITE, (knob_x, switch.centery), 9)
+            toggles[name] = row
+            y += 44
+
+        tracks = []
+        y += 10
+        for spec in GAME_SLIDERS:
+            value = int(config[spec.name])
+            self._text(surface, self.font_body, spec.label, TEXT, (modal.x + 20, y))
+            self._text(surface, self.font_body_bold, self._game_value(spec, value), GREEN,
+                       (modal.right - 20, y), "topright")
+            track = pygame.Rect(modal.x + 20, y + 38, modal.w - 40, 6)
+            pygame.draw.rect(surface, (52, 50, 47), track, border_radius=3)
+            span = spec.maximum - spec.minimum
+            fraction = (value - spec.minimum) / span if span else 0.0
+            filled = pygame.Rect(track.x, track.y, int(track.w * fraction), track.h)
+            pygame.draw.rect(surface, GREEN, filled, border_radius=3)
+            knob = (track.x + int(track.w * fraction), track.centery)
+            pygame.draw.circle(surface, WHITE, knob, 8)
+            pygame.draw.circle(surface, GREEN, knob, 8, width=2)
+            tracks.append((spec, track.inflate(0, 26)))
+            y += 67
+
+        defaults = pygame.Rect(modal.x + 20, modal.bottom - 50, 150, 34)
+        cancel = pygame.Rect(modal.right - 226, modal.bottom - 50, 96, 34)
+        apply = pygame.Rect(modal.right - 116, modal.bottom - 50, 96, 34)
+        pygame.draw.rect(surface, (48, 48, 46), defaults, border_radius=6)
+        pygame.draw.rect(surface, (48, 48, 46), cancel, border_radius=6)
+        pygame.draw.rect(surface, GREEN, apply, border_radius=6)
+        self._text(surface, self.font_body_bold, "Restore defaults", WHITE,
+                   defaults.center, "center")
+        self._text(surface, self.font_body_bold, "Cancel", WHITE,
+                   cancel.center, "center")
+        self._text(surface, self.font_body_bold, "Apply", (24, 42, 24),
+                   apply.center, "center")
+        return {
+            "close": close, "defaults": defaults, "cancel": cancel,
+            "apply": apply, "toggles": toggles, "tracks": tracks,
+            "modal": modal,
+        }
 
     def draw_model_menu(self, surface, name, entries, selected_index, offset,
                         name_focused=False, name_cursor=None, name_selected=False):
@@ -600,7 +698,7 @@ class DashboardRenderer:
         # occupied, since a trend line now makes that chart redundant.
         reward_w = int(main_w * 0.62)
 
-        controls_h = 204
+        controls_h = 245
         stats_h = 230
         controls = pygame.Rect(margin, margin, sidebar_w, controls_h)
         stats = pygame.Rect(margin, controls.bottom + gap, sidebar_w, stats_h)
@@ -668,12 +766,42 @@ class TrainingDashboard:
         self.reward_config_path = getattr(self.session, "reward_config_path",
                                           rewards.CONFIG_PATH)
         self.reward_config = rewards.load(self.reward_config_path)
+        self.game_menu_open = False
+        self.game_regions = {}
+        self.game_config = dict(GAME_DEFAULTS)
         self.dragging_slider = None
 
     def _open_rewards(self):
         # Re-read on open so a hand-edited file is what the sliders show.
         self.reward_config = rewards.load(self.reward_config_path)
         self.reward_menu_open = True
+
+    def _open_game_config(self):
+        getter = getattr(self.session, "game_config", None)
+        current = getter() if getter else getattr(self.session, "env_kwargs", {})
+        self.game_config = {**GAME_DEFAULTS, **current}
+        self.game_menu_open = True
+
+    def _set_game_from_position(self, spec, track, position):
+        span = spec.maximum - spec.minimum
+        fraction = (position[0] - track.x) / track.w if track.w else 0.0
+        fraction = min(1.0, max(0.0, fraction))
+        value = round(spec.minimum + fraction * span)
+        self.game_config[spec.name] = min(spec.maximum, max(spec.minimum, value))
+
+    def _apply_game_config(self):
+        configure = getattr(self.session, "configure_game", None)
+        if configure is None:
+            self._show_toast("This training session cannot change game settings")
+            return
+        try:
+            changed = configure(**self.game_config)
+        except (OSError, ValueError) as error:
+            self._show_toast(str(error))
+            return
+        self.game_menu_open = False
+        self._show_toast("Game configuration applied" if changed
+                         else "Game configuration unchanged")
 
     def _set_reward_from_position(self, spec, track, position):
         span = spec.maximum - spec.minimum
@@ -755,6 +883,32 @@ class TrainingDashboard:
         self._show_toast(f"Loaded {entry.name}")
 
     def _click(self, position):
+        if self.game_menu_open:
+            regions = self.game_regions
+            empty = pygame.Rect(0, 0, 0, 0)
+            if regions.get("close", empty).collidepoint(position) or \
+                    regions.get("cancel", empty).collidepoint(position):
+                self.game_menu_open = False
+                return
+            if regions.get("defaults", empty).collidepoint(position):
+                self.game_config = dict(GAME_DEFAULTS)
+                return
+            if regions.get("apply", empty).collidepoint(position):
+                self._apply_game_config()
+                return
+            for name, row in regions.get("toggles", {}).items():
+                if row.collidepoint(position):
+                    self.game_config[name] = not self.game_config[name]
+                    return
+            for spec, track in regions.get("tracks", []):
+                if track.collidepoint(position):
+                    self.dragging_slider = ("game", spec, track)
+                    self._set_game_from_position(spec, track, position)
+                    return
+            if not regions.get("modal", empty).collidepoint(position):
+                self.game_menu_open = False
+            return
+
         if self.reward_menu_open:
             regions = self.reward_regions
             if regions.get("close", pygame.Rect(0, 0, 0, 0)).collidepoint(position):
@@ -767,7 +921,7 @@ class TrainingDashboard:
                 return
             for spec, track in regions.get("tracks", []):
                 if track.collidepoint(position):
-                    self.dragging_slider = (spec, track)
+                    self.dragging_slider = ("reward", spec, track)
                     self._set_reward_from_position(spec, track, position)
                     return
             if not regions.get("modal", pygame.Rect(0, 0, 0, 0)).collidepoint(position):
@@ -800,6 +954,8 @@ class TrainingDashboard:
                 self.session.toggle_pause()
             elif button.name == "Rewards":
                 self._open_rewards()
+            elif button.name == "Game Config":
+                self._open_game_config()
             elif button.name == "Watch Agent":
                 if self.session.watch_agent():
                     label = getattr(self.session, "last_watch_label", None)
@@ -859,7 +1015,7 @@ class TrainingDashboard:
     def draw(self):
         toast = self.toast if time.monotonic() < self.toast_until else None
         lock = getattr(self.session, "lock", nullcontext())
-        modal_open = self.model_menu_open or self.reward_menu_open
+        modal_open = self.model_menu_open or self.reward_menu_open or self.game_menu_open
         # Copy under the lock, draw outside it. The PPO callback takes this
         # same lock on every step, so rendering while holding it left the
         # trainer -- and all eight environment processes behind it -- waiting
@@ -870,6 +1026,12 @@ class TrainingDashboard:
         if self.reward_menu_open:
             self.reward_regions = self.renderer.draw_reward_menu(
                 self.surface, self.reward_config, self.reward_config_path
+            )
+            if toast:
+                self.renderer._draw_toast(self.surface, toast)
+        if self.game_menu_open:
+            self.game_regions = self.renderer.draw_game_menu(
+                self.surface, self.game_config
             )
             if toast:
                 self.renderer._draw_toast(self.surface, toast)
@@ -903,6 +1065,8 @@ class TrainingDashboard:
                             self._model_key(event)
                         elif self.reward_menu_open and event.key == pygame.K_ESCAPE:
                             self.reward_menu_open = False
+                        elif self.game_menu_open and event.key == pygame.K_ESCAPE:
+                            self.game_menu_open = False
                         elif event.key == pygame.K_ESCAPE:
                             running = False
                     elif event.type == pygame.TEXTINPUT and self.model_menu_open:
@@ -912,8 +1076,11 @@ class TrainingDashboard:
                     elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                         self.dragging_slider = None
                     elif event.type == pygame.MOUSEMOTION and self.dragging_slider:
-                        spec, track = self.dragging_slider
-                        self._set_reward_from_position(spec, track, event.pos)
+                        kind, spec, track = self.dragging_slider
+                        if kind == "reward":
+                            self._set_reward_from_position(spec, track, event.pos)
+                        else:
+                            self._set_game_from_position(spec, track, event.pos)
                     elif event.type == pygame.MOUSEWHEEL and self.model_menu_open:
                         max_offset = max(0, len(self.model_entries) - 5)
                         self.model_offset = max(0, min(max_offset,

@@ -93,6 +93,13 @@ class _StubSession:
     def __init__(self, reward_config_path):
         self.data = sample_snapshot()
         self.reward_config_path = reward_config_path
+        self.env_kwargs = {
+            "difficulty": 1,
+            "patterns": False,
+            "powerups": True,
+            "action_repeat": 4,
+        }
+        self.configured = []
 
     def tick(self, dt):
         pass
@@ -102,6 +109,14 @@ class _StubSession:
 
     def available_models(self):
         return []
+
+    def game_config(self):
+        return dict(self.env_kwargs)
+
+    def configure_game(self, **config):
+        self.env_kwargs = dict(config)
+        self.configured.append(dict(config))
+        return True
 
 
 def _dashboard(tmp_path):
@@ -120,6 +135,38 @@ def test_reset_button_is_replaced_by_rewards():
     names = [button.name for button in renderer.buttons]
     assert "Rewards" in names
     assert "Reset" not in names
+
+
+def test_game_config_button_is_directly_below_rewards():
+    pygame.font.init()
+    renderer = DashboardRenderer()
+    renderer.render(pygame.Surface(WINDOW_SIZE), sample_snapshot())
+    names = [button.name for button in renderer.buttons]
+    assert names.index("Game Config") == names.index("Rewards") + 1
+
+
+def test_game_config_applies_toggles_and_discrete_sliders(tmp_path):
+    from training_gui import TrainingDashboard
+
+    session = _StubSession(tmp_path / "rewards.json")
+    dashboard = TrainingDashboard(session, hidden=True)
+    dashboard._open_game_config()
+    dashboard.draw()
+
+    dashboard._click(dashboard.game_regions["toggles"]["powerups"].center)
+    dashboard._click(dashboard.game_regions["toggles"]["patterns"].center)
+    for spec, track in dashboard.game_regions["tracks"]:
+        dashboard._click((track.right - 1, track.centery))
+    dashboard._click(dashboard.game_regions["apply"].center)
+
+    assert session.configured == [{
+        "difficulty": 3,
+        "patterns": True,
+        "powerups": False,
+        "action_repeat": 8,
+    }]
+    assert not dashboard.game_menu_open
+    pygame.quit()
 
 
 def test_reward_panel_offers_a_slider_for_every_weight(tmp_path):

@@ -24,7 +24,7 @@ from .env import DodgeEnv
 from .observe import FRAME_OBSERVATION_SIZE, FRAME_STACK_SIZE
 from .policies import (ARCHITECTURES, COORDINATE_INPUTS,
                        HYBRID_INPUT_CHANNELS, architecture_name,
-                       dead_unit_fraction, policy_kwargs)
+                       dead_unit_fraction, policy_class, policy_kwargs)
 from .telemetry import DashboardSnapshot, EVENT_KEYS, ModelEntry
 
 
@@ -37,7 +37,7 @@ DEAD_UNIT_SAMPLES = 512
 # 1070: the hybrid-cnn update runs 5.1x faster there (7.20s -> 1.40s), while the
 # MLP is unchanged (0.686s -> 0.693s) because its layers are too small to cover
 # the transfer and launch overhead. Stable-Baselines3 warns about exactly this.
-GPU_ARCHITECTURES = ("hybrid-cnn",)
+GPU_ARCHITECTURES = ("hybrid-cnn", "field-cnn")
 
 
 def resolve_device(device, architecture):
@@ -436,7 +436,9 @@ class PPOTrainingSession:
 
     def _build_model(self, env, architecture):
         return DashboardPPO(
-            "MlpPolicy",
+            # field-cnn replaces the action head, so it needs its own policy
+            # class rather than only a features extractor.
+            policy_class(architecture),
             env,
             learning_rate=3e-4,
             n_steps=self.rollout_steps,
@@ -514,12 +516,13 @@ class PPOTrainingSession:
             with self.lock:
                 load_path = self.pending_load
                 self.pending_load = None
+                env_kwargs = dict(self.env_kwargs)
             self._clear_snapshot("loading" if load_path else "starting")
             env = make_vec_env(
                 DodgeEnv,
                 n_envs=self.n_envs,
                 seed=self.seed,
-                env_kwargs=self.env_kwargs,
+                env_kwargs=env_kwargs,
                 # DummyVecEnv steps envs sequentially in this process, which
                 # gives varied experience but no CPU parallelism. Each Dodge env
                 # runs its own LuaJIT machine, so real processes are what make
@@ -679,6 +682,44 @@ class PPOTrainingSession:
         self.restart_event.set()
         return entry.path
 
+    def game_config(self):
+        with self.lock:
+            return dict(self.env_kwargs)
+
+    def configure_game(self, *, difficulty, patterns, powerups, action_repeat):
+        """Rebuild the games around the current policy with new mechanics."""
+        difficulty = int(difficulty)
+        action_repeat = int(action_repeat)
+        if difficulty not in (1, 2, 3):
+            raise ValueError("Difficulty must be easy, normal, or hard")
+        if not 1 <= action_repeat <= 8:
+            raise ValueError("Decision interval must be between 1 and 8 frames")
+        config = {
+            "difficulty": difficulty,
+            "patterns": bool(patterns),
+            "powerups": bool(powerups),
+            "action_repeat": action_repeat,
+        }
+        with self.lock:
+            if config == self.env_kwargs:
+                return False
+
+        # A restart normally constructs a fresh model. Save and queue the live
+        # policy so only the environments change; SB3 restores its optimizer,
+        # timestep count, and update count with the checkpoint.
+        checkpoint = None
+        if self.model is not None:
+            checkpoint = self._save_to_path(
+                self.model_dir / "runtime" / "game-config.zip"
+            )
+        self.pause_event.clear()
+        with self.lock:
+            self.env_kwargs = config
+            self.pending_load = checkpoint
+            self.data.status = "reconfiguring"
+        self.restart_event.set()
+        return True
+
     def watch_agent(self):
         with self.lock:
             model_name = self.active_model_name
@@ -695,8 +736,9 @@ class PPOTrainingSession:
         temporary.replace(path)
         with self.lock:
             self.data.update = update
+            game_config = dict(self.env_kwargs)
         project = Path(__file__).resolve().parents[1]
-        difficulty = {1: "easy", 2: "normal", 3: "hard"}[self.env_kwargs["difficulty"]]
+        difficulty = {1: "easy", 2: "normal", 3: "hard"}[game_config["difficulty"]]
         command = [
             sys.executable,
             str(project / "watch_ppo.py"),
@@ -704,7 +746,7 @@ class PPOTrainingSession:
             "--difficulty",
             difficulty,
             "--action-repeat",
-            str(self.env_kwargs["action_repeat"]),
+            str(game_config["action_repeat"]),
             "--update",
             str(update),
             "--seed",
@@ -712,9 +754,9 @@ class PPOTrainingSession:
             "--model-name",
             model_name,
         ]
-        if self.env_kwargs["patterns"]:
+        if game_config["patterns"]:
             command.append("--patterns")
-        command.append("--powerups" if self.env_kwargs["powerups"] else "--no-powerups")
+        command.append("--powerups" if game_config["powerups"] else "--no-powerups")
         subprocess.Popen(command, cwd=project)
         self.last_watch_label = f"{model_name} | Update {update} | Seed {seed}"
         return True
