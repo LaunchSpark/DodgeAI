@@ -58,44 +58,62 @@ def _sense_features(coordinates, grids):
     """
     batch = coordinates.shape[0]
     device, dtype = coordinates.device, coordinates.dtype
-    player = coordinates.reshape(batch, FRAME_STACK_SIZE, 2) * ((ARENA_SIZE - 1) / CELL_SIZE)
+    scale = float(GRID_SIZE)
+    player = coordinates.reshape(batch, FRAME_STACK_SIZE, 2) \
+        * ((ARENA_SIZE - 1) / CELL_SIZE)
 
-    axis = torch.arange(GRID_SIZE, device=device, dtype=dtype)
-    cell_x = axis.reshape(1, 1, GRID_SIZE).expand(1, GRID_SIZE, GRID_SIZE)
-    cell_y = axis.reshape(1, GRID_SIZE, 1).expand(1, GRID_SIZE, GRID_SIZE)
+    # Both frames are handled in one batched pass rather than a Python loop.
+    # At the batch sizes rollout collection uses, this is dominated by kernel
+    # launches, not arithmetic, so the number of operations is what costs.
+    cell_x, cell_y, lethal_index = _grid_axes(device, dtype)
+    hazard = grids[:, :HAZARD_CHANNELS].reshape(
+        batch, FRAME_STACK_SIZE, CELL_TYPES, GRID_SIZE, GRID_SIZE)
+    occupied = hazard.index_select(2, lethal_index).amax(dim=2) > 0
 
-    offsets, distances = [], []
-    for frame in range(FRAME_STACK_SIZE):
-        base = frame * CELL_TYPES
-        lethal = sum(grids[:, base + offset] for offset in LETHAL_OFFSETS)
-        occupied = lethal > 0
+    dx = cell_x - player[:, :, 0].reshape(batch, FRAME_STACK_SIZE, 1, 1)
+    dy = cell_y - player[:, :, 1].reshape(batch, FRAME_STACK_SIZE, 1, 1)
+    # Squared distance is enough to find the nearest cell; the square root is
+    # then taken once per frame instead of once per cell.
+    squared = dx * dx + dy * dy
+    beyond = float(GRID_SIZE * GRID_SIZE * 16)
+    masked = torch.where(occupied, squared, squared.new_full((), beyond))
+    best, index = masked.reshape(batch, FRAME_STACK_SIZE, -1).min(dim=2)
 
-        dx = cell_x - player[:, frame, 0].reshape(batch, 1, 1)
-        dy = cell_y - player[:, frame, 1].reshape(batch, 1, 1)
-        distance = torch.sqrt(dx * dx + dy * dy)
-        # Empty cells are pushed past any real distance so they never win the
-        # minimum; a frame with no threat at all reports FAR_AWAY.
-        masked = torch.where(occupied, distance,
-                             torch.full_like(distance, GRID_SIZE * FAR_AWAY))
-        flat = masked.reshape(batch, -1)
-        best, index = flat.min(dim=1)
-        nearest_x = (index % GRID_SIZE).to(dtype) - player[:, frame, 0]
-        nearest_y = torch.div(index, GRID_SIZE, rounding_mode="floor").to(dtype) \
-            - player[:, frame, 1]
+    empty = best >= beyond
+    distance = torch.where(empty, best.new_full((), FAR_AWAY),
+                           torch.sqrt(best.clamp(max=beyond - 1.0)) / scale)
+    nearest_x = (index % GRID_SIZE).to(dtype) - player[:, :, 0]
+    nearest_y = torch.div(index, GRID_SIZE, rounding_mode="floor").to(dtype) \
+        - player[:, :, 1]
+    zero = nearest_x.new_zeros(())
+    nearest_x = torch.where(empty, zero, nearest_x / scale)
+    nearest_y = torch.where(empty, zero, nearest_y / scale)
 
-        empty = best > GRID_SIZE * 2
-        scale = float(GRID_SIZE)
-        offsets.append(torch.stack((
-            torch.where(empty, torch.zeros_like(nearest_x), nearest_x / scale),
-            torch.where(empty, torch.zeros_like(nearest_y), nearest_y / scale),
-        ), dim=1))
-        distances.append(torch.where(empty, torch.full_like(best, FAR_AWAY),
-                                     best / scale))
+    velocity = (player[:, -1] - player[:, 0]) / scale
+    closing = (distance[:, 0] - distance[:, -1]).unsqueeze(1)
+    return torch.cat((
+        velocity,
+        nearest_x[:, -1].unsqueeze(1), nearest_y[:, -1].unsqueeze(1),
+        distance[:, -1].unsqueeze(1), closing,
+    ), dim=1)
 
-    velocity = (player[:, -1] - player[:, 0]) / GRID_SIZE
-    closing = (distances[0] - distances[-1]).unsqueeze(1)
-    return torch.cat((velocity, offsets[-1], distances[-1].unsqueeze(1), closing),
-                     dim=1)
+
+_GRID_AXIS_CACHE = {}
+
+
+def _grid_axes(device, dtype):
+    """Cell coordinate grids and the lethal channel index, built once per device."""
+    key = (device, dtype)
+    cached = _GRID_AXIS_CACHE.get(key)
+    if cached is None:
+        axis = torch.arange(GRID_SIZE, device=device, dtype=dtype)
+        cached = (
+            axis.reshape(1, 1, 1, GRID_SIZE),
+            axis.reshape(1, 1, GRID_SIZE, 1),
+            torch.tensor(LETHAL_OFFSETS, device=device, dtype=torch.long),
+        )
+        _GRID_AXIS_CACHE[key] = cached
+    return cached
 
 
 def _player_channels(coordinates, dtype):
