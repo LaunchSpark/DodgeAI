@@ -410,3 +410,31 @@ def test_checkpoint_without_player_channels_migrates(tmp_path):
                                state[GRID_CONV_WEIGHT])
     assert weight[:, HAZARD_CHANNELS:].abs().sum() > 0, "player weights initialised"
     assert model.num_timesteps == 4242
+
+
+@pytest.mark.parametrize("n_envs,rollout_steps,expected", [
+    (8, 64, 64),     # buffer 512 comfortably exceeds the target minibatch
+    (16, 32, 64),    # buffer is still 512 even though each env is short
+    (1, 8, 8),       # genuinely small buffer must clamp
+])
+def test_minibatch_size_follows_the_whole_buffer(tmp_path, monkeypatch,
+                                                 n_envs, rollout_steps, expected):
+    """The buffer is n_envs * rollout_steps, so clamping to steps alone was
+    shrinking the minibatch whenever envs were traded for steps."""
+    from dodge import training
+
+    captured = {}
+
+    class Recorder(training.DashboardPPO):
+        def __init__(self, *args, **kwargs):
+            captured.update(kwargs)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(training, "DashboardPPO", Recorder)
+    session = training.PPOTrainingSession(
+        model_dir=tmp_path, logs_dir=tmp_path, n_envs=n_envs,
+        rollout_steps=rollout_steps, autostart=False, device="cpu",
+    )
+    session._new_model(_matching_vec_env(n_envs))
+    assert captured["n_steps"] == rollout_steps
+    assert captured["batch_size"] == expected

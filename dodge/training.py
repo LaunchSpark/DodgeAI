@@ -316,8 +316,8 @@ class PPOTrainingSession:
         model_dir=Path("artifacts/models"),
         logs_dir=Path("artifacts/tensorboard"),
         total_steps=250_000,
-        n_envs=4,
-        rollout_steps=128,
+        n_envs=8,
+        rollout_steps=64,
         difficulty=1,
         patterns=False,
         powerups=False,
@@ -334,10 +334,13 @@ class PPOTrainingSession:
         self.total_steps = total_steps
         if n_envs < 1:
             raise ValueError("n_envs must be at least 1")
-        # PPO's buffer is n_envs * rollout_steps samples per update. The
-        # defaults keep that at 512 while collecting it from four independently
-        # seeded games, so each game only advances 128 decisions before the
-        # policy learns and openings stay varied.
+        # PPO's buffer is n_envs * rollout_steps samples per update, held at
+        # 512 by the defaults. Environments are favoured over steps because
+        # collection makes one forward pass per step regardless of batch size,
+        # and at these sizes that pass is dominated by kernel launches: eight
+        # envs halve the number of passes without changing the simulation work.
+        # Not pushed further because at 32 steps GAE starts leaning on the
+        # critic, which is currently the weak part.
         self.n_envs = n_envs
         self.rollout_steps = rollout_steps
         self.architecture = architecture
@@ -394,7 +397,11 @@ class PPOTrainingSession:
             env,
             learning_rate=3e-4,
             n_steps=self.rollout_steps,
-            batch_size=min(64, self.rollout_steps),
+            # The buffer holds n_envs * rollout_steps samples, so the guard has
+            # to account for both. Clamping to rollout_steps alone shrank the
+            # minibatch whenever envs were traded for steps, which multiplies
+            # the number of optimizer passes for no reason.
+            batch_size=min(64, self.n_envs * self.rollout_steps),
             n_epochs=10,
             gamma=0.995,
             gae_lambda=0.95,

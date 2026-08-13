@@ -877,9 +877,9 @@ def main(argv=None):
                         help="PPO timesteps before automatic completion")
     parser.add_argument("--device", default="auto",
                         help="torch device for the policy update: auto, cpu or cuda")
-    parser.add_argument("--envs", type=int, default=4,
+    parser.add_argument("--envs", type=int, default=8,
                         help="games stepped in parallel processes (default 4)")
-    parser.add_argument("--rollout-steps", type=int, default=128,
+    parser.add_argument("--rollout-steps", type=int, default=64,
                         help="steps per env per PPO update; the buffer holds "
                              "envs * rollout-steps samples (default 4 * 128)")
     parser.add_argument("--architecture", choices=("hybrid-cnn", "mlp"),

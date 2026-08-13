@@ -19,14 +19,14 @@ def main():
     parser.add_argument("--steps", type=int, default=250_000)
     parser.add_argument("--device", default="auto",
                         help="torch device for the policy update")
-    parser.add_argument("--envs", type=int, default=4,
+    parser.add_argument("--envs", type=int, default=8,
                         help="games stepped in parallel processes (default 4)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--difficulty", choices=("easy", "normal", "hard"), default="easy")
     parser.add_argument("--patterns", action="store_true")
     parser.add_argument("--powerups", action="store_true")
     parser.add_argument("--action-repeat", type=int, default=4)
-    parser.add_argument("--rollout-steps", type=int, default=512)
+    parser.add_argument("--rollout-steps", type=int, default=64)
     parser.add_argument("--architecture", choices=ARCHITECTURES, default="hybrid-cnn")
     parser.add_argument("--name", default=None)
     parser.add_argument("--models-dir", type=Path, default=Path("artifacts/models"))

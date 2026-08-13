@@ -126,22 +126,36 @@ the cycle rather than a fifth, so it is the next thing worth optimising.
 
 ### Parallel environments
 
-Training defaults to four games stepped in parallel processes:
+Training defaults to eight games stepped in parallel processes:
 
-    python training_gui.py --envs 4 --rollout-steps 128
+    python training_gui.py --envs 8 --rollout-steps 64
 
-PPO's buffer holds `envs * rollout-steps` samples per update, so those defaults keep the
-update size at 512 while gathering it from four independently seeded games. Each game
-advances only 128 decisions before the policy learns, which keeps openings varied.
+PPO's buffer holds `envs * rollout-steps` samples per update, which the defaults
+keep at 512. Environments are favoured over steps for a reason that is not about
+simulation: collection makes **one forward pass per step regardless of batch
+size**, and at these sizes that pass is dominated by kernel launches rather than
+arithmetic. Halving the steps and doubling the envs therefore halves the number
+of passes while the simulation work is unchanged.
 
-Environments run in separate processes (`SubprocVecEnv`). This matters because every Dodge
-environment hosts its own LuaJIT machine: stepping them in one process would diversify
-experience without adding throughput. Measured on a 4-core machine, four environments run
-about 2.5x the steps per second of one — short of 4x, since process overhead and the
-policy update are not parallelised.
+Measured at a constant 512-sample buffer, with the update time identical
+throughout:
 
-Raising `--envs` past the core count tends to cost more than it returns. The dashboard's
-steps/second readout is the number to watch when trying other values.
+| Envs x steps | Collect | Full cycle | Throughput |
+| --- | --- | --- | --- |
+| 4 x 128 | 0.92s | 2.13s | 241 steps/s |
+| 8 x 64 | 0.53s | 1.73s | 296 steps/s |
+| 16 x 32 | 0.44s | 1.64s | 313 steps/s |
+
+16 environments is fastest but is not the default, because shortening the
+rollout costs advantage quality. With `gamma=0.995` and `gae_lambda=0.95` the
+advantage weight halves every 12 steps, so a 64-step rollout captures 97.3% of
+it before bootstrapping, while 32 steps captures only 83.5% — pushing a sixth of
+the advantage onto the critic, currently the weakest part of the system. Six
+percent more throughput is not worth that.
+
+Environments run in separate processes (`SubprocVecEnv`); stepping them in one
+process would diversify experience without adding throughput, since every Dodge
+environment hosts its own LuaJIT machine.
 
 ## PPO bots
 
