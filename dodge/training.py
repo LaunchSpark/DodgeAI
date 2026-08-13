@@ -319,12 +319,22 @@ class PPOTrainingSession:
         )
 
     def _load_model(self, path, env):
+        # Loaded without an env first, because a legacy checkpoint's observation
+        # space may not match and load(path, env=...) rejects that outright.
         source = DashboardPPO.load(path, device="cpu")
-        source.set_learning_tracker(self._track_learning)
-        if source.observation_space == env.observation_space:
-            source.set_env(env)
-            return source
-        return migrate_single_frame_policy(source, self._new_model(env, architecture="mlp"))
+        if source.observation_space != env.observation_space:
+            source.set_learning_tracker(self._track_learning)
+            return migrate_single_frame_policy(
+                source, self._new_model(env, architecture="mlp")
+            )
+
+        # Rebound by loading again with the env rather than by set_env, which
+        # asserts the checkpoint was trained on the same number of environments.
+        # Without this, changing --envs makes every existing checkpoint
+        # unloadable. The second read costs well under a second.
+        model = DashboardPPO.load(path, env=env, device="cpu")
+        model.set_learning_tracker(self._track_learning)
+        return model
 
     def _clear_snapshot(self, status="starting"):
         with self.lock:

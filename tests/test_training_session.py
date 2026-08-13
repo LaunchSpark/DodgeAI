@@ -162,6 +162,50 @@ def test_parallel_envs_use_separate_processes(tmp_path, monkeypatch, n_envs, exp
     assert captured["vec_env_cls"].__name__ == expected
 
 
+def _matching_vec_env(n_envs):
+    """A VecEnv with Dodge's spaces but no PICO-8 machine, for load tests."""
+    import gymnasium as gym
+    from gymnasium import spaces
+    from stable_baselines3.common.vec_env import DummyVecEnv
+
+    class SpacesOnlyEnv(gym.Env):
+        def __init__(self):
+            self.observation_space = spaces.Box(0.0, 1.0, (OBSERVATION_SIZE,),
+                                                dtype=np.float32)
+            self.action_space = spaces.Discrete(9)
+
+        def reset(self, *, seed=None, options=None):
+            super().reset(seed=seed)
+            return np.zeros(OBSERVATION_SIZE, dtype=np.float32), {}
+
+        def step(self, action):
+            return (np.zeros(OBSERVATION_SIZE, dtype=np.float32),
+                    0.0, False, False, {})
+
+    return DummyVecEnv([SpacesOnlyEnv for _ in range(n_envs)])
+
+
+@pytest.mark.parametrize("saved_envs,loaded_envs", [(1, 4), (4, 1), (4, 4)])
+def test_checkpoint_loads_into_a_different_env_count(tmp_path, saved_envs, loaded_envs):
+    """A checkpoint must not be locked to the env count that produced it.
+
+    set_env asserts the counts match, so changing --envs would otherwise make
+    every existing checkpoint unloadable.
+    """
+    from dodge.training import DashboardPPO, PPOTrainingSession
+
+    saved = DashboardPPO("MlpPolicy", _matching_vec_env(saved_envs),
+                         n_steps=8, batch_size=8, n_epochs=1, device="cpu")
+    path = tmp_path / "checkpoint.zip"
+    saved.save(path)
+
+    session = PPOTrainingSession(model_dir=tmp_path, logs_dir=tmp_path,
+                                 n_envs=loaded_envs, autostart=False)
+    model = session._load_model(path, _matching_vec_env(loaded_envs))
+    assert model.n_envs == loaded_envs
+    assert model.get_env().num_envs == loaded_envs
+
+
 def test_rejects_a_non_positive_env_count(tmp_path):
     from dodge.training import PPOTrainingSession
     with pytest.raises(ValueError):
