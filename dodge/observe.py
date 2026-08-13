@@ -12,6 +12,23 @@ CELL_COUNT = GRID_SIZE * GRID_SIZE
 CELL_TYPES = 8
 FRAME_OBSERVATION_SIZE = 2 + CELL_COUNT
 FRAME_STACK_SIZE = 2
+
+# How many decisions back the older of the two observed frames is taken from.
+#
+# The observation is still two frames; this is the gap between them. At one
+# decision (4 game frames) every moving thing in the game covers less than a
+# single 4px cell -- enemies 0.54-0.74 cells, pattern bars 0.70, the player
+# 0.80 -- so the categorical grid usually shows no change at all and hazard
+# motion is quantised out of the observation entirely. At two decisions
+# everything lands at 1.1-1.6 cells, which is unambiguous, while the worst case
+# in the game (the player at p99 on hard) is only 3.9 cells, far short of any
+# correspondence problem.
+#
+# The player's own motion is exact either way, since its coordinates are floats.
+# This is entirely about enemies and pattern bars, whose movement is visible
+# only through the grid.
+DECISION_LOOKBACK = 2
+
 OBSERVATION_SIZE = FRAME_OBSERVATION_SIZE * FRAME_STACK_SIZE
 
 EMPTY = 0

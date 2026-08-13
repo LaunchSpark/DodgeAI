@@ -360,9 +360,37 @@ policy play.
 
 ## PPO bots
 
-Both architectures observe the previous and current decision frames, ordered previous
-then current. The snapshots are separated by `action_repeat` game frames, giving the
-policy a clearer movement signal than two consecutive 1/60-second frames.
+### Observation lookback
+
+The observation is two frames, and they are `DECISION_LOOKBACK` decisions
+apart — two by default, so eight game frames at the standard interval. The
+older frame is a full lookback behind; the current one is always current, so
+nothing about the present is stale.
+
+One decision was too short to show motion at all. Measured across the
+difficulties, in 4px cells moved per gap:
+
+| | 1 decision | 2 decisions |
+| --- | --- | --- |
+| Enemy (easy → hard) | 0.54 → 0.74 | 1.07 → 1.48 |
+| Pattern bar | 0.70 | 1.40 |
+| Player | 0.80 | 1.62 |
+
+Everything moved less than one cell, so the categorical grid usually showed no
+change and hazard motion was quantised out of the observation entirely. At two
+decisions everything lands at 1.1–1.6 cells. The worst case in the game — the
+player at p99 on hard — is 3.9 cells, far short of any correspondence problem
+for a field that now sees 32.
+
+This is only about hazards. The player's coordinates are floats, so its own
+motion was always exact; enemies and bars are visible only through the grid.
+The derived `velocity` and `closing` features are reported *per decision*
+rather than per gap, so their units do not move when the lookback or the
+decision interval changes.
+
+### Architectures
+
+Both architectures read that same pair of frames, ordered older then current.
 Each frame contains the player's normalized `x, y` coordinates followed by a flattened
 `32 x 32` categorical map. The arena therefore has 1,024 four-pixel cells and the complete
 two-frame observation contains 2,052 values. Cells identify enemies, pickups, pattern

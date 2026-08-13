@@ -174,11 +174,16 @@ def test_sense_features_report_threat_geometry_and_closing_speed():
     coordinates, grids = DodgeHybridExtractor.policy_inputs(obs)
     vx, vy, nx, ny, distance, closing = _sense_features(coordinates, grids)[0]
 
+    from dodge.observe import DECISION_LOOKBACK
+
     assert nx * GRID_SIZE == pytest.approx(3.0)
     assert ny * GRID_SIZE == pytest.approx(0.0)
     assert distance * GRID_SIZE == pytest.approx(3.0)
-    # Five cells away, then three: closing at two cells per decision.
-    assert closing * GRID_SIZE == pytest.approx(2.0)
+    # Five cells away, then three, across a gap of DECISION_LOOKBACK decisions.
+    # Reported per decision so the number means the same thing whatever the
+    # lookback is -- otherwise the same real speed reads differently after a
+    # change to it.
+    assert closing * GRID_SIZE == pytest.approx(2.0 / DECISION_LOOKBACK)
 
 
 def test_pickups_are_not_treated_as_threats():
@@ -206,10 +211,30 @@ def test_velocity_comes_from_the_two_decision_frames():
     obs[0, FRAME_OBSERVATION_SIZE] = 68.0 / 127.0
     obs[0, FRAME_OBSERVATION_SIZE + 1] = 64.0 / 127.0
 
+    from dodge.observe import DECISION_LOOKBACK
+
     coordinates, grids = DodgeHybridExtractor.policy_inputs(obs)
     vx, vy = _sense_features(coordinates, grids)[0][:2]
-    assert vx * GRID_SIZE == pytest.approx(2.0)   # 8px right = 2 cells
+    # 8px right = 2 cells, spread over DECISION_LOOKBACK decisions.
+    assert vx * GRID_SIZE == pytest.approx(2.0 / DECISION_LOOKBACK)
     assert vy * GRID_SIZE == pytest.approx(0.0)
+
+
+def test_velocity_is_reported_per_decision_not_per_gap():
+    """Otherwise the feature silently rescales when the lookback changes."""
+    from dodge.observe import DECISION_LOOKBACK
+    from dodge.policies import _sense_features
+
+    obs = torch.zeros(1, OBSERVATION_SIZE)
+    # A steady 1 cell per decision: 4px x lookback across the whole gap.
+    travel = 4.0 * DECISION_LOOKBACK
+    obs[0, 0], obs[0, 1] = 40.0 / 127, 64.0 / 127
+    obs[0, FRAME_OBSERVATION_SIZE] = (40.0 + travel) / 127
+    obs[0, FRAME_OBSERVATION_SIZE + 1] = 64.0 / 127
+
+    coordinates, grids = DodgeHybridExtractor.policy_inputs(obs)
+    vx = _sense_features(coordinates, grids)[0][0]
+    assert vx * GRID_SIZE == pytest.approx(1.0), "one cell per decision"
 
 
 def test_dead_unit_fraction_finds_a_collapsed_policy_trunk():

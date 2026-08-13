@@ -96,25 +96,41 @@ def test_environment_step_returns_expected_contract():
     env.close()
 
 
-def test_observation_contains_previous_then_current_game_frame():
-    env = DodgeEnv(action_repeat=2, max_episode_frames=20)
-    initial, _ = env.reset(seed=11)
-    initial_current = initial[FRAME_OBSERVATION_SIZE:].copy()
+def test_the_older_frame_is_a_full_lookback_behind():
+    """The two observed frames are DECISION_LOOKBACK decisions apart.
 
-    observation, *_ = env.step(2)
-    previous = observation[:FRAME_OBSERVATION_SIZE]
-    current = observation[FRAME_OBSERVATION_SIZE:]
+    At one decision every moving thing in the game covers less than a 4px
+    cell, so the categorical grid usually showed no change and hazard motion
+    was quantised out of the observation.
+    """
+    from dodge.observe import DECISION_LOOKBACK
 
-    np.testing.assert_array_equal(previous, initial_current)
-    assert previous[0] < current[0]
-    assert not np.array_equal(previous, current)
+    env = DodgeEnv(action_repeat=2, max_episode_frames=40)
+    env.reset(seed=11)
 
-    next_observation, *_ = env.step(2)
-    np.testing.assert_array_equal(
-        next_observation[:FRAME_OBSERVATION_SIZE],
-        current,
-    )
+    currents = []
+    for _ in range(DECISION_LOOKBACK + 2):
+        observation, *_ = env.step(2)
+        older = observation[:FRAME_OBSERVATION_SIZE]
+        currents.append(observation[FRAME_OBSERVATION_SIZE:].copy())
+        if len(currents) > DECISION_LOOKBACK:
+            np.testing.assert_array_equal(currents[-1 - DECISION_LOOKBACK], older)
+        assert older[0] < currents[-1][0], "the player moved right over the gap"
     env.close()
+
+
+def test_the_lookback_holds_intermediate_frames_without_sending_them():
+    env = DodgeEnv(action_repeat=2, max_episode_frames=40, observation_lookback=3)
+    observation, _ = env.reset(seed=11)
+
+    assert len(env.decision_frames) == 4, "three decisions back plus the current one"
+    assert observation.shape == (OBSERVATION_SIZE,), "still two frames on the wire"
+    env.close()
+
+
+def test_a_lookback_below_one_is_rejected():
+    with pytest.raises(ValueError):
+        DodgeEnv(observation_lookback=0)
 
 
 def test_same_seed_and_actions_are_deterministic():

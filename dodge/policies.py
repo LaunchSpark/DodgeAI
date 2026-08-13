@@ -11,6 +11,7 @@ from .observe import (
     ARENA_SIZE,
     CELL_SIZE,
     CELL_TYPES,
+    DECISION_LOOKBACK,
     ENEMY_BLAST,
     ENEMY_KAMIKAZE,
     ENEMY_NORMAL,
@@ -110,8 +111,13 @@ def _sense_features(coordinates, grids):
     nearest_x = torch.where(empty, zero, nearest_x / scale)
     nearest_y = torch.where(empty, zero, nearest_y / scale)
 
-    velocity = (player[:, -1] - player[:, 0]) / scale
-    closing = (distance[:, 0] - distance[:, -1]).unsqueeze(1)
+    # Per decision, not per gap. The two observed frames are DECISION_LOOKBACK
+    # decisions apart, so without this division both features would scale with
+    # the lookback: the same real speed would read differently after a change
+    # to it, and differently again whenever the decision interval moved.
+    velocity = (player[:, -1] - player[:, 0]) / (scale * DECISION_LOOKBACK)
+    closing = ((distance[:, 0] - distance[:, -1])
+               / DECISION_LOOKBACK).unsqueeze(1)
     return torch.cat((
         velocity,
         nearest_x[:, -1].unsqueeze(1), nearest_y[:, -1].unsqueeze(1),
