@@ -17,6 +17,8 @@ from dodge.policies import ARCHITECTURES, policy_kwargs
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--steps", type=int, default=250_000)
+    parser.add_argument("--device", default="auto",
+                        help="torch device for the policy update")
     parser.add_argument("--envs", type=int, default=4,
                         help="games stepped in parallel processes (default 4)")
     parser.add_argument("--seed", type=int, default=42)
@@ -69,7 +71,7 @@ def main():
         verbose=1,
         tensorboard_log=str(args.logs_dir),
         seed=args.seed,
-        device="cpu",
+        device=args.device,
         policy_kwargs=policy_kwargs(args.architecture),
     )
     try:

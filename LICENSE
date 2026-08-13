@@ -24,7 +24,8 @@ SOFTWARE.
 
 This licence covers the original code in this repository only.
 
-It does not cover any PICO-8 cartridge you supply as `logic.js`, nor anything
-derived from it (`dodge.lua`, `dodge.p8`, or the cartridge data those contain).
+It does not cover any PICO-8 cartridge you supply as `dodge.p8.png` or
+`logic.js`, nor anything derived from it (`dodge.lua`, `dodge.p8`, or the
+cartridge data those contain).
 Those files are not distributed with this project and are git-ignored. Their
 licensing is determined by the cartridge's author.

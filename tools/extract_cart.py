@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Extract the PICO-8 cartridge embedded in the HTML5 export (logic.js).
+"""Extract a PICO-8 cartridge from a ``.p8.png`` or HTML5 export.
 
-logic.js is a PICO-8 cart exported to JS: ~97% of it is the Emscripten-compiled
-PICO-8 runtime, and the actual game is a 32,768-byte ROM sitting in the
-`_cartdat` array near the top of the file.
+Cartridge PNGs encode a 32,768-byte ROM in their pixels. The extractor also
+accepts older HTML5 exports that store the same ROM in a ``_cartdat`` array.
 
 This pulls that ROM out and turns it back into editable sources:
 
@@ -12,8 +11,8 @@ This pulls that ROM out and turns it back into editable sources:
     dodge.rom   the raw 32KB ROM, with --rom
 
 Usage:
-    python tools/extract_cart.py                    # reads ./logic.js, writes ./
-    python tools/extract_cart.py --js x.js --out b/ --rom
+    python tools/extract_cart.py                    # reads ./dodge.p8.png, writes ./
+    python tools/extract_cart.py --cart x.p8.png --out b/ --rom
 """
 
 import argparse
@@ -93,12 +92,14 @@ def build_p8(rom, code):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--js", type=Path, default=Path("logic.js"), help="the HTML5 export (default: logic.js)")
+    ap.add_argument("--cart", "--js", dest="cart", type=Path,
+                    default=Path("dodge.p8.png"),
+                    help="the cartridge PNG or HTML5 export (default: dodge.p8.png)")
     ap.add_argument("--out", type=Path, default=Path("."), help="output directory (default: .)")
     ap.add_argument("--rom", action="store_true", help="also dump the raw 32KB ROM")
     args = ap.parse_args()
 
-    rom, cartname = read_rom(args.js)
+    rom, cartname = read_rom(args.cart)
     stem = Path(cartname).stem
     code = decompress_code(rom)
     args.out.mkdir(parents=True, exist_ok=True)

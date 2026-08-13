@@ -14,7 +14,7 @@ from dodge.env import DodgeEnv, center_survival_scalar
 from dodge.rewards import RewardConfig
 from dodge.observe import FRAME_OBSERVATION_SIZE, OBSERVATION_SIZE
 
-pytestmark = pytest.mark.skipif(not Path("logic.js").exists(), reason="logic.js not present")
+pytestmark = pytest.mark.skipif(not Path("dodge.p8.png").exists(), reason="dodge.p8.png not present")
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -24,6 +24,20 @@ def _quiet_luajit_seh():
     yield
     if was_enabled:
         faulthandler.enable()
+
+
+@pytest.fixture(autouse=True)
+def _default_reward_weights(tmp_path, monkeypatch):
+    """Keep these tests off whatever weights the developer is currently trying.
+
+    Reward weights are tuned live from the dashboard, so reading the repository's
+    own rewards.json would make the suite fail whenever someone moved a slider.
+    """
+    from dodge import rewards
+
+    path = tmp_path / "default-rewards.json"
+    rewards.save(RewardConfig(), path)
+    monkeypatch.setattr(rewards, "CONFIG_PATH", path)
 
 
 def test_environment_passes_gymnasium_checker():

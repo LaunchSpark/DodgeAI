@@ -5,14 +5,13 @@
 
 ## Background
 
-`logic.js` is the PICO-8 game `dodge.p8` exported to HTML5 via Emscripten. About 97% of
-its 4.3 MB is the compiled PICO-8 runtime; the game itself is a 32,768-byte ROM stored in
-the `_cartdat` array on line 5.
+`dodge.p8.png` is Artridge's public PICO-8 release of Dodge from Lexaloffle. It
+stores a 32,768-byte ROM in the low bits of the cartridge PNG's pixels.
 
-`tools/extract_cart.py` pulls that ROM out and decompresses its PXA-compressed code
+`tools/extract_cart.py` pulls that ROM out and decompresses its legacy-compressed code
 section, producing:
 
-- `dodge.lua` — 2,263 lines of PICO-8 Lua, the game's real source
+- `dodge.lua` — 2,254 lines of PICO-8 Lua, the game's real source
 - `dodge.p8` — the full cartridge in PICO-8's plain-text format
 
 The cart uses no map and no sprite flags, so all world state lives in Lua tables.
@@ -47,7 +46,7 @@ environment then serves as the reference oracle to diff it against, frame by fra
 ## Architecture
 
 ```text
-dodge.lua                    unmodified game (regenerable from logic.js)
+dodge.lua                    unmodified game (regenerable from dodge.p8.png)
 │
 pico8/preprocess.py          PICO-8 Lua dialect → standard Lua 5.1
 pico8/api.py                 the 38 builtins, seeded PRNG, 128-byte GPIO memory

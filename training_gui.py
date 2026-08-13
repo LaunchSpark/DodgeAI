@@ -53,6 +53,23 @@ EVENT_SPECS = (
 )
 
 
+def accelerator_name():
+    """What the policy update will actually run on.
+
+    Reported rather than assumed: a CPU-only torch build cannot use a GPU even
+    when the machine has one, and that is invisible from the outside.
+    """
+    try:
+        import torch
+    except ImportError:
+        return "none"
+    if torch.cuda.is_available():
+        return torch.cuda.get_device_name(0).replace("NVIDIA ", "")
+    if getattr(torch.version, "cuda", None) is None:
+        return "CPU (torch has no CUDA)"
+    return "CPU"
+
+
 @dataclass
 class Button:
     name: str
@@ -414,7 +431,7 @@ class DashboardRenderer:
         rows = (
             ("CPU", cpu, f"{cpu:.0f}%", CYAN),
             ("Memory", memory, f"{process_mb:.0f} MB", GREEN),
-            ("Accelerator", 0, "CPU", YELLOW),
+            ("Accelerator", 0, accelerator_name(), YELLOW),
         )
         y = rect.y + 50
         for label, percent, value, color in rows:
@@ -765,6 +782,8 @@ def main(argv=None):
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--steps", type=int, default=250_000,
                         help="PPO timesteps before automatic completion")
+    parser.add_argument("--device", default="auto",
+                        help="torch device for the policy update: auto, cpu or cuda")
     parser.add_argument("--envs", type=int, default=4,
                         help="games stepped in parallel processes (default 4)")
     parser.add_argument("--rollout-steps", type=int, default=128,
@@ -800,6 +819,7 @@ def main(argv=None):
         patterns=args.patterns,
         powerups=args.powerups,
         architecture=args.architecture,
+        device=args.device,
     )
     TrainingDashboard(session).run()
     return 0

@@ -41,14 +41,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scale", type=int, default=5, help="window scale (default 5)")
     parser.add_argument("--seed", type=int, default=0, help="RNG seed (default 0)")
-    parser.add_argument("--js", default="logic.js", help="path to the HTML5 export")
+    parser.add_argument("--cart", "--js", dest="cart", default="dodge.p8.png",
+                        help="path to the PICO-8 cartridge (default: dodge.p8.png)")
     parser.add_argument("--frames", type=int, default=None,
                          help="run this many frames of the main loop then exit "
                               "(default: unlimited, i.e. run until closed)")
     args = parser.parse_args()
 
     backend = PygameBackend(scale=args.scale)
-    machine = boot(js_path=args.js, backend=backend, seed=args.seed)
+    machine = boot(js_path=args.cart, backend=backend, seed=args.seed)
     clock = pygame.time.Clock()
 
     running = True

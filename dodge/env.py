@@ -36,7 +36,7 @@ class DodgeEnv(gym.Env):
 
     def __init__(
         self,
-        js_path=Path("logic.js"),
+        js_path=Path("dodge.p8.png"),
         difficulty=1,
         patterns=False,
         powerups=False,
@@ -45,7 +45,7 @@ class DodgeEnv(gym.Env):
         render_mode=None,
         scale=5,
         caption="Dodge PPO Agent",
-        reward_config_path=rewards.CONFIG_PATH,
+        reward_config_path=None,
     ):
         super().__init__()
         if action_repeat < 1:
@@ -78,7 +78,11 @@ class DodgeEnv(gym.Env):
         self.code = cart.decompress_code(self.rom)
         # Re-read when an episode starts so dashboard sliders and hand edits
         # both reach every environment process without any message passing.
-        self.reward_config_path = Path(reward_config_path)
+        # Resolved here rather than as a default argument so the location can be
+        # redirected at runtime, which keeps tests off the developer's own file.
+        self.reward_config_path = Path(reward_config_path
+                                       if reward_config_path is not None
+                                       else rewards.CONFIG_PATH)
         self.reward_config = rewards.load(self.reward_config_path)
         self.machine = None
         self.episode_frames = 0

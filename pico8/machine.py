@@ -17,6 +17,7 @@ class Machine:
         self.backend = backend
         self.sheet = cart.sprite_sheet(rom)
         self.mem = bytearray(0x10000)
+        self.cart_data = [0.0] * 64
         self.frame = 0
 
         self.buttons = 0
@@ -33,6 +34,8 @@ class Machine:
         self.lua.execute(f"srand({seed})")
         self.lua.execute(preprocess(code))
         self.globals = self.lua.globals()
+        if self.globals._init is not None:
+            self.globals._init()
 
     # -- input ------------------------------------------------------------
     def set_buttons(self, mask):
@@ -123,7 +126,7 @@ class Machine:
         """)
 
 
-def boot(js_path=Path("logic.js"), backend=None, seed=0):
+def boot(js_path=Path("dodge.p8.png"), backend=None, seed=0):
     rom, _ = cart.read_rom(Path(js_path))
     code = cart.decompress_code(rom)
     return Machine(rom, code, backend or NullBackend(), seed=seed)

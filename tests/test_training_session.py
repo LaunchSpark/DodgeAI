@@ -14,7 +14,7 @@ from dodge.observe import FRAME_OBSERVATION_SIZE, OBSERVATION_SIZE
 from dodge.training import DashboardPPO, PPOTrainingSession, migrate_single_frame_policy
 from watch_ppo import window_title
 
-pytestmark = pytest.mark.skipif(not Path("logic.js").exists(), reason="logic.js not present")
+pytestmark = pytest.mark.skipif(not Path("dodge.p8.png").exists(), reason="dodge.p8.png not present")
 
 
 @pytest.fixture(scope="module", autouse=True)

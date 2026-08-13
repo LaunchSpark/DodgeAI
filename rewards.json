@@ -1,7 +1,0 @@
-{
-  "survival_per_frame": 0.01,
-  "center_bonus": 0.5,
-  "death_penalty": 1.0,
-  "score_weight": 1.0,
-  "uncontrolled_score_weight": 0.0
-}

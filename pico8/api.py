@@ -46,6 +46,12 @@ def install(machine, lua):
     def time():
         return machine.frame / 60.0
 
+    def dget(index):
+        return machine.cart_data[int(index) & 0x3F]
+
+    def dset(index, value):
+        machine.cart_data[int(index) & 0x3F] = float(value)
+
     def noop(*args):
         return None
 
@@ -56,6 +62,11 @@ def install(machine, lua):
     g.poke = poke
     g.time = time
     g.t = time
+    g.cartdata = noop
+    g.dget = dget
+    g.dset = dset
+    g.menuitem = noop
+    g.cursor = noop
     g.sfx = noop
     g.music = noop
     g.printh = noop

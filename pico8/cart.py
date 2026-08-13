@@ -1,15 +1,17 @@
-"""Decode the PICO-8 cartridge embedded in the HTML5 export (logic.js).
+"""Decode PICO-8 cartridges from ``.p8.png`` or HTML5 exports.
 
-logic.js is a PICO-8 cart exported to JS: ~97% of it is the Emscripten-compiled
-PICO-8 runtime, and the actual game is a 32,768-byte ROM sitting in the
-`_cartdat` array near the top of the file.
+PICO-8 cartridge PNGs hide one ROM byte in the low two bits of each ARGB
+pixel. HTML5 exports carry the same 32,768-byte ROM in a ``_cartdat`` array.
 
 This module pulls that ROM out and decodes it: the compressed Lua code
 section and the sprite sheet. Shared by tools/extract_cart.py and the runtime.
 """
 
 import json
+from pathlib import Path
 import re
+
+from PIL import Image
 
 # --- ROM layout -------------------------------------------------------------
 # 0x0000  gfx        sprites 0-127   (sprite sheet rows 0-63)
@@ -34,12 +36,33 @@ P8SCII = [
 GLYPHS = {0x80 + i: ch for i, ch in enumerate(P8SCII)}
 
 
-def read_rom(js_path):
-    """Pull the `_cartdat = [...]` array out of the JS export."""
-    text = js_path.read_text(encoding="utf-8", errors="replace")
+LEGACY_CODE_TABLE = b"#\n 0123456789abcdefghijklmnopqrstuvwxyz!#%(){}[]<>+=/*:;.,~_"
+
+
+def _read_png_rom(path):
+    with Image.open(path) as source:
+        image = source.convert("RGBA")
+        if image.size != (160, 205):
+            raise ValueError(f"expected a 160x205 PICO-8 cart PNG, got {image.size}")
+        pixels = (image.get_flattened_data() if hasattr(image, "get_flattened_data")
+                  else image.getdata())
+        rom = bytes(
+            ((a & 3) << 6) | ((r & 3) << 4) | ((g & 3) << 2) | (b & 3)
+            for r, g, b, a in pixels[:END]
+        )
+    return rom, path.name.removesuffix(".png")
+
+
+def read_rom(path):
+    """Read a PICO-8 ROM from a cartridge PNG or an HTML5 JS export."""
+    path = Path(path)
+    if path.suffix.lower() == ".png":
+        return _read_png_rom(path)
+
+    text = path.read_text(encoding="utf-8", errors="replace")
     m = re.search(r"_cartdat\s*=\s*(\[.*?\])\s*;", text, re.S)
     if not m:
-        raise ValueError(f"no _cartdat array found in {js_path}")
+        raise ValueError(f"no _cartdat array found in {path}")
     rom = bytes(json.loads(m.group(1)))
     if len(rom) != END:
         raise ValueError(f"expected a {END}-byte ROM, got {len(rom)}")
@@ -68,11 +91,37 @@ class BitReader:
         return v
 
 
+def _decompress_legacy(section):
+    output_size = (section[4] << 8) | section[5]
+    source = 8
+    output = bytearray()
+    while len(output) < output_size:
+        value = section[source]
+        source += 1
+        if value == 0:
+            output.append(section[source])
+            source += 1
+        elif value <= 0x3B:
+            output.append(LEGACY_CODE_TABLE[value])
+        else:
+            packed = section[source]
+            source += 1
+            offset = (value - 0x3C) * 16 + (packed & 0x0F)
+            length = (packed >> 4) + 2
+            for _ in range(length):
+                output.append(output[-offset])
+    return bytes(output[:output_size])
+
+
 def decompress_code(rom):
-    """Decompress the code section (LZ77 + move-to-front literals)."""
+    """Decompress the cartridge's legacy or PXA-compressed Lua section."""
     section = rom[CODE:END]
+    if section[:4] == b":c:\x00":
+        output = _decompress_legacy(section)
+        return "".join(GLYPHS.get(b, chr(b)) for b in output)
     if section[:4] != b"\x00pxa":
-        raise ValueError("code section is not PXA-compressed; unsupported")
+        output = section.split(b"\x00", 1)[0]
+        return "".join(GLYPHS.get(b, chr(b)) for b in output)
 
     unc_size = (section[4] << 8) | section[5]
     br = BitReader(section[8:])

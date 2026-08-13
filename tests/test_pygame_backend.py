@@ -122,8 +122,8 @@ def test_backends_produce_identical_trajectories():
     headless did not, the trained policy and the watched policy would be
     playing different games.
     """
-    if not pathlib.Path("logic.js").exists():
-        pytest.skip("logic.js not present")
+    if not pathlib.Path("dodge.p8.png").exists():
+        pytest.skip("dodge.p8.png not present")
 
     pytest.importorskip("lupa.luajit21")
     from pico8.machine import boot

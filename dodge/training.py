@@ -15,6 +15,7 @@ import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.env_util import make_vec_env
+from stable_baselines3.common.utils import get_device
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
 from .env import DodgeEnv
@@ -250,6 +251,7 @@ class PPOTrainingSession:
         powerups=False,
         action_repeat=4,
         architecture="hybrid-cnn",
+        device="auto",
         autostart=True,
     ):
         if architecture not in ARCHITECTURES:
@@ -268,6 +270,11 @@ class PPOTrainingSession:
         self.rollout_steps = rollout_steps
         self.architecture = architecture
         self.model_architecture = architecture
+        # The simulation is CPU-bound and stays there, but the policy update is
+        # plain torch. With the hybrid CNN that update is roughly 80% of
+        # wall-clock, so it is the part worth accelerating. "auto" falls back to
+        # CPU when the installed torch has no CUDA support.
+        self.device = get_device(device)
         self.env_kwargs = {
             "difficulty": difficulty,
             "patterns": patterns,
@@ -313,7 +320,7 @@ class PPOTrainingSession:
             verbose=0,
             tensorboard_log=str(self.logs_dir),
             seed=self.seed,
-            device="cpu",
+            device=self.device,
             policy_kwargs=policy_kwargs(architecture),
             learning_tracker=self._track_learning,
         )
@@ -321,7 +328,7 @@ class PPOTrainingSession:
     def _load_model(self, path, env):
         # Loaded without an env first, because a legacy checkpoint's observation
         # space may not match and load(path, env=...) rejects that outright.
-        source = DashboardPPO.load(path, device="cpu")
+        source = DashboardPPO.load(path, device=self.device)
         if source.observation_space != env.observation_space:
             source.set_learning_tracker(self._track_learning)
             return migrate_single_frame_policy(
@@ -339,7 +346,7 @@ class PPOTrainingSession:
         # collect 2048 samples per update across four envs, quadrupling the
         # wait between learning steps.
         model = DashboardPPO.load(
-            path, env=env, device="cpu",
+            path, env=env, device=self.device,
             custom_objects={"n_steps": self.rollout_steps},
         )
         model.set_learning_tracker(self._track_learning)

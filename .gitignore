@@ -3,10 +3,15 @@ __pycache__/
 .pytest_cache/
 artifacts/
 
-# Third-party game content is never tracked. logic.js is the cartridge export
+# Third-party game content is never tracked. dodge.p8.png is the cartridge
 # you supply; dodge.lua and dodge.p8 are generated from it by
 # tools/extract_cart.py and can be regenerated at any time.
+dodge.p8.png
 logic.js
 dodge.lua
 dodge.p8
 dodge.rom
+
+# Reward weights are per-user tuning state. Defaults live in
+# dodge/rewards.py, and a missing file simply uses them.
+rewards.json

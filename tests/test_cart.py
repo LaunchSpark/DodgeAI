@@ -2,8 +2,8 @@ from pathlib import Path
 import pytest
 from pico8 import cart
 
-ROM = Path("logic.js")
-pytestmark = pytest.mark.skipif(not ROM.exists(), reason="logic.js not present")
+ROM = Path("dodge.p8.png")
+pytestmark = pytest.mark.skipif(not ROM.exists(), reason="dodge.p8.png not present")
 
 
 def test_read_rom_returns_full_cart():
@@ -15,8 +15,8 @@ def test_read_rom_returns_full_cart():
 def test_decompress_code_matches_known_size():
     rom, _ = cart.read_rom(ROM)
     code = cart.decompress_code(rom)
-    assert len(code) == 37110          # 37,101 bytes, 9 of them multi-byte glyphs
-    assert code.startswith("\npoke(0x5ffe,1)")
+    assert len(code) == 36813          # 36,804 bytes plus expanded P8SCII glyphs
+    assert code.startswith("-- dodge\n-- a game by artridge")
     assert "function updategame()" in code
 
 

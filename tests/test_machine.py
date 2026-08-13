@@ -6,7 +6,7 @@ luajit = pytest.importorskip("lupa.luajit21")
 from pico8 import machine
 from pico8.backends import Backend, NullBackend
 
-pytestmark = pytest.mark.skipif(not Path("logic.js").exists(), reason="logic.js not present")
+pytestmark = pytest.mark.skipif(not Path("dodge.p8.png").exists(), reason="dodge.p8.png not present")
 
 
 class RecordingBackend(Backend):

@@ -19,7 +19,7 @@ from dodge.observe import (
 from pico8.backends import NullBackend
 from pico8.machine import boot
 
-pytestmark = pytest.mark.skipif(not Path("logic.js").exists(), reason="logic.js not present")
+pytestmark = pytest.mark.skipif(not Path("dodge.p8.png").exists(), reason="dodge.p8.png not present")
 
 
 @pytest.fixture(scope="module", autouse=True)
