@@ -87,6 +87,105 @@ def test_span_label_reports_elapsed_time():
     assert "01:01:01" in DashboardRenderer._span_label(3661)
 
 
+class _StubSession:
+    """Enough session for the dashboard to draw and take clicks."""
+
+    def __init__(self, reward_config_path):
+        self.data = sample_snapshot()
+        self.reward_config_path = reward_config_path
+
+    def tick(self, dt):
+        pass
+
+    def close(self):
+        pass
+
+
+def _dashboard(tmp_path):
+    from training_gui import TrainingDashboard
+    session = _StubSession(tmp_path / "rewards.json")
+    dashboard = TrainingDashboard(session, hidden=True)
+    dashboard._open_rewards()
+    dashboard.draw()
+    return dashboard
+
+
+def test_reset_button_is_replaced_by_rewards():
+    pygame.font.init()
+    renderer = DashboardRenderer()
+    renderer.render(pygame.Surface(WINDOW_SIZE), sample_snapshot())
+    names = [button.name for button in renderer.buttons]
+    assert "Rewards" in names
+    assert "Reset" not in names
+
+
+def test_reward_panel_offers_a_slider_for_every_weight(tmp_path):
+    from dodge.rewards import SLIDERS
+
+    dashboard = _dashboard(tmp_path)
+    tracked = [spec.name for spec, _ in dashboard.reward_regions["tracks"]]
+    assert tracked == [spec.name for spec in SLIDERS]
+    pygame.quit()
+
+
+def test_dragging_a_slider_writes_the_config_file(tmp_path):
+    from dodge.rewards import load
+
+    dashboard = _dashboard(tmp_path)
+    spec, track = next((spec, track)
+                       for spec, track in dashboard.reward_regions["tracks"]
+                       if spec.name == "death_penalty")
+
+    # right - 1 because Rect.collidepoint treats the right edge as exclusive.
+    dashboard._click((track.right - 1, track.centery))
+    assert load(tmp_path / "rewards.json").death_penalty == spec.maximum
+
+    # Still held, so motion keeps updating it.
+    dashboard._set_reward_from_position(spec, track, (track.x, track.centery))
+    assert load(tmp_path / "rewards.json").death_penalty == spec.minimum
+    pygame.quit()
+
+
+def test_clicking_a_slider_starts_a_drag_and_releasing_ends_it(tmp_path):
+    dashboard = _dashboard(tmp_path)
+    _, track = dashboard.reward_regions["tracks"][0]
+    dashboard._click((track.centerx, track.centery))
+    assert dashboard.dragging_slider is not None
+    dashboard.dragging_slider = None  # what MOUSEBUTTONUP does
+    assert dashboard.dragging_slider is None
+    pygame.quit()
+
+
+def test_restore_defaults_rewrites_the_file(tmp_path):
+    from dodge.rewards import RewardConfig, load, save
+
+    save(RewardConfig(death_penalty=4.0), tmp_path / "rewards.json")
+    dashboard = _dashboard(tmp_path)
+    assert dashboard.reward_config.death_penalty == 4.0
+
+    dashboard._click(dashboard.reward_regions["defaults"].center)
+    assert load(tmp_path / "rewards.json") == RewardConfig()
+    pygame.quit()
+
+
+def test_panel_shows_values_edited_by_hand(tmp_path):
+    """Opening the panel re-reads, so a text edit is not silently overwritten."""
+    from dodge.rewards import RewardConfig, save
+
+    dashboard = _dashboard(tmp_path)
+    save(RewardConfig(score_weight=0.35), tmp_path / "rewards.json")
+    dashboard._open_rewards()
+    assert dashboard.reward_config.score_weight == 0.35
+    pygame.quit()
+
+
+def test_closing_the_panel(tmp_path):
+    dashboard = _dashboard(tmp_path)
+    dashboard._click(dashboard.reward_regions["close"].center)
+    assert not dashboard.reward_menu_open
+    pygame.quit()
+
+
 def test_sparkline_accepts_empty_history():
     pygame.font.init()
     surface = pygame.Surface((100, 50))

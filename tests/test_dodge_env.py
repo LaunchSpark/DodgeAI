@@ -10,7 +10,8 @@ pytest.importorskip("lupa.luajit21")
 
 from gymnasium.utils.env_checker import check_env
 
-from dodge.env import DEATH_PENALTY, DodgeEnv, center_survival_scalar
+from dodge.env import DodgeEnv, center_survival_scalar
+from dodge.rewards import RewardConfig
 from dodge.observe import FRAME_OBSERVATION_SIZE, OBSERVATION_SIZE
 
 pytestmark = pytest.mark.skipif(not Path("logic.js").exists(), reason="logic.js not present")
@@ -152,7 +153,7 @@ def test_center_survival_reward_is_fifty_percent_higher():
     env.close()
 
 
-def test_death_penalty_is_two_points():
+def test_death_penalty_is_one_point():
     env = DodgeEnv(action_repeat=4)
     env.reset(seed=31)
     env.machine.lua.execute("enemies={{x=62,y=62,s=4,p=0}}")
@@ -163,7 +164,71 @@ def test_death_penalty_is_two_points():
     assert not truncated
     assert info["survived_frames"] == 0
     assert info["score_delta"] == 0
-    assert reward == -DEATH_PENALTY == -2.0
+    assert reward == -RewardConfig().death_penalty == -1.0
+    env.close()
+
+
+def test_weights_are_reread_when_an_episode_starts(tmp_path):
+    """The dashboard's sliders reach worker processes only through the file.
+
+    Environments live in separate processes during training, so a weight
+    change must arrive by re-reading rather than by any in-memory update.
+    """
+    from dodge.rewards import RewardConfig, save
+
+    path = tmp_path / "rewards.json"
+    save(RewardConfig(death_penalty=1.0), path)
+    env = DodgeEnv(action_repeat=4, reward_config_path=path)
+    env.reset(seed=31)
+    assert env.reward_config.death_penalty == 1.0
+
+    save(RewardConfig(death_penalty=4.0), path)
+    assert env.reward_config.death_penalty == 1.0, "not until the episode ends"
+
+    env.reset(seed=31)
+    assert env.reward_config.death_penalty == 4.0
+    env.machine.lua.execute("enemies={{x=62,y=62,s=4,p=0}}")
+    _, reward, terminated, _, _ = env.step(0)
+    assert terminated and reward == pytest.approx(-4.0)
+    env.close()
+
+
+def test_luck_score_weight_restores_the_carts_own_scoring(tmp_path):
+    from dodge.rewards import RewardConfig, save
+
+    path = tmp_path / "rewards.json"
+    save(RewardConfig(uncontrolled_score_weight=1.0), path)
+    env = DodgeEnv(action_repeat=1, reward_config_path=path)
+    env.reset(seed=31)
+    env.machine.lua.execute("score=score+0.5 difficultycurve(true)")
+
+    _, reward, _, _, info = env.step(0)
+
+    assert info["uncontrolled_score"] == pytest.approx(0.5)
+    assert reward == pytest.approx(info["survival_reward"] + 0.5)
+    env.close()
+
+
+def test_score_from_enemies_colliding_is_not_rewarded():
+    """Enemies destroying each other is luck, not play.
+
+    The cart credits 0.5 whenever an enemy dies to another enemy or a pattern,
+    which the agent does not cause. Paying for it injects variance the critic
+    cannot explain, so only agent-caused score reaches the reward.
+    """
+    env = DodgeEnv(action_repeat=1)
+    env.reset(seed=31)
+    # Drive the cart's own enemy-death path: score rises and the hook counts it.
+    env.machine.lua.execute("score=score+0.5 difficultycurve(true)")
+
+    _, reward, terminated, _, info = env.step(0)
+
+    assert not terminated
+    assert info["score_delta"] == pytest.approx(0.5)
+    assert info["training_events"]["enemies_destroyed"] == 1
+    assert info["uncontrolled_score"] == pytest.approx(0.5)
+    # Only the survival credit survives into the reward.
+    assert reward == pytest.approx(info["survival_reward"])
     env.close()
 
 

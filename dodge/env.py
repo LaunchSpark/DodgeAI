@@ -11,19 +11,24 @@ from pico8 import cart
 from pico8.backends import NullBackend, PygameBackend
 from pico8.machine import Machine
 
+from . import rewards
 from .actions import ACTION_MASKS, action_mask
 from .observe import ARENA_SIZE, FRAME_STACK_SIZE, OBSERVATION_SIZE, observe_frame
 
 
-SURVIVAL_REWARD_PER_FRAME = 0.01
-DEATH_PENALTY = 2.0
+# Reward weights live in dodge/rewards.py so the dashboard and a text editor
+# can both change them; see RewardConfig for the defaults and their ranges.
 
 
-def center_survival_scalar(x, y, screen_width=ARENA_SIZE):
-    """Scale survival from 1.5x at center to 0.5x at a cardinal edge."""
+def center_survival_scalar(x, y, screen_width=ARENA_SIZE, center_bonus=0.5):
+    """Scale survival credit by distance from the arena centre.
+
+    At the default bonus this runs from 1.5x at the centre to 0.5x at a
+    cardinal edge. A bonus of 0 pays every position equally.
+    """
     center = screen_width / 2.0
     distance = math.hypot(float(x) - center, float(y) - center)
-    return max(0.0, 1.5 - distance / center)
+    return max(0.0, 1.0 + center_bonus - center_bonus * 2.0 * distance / center)
 
 
 class DodgeEnv(gym.Env):
@@ -40,6 +45,7 @@ class DodgeEnv(gym.Env):
         render_mode=None,
         scale=5,
         caption="Dodge PPO Agent",
+        reward_config_path=rewards.CONFIG_PATH,
     ):
         super().__init__()
         if action_repeat < 1:
@@ -70,6 +76,10 @@ class DodgeEnv(gym.Env):
 
         self.rom, _ = cart.read_rom(self.js_path)
         self.code = cart.decompress_code(self.rom)
+        # Re-read when an episode starts so dashboard sliders and hand edits
+        # both reach every environment process without any message passing.
+        self.reward_config_path = Path(reward_config_path)
+        self.reward_config = rewards.load(self.reward_config_path)
         self.machine = None
         self.episode_frames = 0
         self.previous_score = 0.0
@@ -85,6 +95,9 @@ class DodgeEnv(gym.Env):
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
+        # Picked up here rather than at construction so a weight changed mid-run
+        # reaches every environment process from the next episode onward.
+        self.reward_config = rewards.load(self.reward_config_path)
         episode_seed = int(self.np_random.integers(0, 2**31 - 1)) if seed is None else int(seed)
         if self.render_mode == "human":
             backend = self.backend
@@ -186,6 +199,7 @@ class DodgeEnv(gym.Env):
             survival_credit += center_survival_scalar(
                 self.machine.globals.px,
                 self.machine.globals.py,
+                center_bonus=self.reward_config.center_bonus,
             )
 
         self.observation_frames = [
@@ -200,18 +214,25 @@ class DodgeEnv(gym.Env):
         truncated = (self.max_episode_frames is not None
                      and self.episode_frames >= self.max_episode_frames
                      and not terminated)
-        survival_reward = SURVIVAL_REWARD_PER_FRAME * survival_credit
-        reward = (
-            survival_reward
-            + score_delta
-            - (DEATH_PENALTY if terminated else 0.0)
-        )
         totals = self._event_totals()
         training_events = {
             key: totals[key] - self.previous_events.get(key, 0)
             for key in totals
         }
         self.previous_events = totals
+
+        weights = self.reward_config
+        survival_reward = weights.survival_per_frame * survival_credit
+        # Score the agent did not cause, priced separately from the rest.
+        uncontrolled_score = (rewards.UNCONTROLLED_SCORE_PER_ENEMY
+                              * training_events["enemies_destroyed"])
+        agent_score = score_delta - uncontrolled_score
+        reward = (
+            survival_reward
+            + weights.score_weight * agent_score
+            + weights.uncontrolled_score_weight * uncontrolled_score
+            - (weights.death_penalty if terminated else 0.0)
+        )
         training_events.update({
             "survival_frames": survived,
             "patterns_survived": patterns_survived,
@@ -224,6 +245,7 @@ class DodgeEnv(gym.Env):
             "frames": self.episode_frames,
             "survived_frames": survived,
             "survival_reward": survival_reward,
+            "uncontrolled_score": uncontrolled_score,
             "training_events": training_events,
         }
         return self._observation(), float(reward), terminated, truncated, info

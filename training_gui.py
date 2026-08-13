@@ -13,6 +13,8 @@ import time
 
 import pygame
 
+from dodge import rewards
+from dodge.rewards import SLIDERS as REWARD_SLIDERS
 from dodge.telemetry import PROGRESS_ROWS, sample_snapshot
 
 try:
@@ -215,7 +217,7 @@ class DashboardRenderer:
         paused = data.status == "paused"
         configs = (
             ("Resume" if paused else "Pause", YELLOW, (55, 48, 30)),
-            ("Reset", RED, (61, 32, 32)),
+            ("Rewards", ORANGE, (46, 32, 24)),
             ("Watch Agent", WHITE, (48, 48, 46)),
             ("Models", (70, 145, 174), (235, 244, 246)),
         )
@@ -227,6 +229,62 @@ class DashboardRenderer:
             self._text(surface, self.font_body_bold, name, text_color,
                        button.rect.center, "center")
             y += button_h + gap
+
+    def draw_reward_menu(self, surface, config, config_path):
+        """Sliders over the reward weights, and where they are stored.
+
+        Returns the clickable regions: one track rect per weight, plus the
+        close and reset-to-defaults controls.
+        """
+        veil = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+        veil.fill((0, 0, 0, 165))
+        surface.blit(veil, (0, 0))
+
+        width = min(560, surface.get_width() - 50)
+        height = min(150 + 58 * len(REWARD_SLIDERS), surface.get_height() - 50)
+        modal = pygame.Rect(0, 0, width, height)
+        modal.center = surface.get_rect().center
+        self._card(surface, modal)
+        self._text(surface, self.font_title, "Reward Weights", TEXT,
+                   (modal.x + 20, modal.y + 17))
+        close = pygame.Rect(modal.right - 44, modal.y + 9, 34, 34)
+        self._text(surface, self.font_title, "X", MUTED, close.center, "center")
+
+        self._text(surface, self.font_small,
+                   f"Applied from the next episode  ·  {config_path}", MUTED,
+                   (modal.x + 20, modal.y + 46))
+
+        tracks = []
+        y = modal.y + 78
+        for spec in REWARD_SLIDERS:
+            value = getattr(config, spec.name)
+            self._text(surface, self.font_body, spec.label, TEXT, (modal.x + 20, y))
+            self._text(surface, self.font_body_bold, f"{value:g}", ORANGE,
+                       (modal.right - 20, y), "topright")
+            self._text(surface, self.font_small, spec.hint, MUTED,
+                       (modal.x + 20, y + 20))
+
+            track = pygame.Rect(modal.x + 20, y + 42, modal.w - 40, 6)
+            pygame.draw.rect(surface, (52, 50, 47), track, border_radius=3)
+            span = spec.maximum - spec.minimum
+            fraction = (value - spec.minimum) / span if span else 0.0
+            fraction = min(1.0, max(0.0, fraction))
+            filled = pygame.Rect(track.x, track.y,
+                                 int(track.w * fraction), track.h)
+            pygame.draw.rect(surface, ORANGE, filled, border_radius=3)
+            knob = (track.x + int(track.w * fraction), track.centery)
+            pygame.draw.circle(surface, WHITE, knob, 8)
+            pygame.draw.circle(surface, ORANGE, knob, 8, width=2)
+            # Widened so the knob stays grabbable without pixel-perfect aim.
+            tracks.append((spec, track.inflate(0, 26)))
+            y += 58
+
+        defaults = pygame.Rect(modal.x + 20, modal.bottom - 46, 150, 34)
+        pygame.draw.rect(surface, (48, 48, 46), defaults, border_radius=6)
+        self._text(surface, self.font_body_bold, "Restore defaults", WHITE,
+                   defaults.center, "center")
+        return {"close": close, "defaults": defaults, "tracks": tracks,
+                "modal": modal}
 
     def draw_model_menu(self, surface, name, entries, selected_index, offset):
         veil = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
@@ -510,6 +568,29 @@ class TrainingDashboard:
         self.selected_model = 0
         self.model_offset = 0
         self.model_regions = {}
+        self.reward_menu_open = False
+        self.reward_regions = {}
+        self.reward_config_path = getattr(self.session, "reward_config_path",
+                                          rewards.CONFIG_PATH)
+        self.reward_config = rewards.load(self.reward_config_path)
+        self.dragging_slider = None
+
+    def _open_rewards(self):
+        # Re-read on open so a hand-edited file is what the sliders show.
+        self.reward_config = rewards.load(self.reward_config_path)
+        self.reward_menu_open = True
+
+    def _set_reward_from_position(self, spec, track, position):
+        span = spec.maximum - spec.minimum
+        fraction = (position[0] - track.x) / track.w if track.w else 0.0
+        fraction = min(1.0, max(0.0, fraction))
+        value = spec.minimum + fraction * span
+        value = round(value / spec.step) * spec.step
+        value = min(spec.maximum, max(spec.minimum, round(value, 6)))
+        if getattr(self.reward_config, spec.name) == value:
+            return
+        setattr(self.reward_config, spec.name, value)
+        rewards.save(self.reward_config, self.reward_config_path)
 
     def _show_toast(self, message):
         self.toast = message
@@ -547,6 +628,25 @@ class TrainingDashboard:
         self._show_toast(f"Loaded {entry.name}")
 
     def _click(self, position):
+        if self.reward_menu_open:
+            regions = self.reward_regions
+            if regions.get("close", pygame.Rect(0, 0, 0, 0)).collidepoint(position):
+                self.reward_menu_open = False
+                return
+            if regions.get("defaults", pygame.Rect(0, 0, 0, 0)).collidepoint(position):
+                self.reward_config = rewards.RewardConfig()
+                rewards.save(self.reward_config, self.reward_config_path)
+                self._show_toast("Reward weights restored to defaults")
+                return
+            for spec, track in regions.get("tracks", []):
+                if track.collidepoint(position):
+                    self.dragging_slider = (spec, track)
+                    self._set_reward_from_position(spec, track, position)
+                    return
+            if not regions.get("modal", pygame.Rect(0, 0, 0, 0)).collidepoint(position):
+                self.reward_menu_open = False
+            return
+
         if self.model_menu_open:
             regions = self.model_regions
             if regions.get("close", pygame.Rect(0, 0, 0, 0)).collidepoint(position) or \
@@ -568,9 +668,8 @@ class TrainingDashboard:
                 continue
             if button.name in ("Pause", "Resume"):
                 self.session.toggle_pause()
-            elif button.name == "Reset":
-                self.session.reset()
-                self._show_toast("Starting a fresh policy")
+            elif button.name == "Rewards":
+                self._open_rewards()
             elif button.name == "Watch Agent":
                 if self.session.watch_agent():
                     label = getattr(self.session, "last_watch_label", None)
@@ -600,9 +699,16 @@ class TrainingDashboard:
     def draw(self):
         toast = self.toast if time.monotonic() < self.toast_until else None
         lock = getattr(self.session, "lock", nullcontext())
+        modal_open = self.model_menu_open or self.reward_menu_open
         with lock:
             self.renderer.render(self.surface, self.session.data,
-                                 None if self.model_menu_open else toast)
+                                 None if modal_open else toast)
+            if self.reward_menu_open:
+                self.reward_regions = self.renderer.draw_reward_menu(
+                    self.surface, self.reward_config, self.reward_config_path
+                )
+                if toast:
+                    self.renderer._draw_toast(self.surface, toast)
             if self.model_menu_open:
                 self.model_regions = self.renderer.draw_model_menu(
                     self.surface, self.model_name, self.model_entries,
@@ -624,10 +730,17 @@ class TrainingDashboard:
                     elif event.type == pygame.KEYDOWN:
                         if self.model_menu_open:
                             self._model_key(event)
+                        elif self.reward_menu_open and event.key == pygame.K_ESCAPE:
+                            self.reward_menu_open = False
                         elif event.key == pygame.K_ESCAPE:
                             running = False
                     elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                         self._click(event.pos)
+                    elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                        self.dragging_slider = None
+                    elif event.type == pygame.MOUSEMOTION and self.dragging_slider:
+                        spec, track = self.dragging_slider
+                        self._set_reward_from_position(spec, track, event.pos)
                     elif event.type == pygame.MOUSEWHEEL and self.model_menu_open:
                         max_offset = max(0, len(self.model_entries) - 5)
                         self.model_offset = max(0, min(max_offset,

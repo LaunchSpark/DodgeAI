@@ -61,6 +61,36 @@ held in memory only, so restarting the dashboard starts a fresh curve.
 Use `python training_gui.py --screenshot out.png` to render one frame of sample telemetry
 without training — useful for working on the dashboard itself.
 
+### Reward weights
+
+The **Rewards** button opens sliders over the reward function. They write
+`rewards.json`, which is equally editable by hand:
+
+    {
+      "survival_per_frame": 0.01,
+      "center_bonus": 0.5,
+      "death_penalty": 1.0,
+      "score_weight": 1.0,
+      "uncontrolled_score_weight": 0.0
+    }
+
+Environments re-read the file when an episode starts, so a change reaches every
+training process from the next episode without restarting anything. That
+indirection is deliberate: environments run in separate processes, so a slider
+cannot reach them through memory. A missing or malformed file falls back to the
+defaults rather than stopping a run.
+
+`uncontrolled_score_weight` is worth knowing about. The cart credits 0.5
+whenever an enemy dies to *another enemy* or to a pattern, which the agent does
+not cause — measured, that was about 15% of the reward's variance and none of it
+predictable from the agent's own state. At the default of 0 that score is
+stripped out and only agent-caused score is paid; set it to 1.0 to restore the
+cart's own scoring.
+
+Changing weights mid-run shifts the value function's targets, so expect
+explained variance to dip while the critic re-fits, and treat reward history
+either side of a change as two different experiments.
+
 ### Parallel environments
 
 Training defaults to four games stepped in parallel processes:
