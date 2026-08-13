@@ -59,10 +59,16 @@ class NullBackend(Backend):
 
 import re
 
+import numpy as np
 import pygame
 
+from .colormap import colorize
 from .palette import PICO8
 from .preprocess import BUTTONS
+
+# What the cart clears the screen to (dodge.lua:182), and therefore the pixels
+# a field overlay is allowed to replace.
+BACKGROUND_INDEX = 12
 
 _GLYPH_SPLIT = re.compile("(" + "|".join(re.escape(g) for g in BUTTONS) + ")")
 
@@ -107,6 +113,8 @@ class PygameBackend(Backend):
         self.cam_x = self.cam_y = 0
         self.pen = 6
         self.text_queue = []
+        self._field_rgb = None
+        self._field_range = None
 
     # -- helpers ----------------------------------------------------------
     def load_sheet(self, rows):
@@ -214,6 +222,55 @@ class PygameBackend(Backend):
     def camera(self, x=0, y=0):
         self.cam_x, self.cam_y = int(x), int(y)
 
+    # -- danger field overlay ---------------------------------------------
+    def set_field(self, field, smoothing=0.1):
+        """Show a scalar field behind the game, in place of the background.
+
+        The cart clears to palette index 12 and draws everything else over it,
+        so replacing exactly those pixels puts the field behind the action with
+        no changes to any drawing primitive. Only two things in the cart use
+        index 12 -- cls() and the score bar's backing (dodge.lua:484) -- so the
+        score readout picks up the field's colours too, which is harmless.
+
+        The colour range follows the field's own range through an exponential
+        average rather than being rescaled per frame. Per-frame rescaling makes
+        the whole picture flash whenever the hottest cell changes, which is
+        every time an enemy moves.
+        """
+        if field is None:
+            self._field_rgb = None
+            return
+        field = np.asarray(field, dtype=np.float32)
+        low, high = float(field.min()), float(field.max())
+        if self._field_range is None:
+            self._field_range = (low, high)
+        else:
+            previous_low, previous_high = self._field_range
+            self._field_range = (
+                previous_low + smoothing * (low - previous_low),
+                previous_high + smoothing * (high - previous_high),
+            )
+
+        rgb = colorize(field, *self._field_range)
+        # Nearest-neighbour to 128x128: the field is coarse and honest about
+        # it, and interpolating would imply a resolution it does not have.
+        rows = np.arange(self.SIZE) * field.shape[0] // self.SIZE
+        columns = np.arange(self.SIZE) * field.shape[1] // self.SIZE
+        # Surfarray is (x, y), the field is (row, column) -- hence the swap.
+        self._field_rgb = np.ascontiguousarray(
+            rgb[rows][:, columns].transpose(1, 0, 2)
+        )
+
+    def _composited(self):
+        """The game frame as RGB, with background pixels showing the field."""
+        indices = pygame.surfarray.array2d(self.surface)
+        lookup = np.array([PICO8[self.display_pal[i]] for i in range(16)],
+                          dtype=np.uint8)
+        rgb = lookup[indices]
+        background = indices == BACKGROUND_INDEX
+        rgb[background] = self._field_rgb[background]
+        return pygame.surfarray.make_surface(rgb)
+
     def flip(self):
         self._apply_display_palette()
         # pygame.transform.scale() into a destination surface requires the
@@ -222,7 +279,8 @@ class PygameBackend(Backend):
         # surface (raises ValueError: "Source and destination surfaces need
         # the same format."). Scale into a fresh surface instead and blit
         # that -- blit converts formats, transform.scale-into-dest does not.
-        scaled = pygame.transform.scale(self.surface, self.window.get_size())
+        source = self.surface if self._field_rgb is None else self._composited()
+        scaled = pygame.transform.scale(source, self.window.get_size())
         self.window.blit(scaled, (0, 0))
         self._draw_text()
         # The cart's own boot splash calls flip() ~66 times from top-level

@@ -6,6 +6,7 @@ from pathlib import Path
 import secrets
 
 import pygame
+import torch
 from stable_baselines3 import PPO
 
 from dodge.env import DodgeEnv
@@ -31,6 +32,10 @@ def main():
     parser.add_argument("--action-repeat", type=int, default=4)
     parser.add_argument("--sample", action="store_true",
                         help="sample actions instead of choosing the most likely action")
+    parser.add_argument("--field", action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="draw a field-cnn policy's danger field as the "
+                             "background (ignored by other architectures)")
     parser.add_argument("--frames", type=int,
                         help="exit after this many rendered game frames")
     args = parser.parse_args()
@@ -51,6 +56,15 @@ def main():
         max_episode_frames=None,
     )
     observation, _ = env.reset(seed=seed)
+    # Only field-cnn has a field to show. Computed once per decision and left
+    # in place for the four frames the environment renders before deciding
+    # again, so watching costs one extra forward pass per decision rather than
+    # one per frame.
+    # Detected by asking whether the extractor can produce a field, rather
+    # than by architecture name: that keeps this working for anything that
+    # exposes one, and does not assume the model has a policy at all.
+    extractor = getattr(getattr(model, "policy", None), "features_extractor", None)
+    field_source = extractor if args.field and hasattr(extractor, "field") else None
     running = True
     episode = 0
     frames = 0
@@ -63,6 +77,10 @@ def main():
         if not running:
             break
 
+        if field_source is not None:
+            with torch.no_grad():
+                tensor, _ = model.policy.obs_to_tensor(observation)
+                env.backend.set_field(field_source.field(tensor)[0, 0].cpu().numpy())
         action, _ = model.predict(observation, deterministic=not args.sample)
         observation, _, terminated, truncated, info = env.step(action)
         frames += info["survived_frames"]

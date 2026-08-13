@@ -132,6 +132,16 @@ Early results over ten updates are mixed and should not be read as a verdict:
 explained variance is markedly better (0.62-0.77 against 0.33-0.49), while
 survival is behind at that point. Both were still climbing.
 
+**Watching it.** `python watch_ppo.py MODEL` draws the field as the game's
+background, viridis from dark blue (safe) to yellow (dangerous). The cart
+clears to palette index 12 and draws everything over it, so replacing exactly
+those pixels puts the field behind the action with no change to any drawing
+primitive; only `cls()` and the score bar's backing use that index. The field
+is computed once per decision and left in place for the four frames rendered
+before the next one, so watching costs one extra forward pass per decision
+rather than one per frame, and training is untouched. `--no-field` turns it
+off.
+
 Its known ceiling, established by the analytic version below: a scalar over
 positions cannot express pursuit. "Step sideways because it is chasing you" is
 a fact about trajectories, not about any cell. Sampling along each action's
