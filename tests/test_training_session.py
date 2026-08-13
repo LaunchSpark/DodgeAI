@@ -531,3 +531,60 @@ def test_minibatch_size_follows_the_whole_buffer(tmp_path, monkeypatch,
     session._new_model(_matching_vec_env(n_envs))
     assert captured["n_steps"] == rollout_steps
     assert captured["batch_size"] == expected
+
+
+@pytest.mark.parametrize("architecture", ["hybrid-cnn", "field-cnn", "mlp"])
+def test_every_architecture_saves_and_loads_through_the_session(tmp_path, architecture):
+    """Loading must not special-case an architecture.
+
+    field-cnn swaps the action head for a policy subclass, so it is the one
+    most likely to need a bespoke path. It does not: Stable-Baselines3 records
+    the policy class in the checkpoint, and the migration check keys off
+    hybrid-cnn's layer names, which a field policy simply does not have.
+    """
+    from stable_baselines3 import PPO
+    from stable_baselines3.common.env_util import make_vec_env
+
+    from dodge.env import DodgeEnv
+    from dodge.policies import architecture_name, policy_class, policy_kwargs
+    from dodge.training import PPOTrainingSession
+
+    saved = PPO(policy_class(architecture), DodgeEnv(max_episode_frames=20),
+                n_steps=16, batch_size=8, seed=0, device="cpu",
+                policy_kwargs=policy_kwargs(architecture))
+    saved.save(tmp_path / architecture)
+
+    session = PPOTrainingSession(model_dir=tmp_path, logs_dir=tmp_path,
+                                 autostart=False, device="cpu", n_envs=1,
+                                 rollout_steps=16)
+    assert architecture in [entry.name for entry in session.available_models()]
+
+    env = make_vec_env(DodgeEnv, n_envs=1,
+                       env_kwargs={"max_episode_frames": 20})
+    try:
+        loaded = session._load_model(tmp_path / f"{architecture}.zip", env)
+        assert architecture_name(loaded) == architecture
+        assert loaded.n_steps == session.rollout_steps
+        observation = np.zeros((1, loaded.observation_space.shape[0]),
+                               dtype=np.float32)
+        action, _ = loaded.predict(observation, deterministic=True)
+        assert 0 <= int(action[0]) < 9
+    finally:
+        env.close()
+
+
+def test_the_dashboard_command_line_accepts_every_architecture(tmp_path):
+    """Registering an architecture should be enough; the CLI reads the list."""
+    import os
+
+    import training_gui
+    from dodge.policies import ARCHITECTURES
+
+    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    for architecture in ARCHITECTURES:
+        # --screenshot renders one frame of sample telemetry and exits, so this
+        # exercises argument parsing without starting a trainer.
+        assert training_gui.main([
+            "--architecture", architecture,
+            "--screenshot", str(tmp_path / f"{architecture}.png"),
+        ]) == 0

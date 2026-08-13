@@ -1,5 +1,7 @@
 """Custom Stable-Baselines3 policy components for Dodge."""
 
+from functools import partial
+
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -240,13 +242,17 @@ def policy_kwargs(architecture):
             # between them and the distribution would be a head learning to
             # second-guess the controller.
             "net_arch": {"pi": [], "vf": [64]},
-            "activation_fn": lambda: nn.LeakyReLU(NEGATIVE_SLOPE),
+            # partial, not a lambda: checkpoints pickle this, and a lambda
+            # is stored by value -- tying every saved policy to this file.
+            "activation_fn": partial(nn.LeakyReLU, NEGATIVE_SLOPE),
         }
     if architecture == "hybrid-cnn":
         return {
             "features_extractor_class": DodgeHybridExtractor,
             "net_arch": {"pi": [128, 64], "vf": [128, 64]},
-            "activation_fn": lambda: nn.LeakyReLU(NEGATIVE_SLOPE),
+            # partial, not a lambda: checkpoints pickle this, and a lambda
+            # is stored by value -- tying every saved policy to this file.
+            "activation_fn": partial(nn.LeakyReLU, NEGATIVE_SLOPE),
         }
     raise ValueError(f"Unknown policy architecture: {architecture}")
 

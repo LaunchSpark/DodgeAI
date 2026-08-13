@@ -16,6 +16,7 @@ import pygame
 
 from dodge import rewards
 from dodge.rewards import SLIDERS as REWARD_SLIDERS
+from dodge.policies import ARCHITECTURES
 from dodge.telemetry import PROGRESS_ROWS, sample_snapshot
 
 try:
@@ -1118,7 +1119,7 @@ def main(argv=None):
     parser.add_argument("--rollout-steps", type=int, default=256,
                         help="steps per env per PPO update; the buffer holds "
                              "envs * rollout-steps samples (default 8 * 256)")
-    parser.add_argument("--architecture", choices=("hybrid-cnn", "mlp"),
+    parser.add_argument("--architecture", choices=ARCHITECTURES,
                         default="hybrid-cnn")
     parser.add_argument("--difficulty", choices=("easy", "normal", "hard"), default="easy")
     parser.add_argument("--patterns", action="store_true")

@@ -109,7 +109,15 @@ rather than one where it starts high.
 
 ### Field CNN
 
-`--architecture field-cnn` is a second policy shape. The network's only output
+    python training_gui.py --architecture field-cnn
+
+is a second policy shape. Its checkpoints save, list and load through the
+dashboard's Models panel exactly like `hybrid-cnn`'s — Stable-Baselines3
+records the policy class in the checkpoint, and the input-migration check keys
+off layer names a field policy does not have, so nothing special-cases it.
+The architecture itself is chosen at launch.
+
+The network's only output The network's only output
 is a scalar danger per arena cell; it never picks an action. Choosing is
 arithmetic — simulate where each of the nine actions takes the player, read the
 field along those paths, and let the totals be the logits — so every bit of
