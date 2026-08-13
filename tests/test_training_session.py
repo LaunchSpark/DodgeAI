@@ -38,7 +38,7 @@ def _wait_for(predicate, timeout=30):
 def test_model_list_only_contains_ppo_checkpoints(tmp_path):
     (tmp_path / "one.zip").write_bytes(b"placeholder")
     (tmp_path / "old.demo.json").write_text("{}", encoding="utf-8")
-    session = PPOTrainingSession(model_dir=tmp_path, autostart=False)
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
     assert session.available_models() == [ModelEntry("one", tmp_path / "one.zip", "PPO")]
 
 
@@ -64,6 +64,7 @@ def test_dashboard_ppo_reports_each_learning_minibatch():
         n_steps=8,
         batch_size=4,
         n_epochs=2,
+        device="cpu",
         learning_tracker=lambda completed, total: progress.append((completed, total)),
     )
     model.learn(total_timesteps=8)
@@ -73,7 +74,7 @@ def test_dashboard_ppo_reports_each_learning_minibatch():
 
 def test_live_session_pauses_saves_and_resumes(tmp_path):
     session = PPOTrainingSession(
-        seed=19,
+        seed=19, device="cpu",
         model_dir=tmp_path / "models",
         logs_dir=tmp_path / "logs",
         total_steps=512,
@@ -108,7 +109,7 @@ def test_live_session_pauses_saves_and_resumes(tmp_path):
 
 
 def test_watch_uses_unique_update_snapshot_and_random_seed(tmp_path, monkeypatch):
-    session = PPOTrainingSession(model_dir=tmp_path, autostart=False)
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
     saved_paths = []
     commands = []
 
@@ -153,6 +154,7 @@ def test_parallel_envs_use_separate_processes(tmp_path, monkeypatch, n_envs, exp
     monkeypatch.setattr(training, "make_vec_env", fake_make_vec_env)
     session = training.PPOTrainingSession(
         model_dir=tmp_path, logs_dir=tmp_path, n_envs=n_envs, autostart=False,
+        device="cpu",
     )
     # make_vec_env is called before the loop's try block, so the sentinel
     # exception escapes _run instead of being recorded as a session error.
@@ -200,7 +202,8 @@ def test_checkpoint_loads_into_a_different_env_count(tmp_path, saved_envs, loade
     saved.save(path)
 
     session = PPOTrainingSession(model_dir=tmp_path, logs_dir=tmp_path,
-                                 n_envs=loaded_envs, autostart=False)
+                                 n_envs=loaded_envs, autostart=False,
+                                 device="cpu")
     model = session._load_model(path, _matching_vec_env(loaded_envs))
     assert model.n_envs == loaded_envs
     assert model.get_env().num_envs == loaded_envs
@@ -222,17 +225,32 @@ def test_loaded_checkpoint_adopts_the_session_buffer_size(tmp_path):
     assert saved.n_steps == 512
 
     session = PPOTrainingSession(model_dir=tmp_path, logs_dir=tmp_path,
-                                 n_envs=4, rollout_steps=128, autostart=False)
+                                 n_envs=4, rollout_steps=128, autostart=False,
+                                 device="cpu")
     model = session._load_model(path, _matching_vec_env(4))
     assert model.n_steps == 128
     assert model.rollout_buffer.buffer_size == 128
     assert model.n_envs * model.n_steps == 512
 
 
+def test_auto_device_only_reaches_for_a_gpu_where_it_helps(monkeypatch):
+    """The MLP update measured no faster on a GPU, so auto keeps it on the CPU.
+
+    An explicit choice is always honoured; only "auto" is opinionated.
+    """
+    from dodge import training
+
+    monkeypatch.setattr(training, "get_device", lambda name: f"resolved:{name}")
+    assert training.resolve_device("auto", "hybrid-cnn") == "resolved:auto"
+    assert training.resolve_device("auto", "mlp") == "resolved:cpu"
+    assert training.resolve_device("cuda", "mlp") == "resolved:cuda"
+    assert training.resolve_device("cpu", "hybrid-cnn") == "resolved:cpu"
+
+
 def test_rejects_a_non_positive_env_count(tmp_path):
     from dodge.training import PPOTrainingSession
     with pytest.raises(ValueError):
-        PPOTrainingSession(model_dir=tmp_path, n_envs=0, autostart=False)
+        PPOTrainingSession(model_dir=tmp_path, n_envs=0, autostart=False, device="cpu")
 
 
 def test_watch_runs_episodes_without_a_frame_cap(tmp_path, monkeypatch):
@@ -280,7 +298,7 @@ def test_watch_window_title_identifies_policy_and_run():
 
 
 def test_save_and_load_set_the_active_model_name(tmp_path, monkeypatch):
-    session = PPOTrainingSession(model_dir=tmp_path, autostart=False)
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
     monkeypatch.setattr(session, "_save_to_path", lambda path: path)
     session.save_model("Patient Dodger")
     assert session.active_model_name == "Patient-Dodger"
@@ -319,6 +337,7 @@ def test_legacy_policy_weights_migrate_to_current_frame_inputs():
             batch_size=8,
             n_epochs=1,
             seed=seed,
+            device="cpu",
         )
 
     legacy = model(FRAME_OBSERVATION_SIZE, 3)

@@ -79,6 +79,7 @@ def test_hybrid_ppo_has_spatial_heads_and_survives_save_load(tmp_path):
         n_epochs=1,
         policy_kwargs=policy_kwargs("hybrid-cnn"),
         seed=4,
+        device="cpu",
     )
     assert architecture_name(model) == "hybrid-cnn"
     assert model.policy.mlp_extractor.policy_net[0].in_features == 160
@@ -88,7 +89,7 @@ def test_hybrid_ppo_has_spatial_heads_and_survives_save_load(tmp_path):
 
     path = tmp_path / "hybrid-cnn"
     model.save(path)
-    restored = PPO.load(path)
+    restored = PPO.load(path, device="cpu")
     action, _ = restored.predict(np.zeros((OBSERVATION_SIZE,), dtype=np.float32))
     assert architecture_name(restored) == "hybrid-cnn"
     assert 0 <= int(action) < 9

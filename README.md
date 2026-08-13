@@ -93,28 +93,36 @@ either side of a change as two different experiments.
 
 ### GPU
 
-The simulation cannot use a GPU — PICO-8 is a serial interpreter running on the
-CPU. The policy update is ordinary torch, and it can:
+The simulation cannot use a GPU — PICO-8 is a serial interpreter on the CPU. The
+policy update is ordinary torch, and it can. `--device` defaults to `auto`.
 
-    python training_gui.py --device cuda
+This needs a CUDA build of torch; the default wheel on PyPI is CPU-only, and a
+CPU-only build cannot use a GPU even when the machine has one. The System panel
+reports which device is actually in use, including that case:
 
-`--device` defaults to `auto`, which uses a GPU when the installed torch has
-CUDA support and falls back to CPU otherwise. The System panel reports which one
-is actually in use, including the case where the machine has a GPU but torch was
-installed as a CPU-only build.
+    pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cu126
 
-Whether it is worth it depends entirely on the architecture, because the two
-phases divide very differently. Measured over five updates at four envs:
+Measured on a GTX 1070, four envs, `hybrid-cnn`, 512 samples per update:
 
-| Architecture | Simulation | Policy update | Update time |
-| --- | --- | --- | --- |
-| `hybrid-cnn` | 19% | **81%** | 9.2s per update |
-| `mlp` | 55% | 45% | 0.9s per update |
+| | Policy update | Full cycle (collect + learn) |
+| --- | --- | --- |
+| CPU | 7.20s | 7.06s |
+| GPU | 1.40s | **1.90s** |
+| | **5.1x** | **3.7x** |
 
-The CNN's update is over ten times more expensive than the MLP's and dominates
-wall-clock, so it is the case where a GPU pays off — a 3x faster update would cut
-total time by about half. For `mlp` the same speedup returns under a third,
-since simulation is then the larger half and stays on the CPU regardless.
+`auto` only reaches for a GPU where it measurably helps. The MLP update is
+unchanged on a GPU (0.686s against 0.693s) because its layers are too small to
+cover transfer and launch overhead, so `auto` keeps `mlp` on the CPU. An
+explicit `--device cuda` is always honoured.
+
+Stable-Baselines3 warns that a non-CNN policy on a GPU may be slower. It reads
+the policy class, which is `ActorCriticPolicy` for both architectures here, so
+it cannot see that `hybrid-cnn`'s features extractor is convolutional. That
+warning is suppressed for this project's models, on the strength of the numbers
+above.
+
+With the update on a GPU the balance flips: simulation becomes roughly half of
+the cycle rather than a fifth, so it is the next thing worth optimising.
 
 ### Parallel environments
 
