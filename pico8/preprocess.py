@@ -6,6 +6,7 @@ That makes "never rewrite inside a literal" a property of the whole module
 rather than something each rule has to remember.
 """
 
+from functools import lru_cache
 import re
 
 STR_MASK = "\x00"
@@ -214,11 +215,18 @@ def _short_if_edits(src, mask):
     return edits
 
 
+@lru_cache(maxsize=4)
 def preprocess(src):
     """Translate a PICO-8 Lua source string into standard Lua 5.1.
 
     Pass order is load-bearing: compound assignment must run before the
     short-if rule, or the appended `end` lands inside the expression.
+
+    Cached because translating a cart is pure and not cheap -- three passes
+    over 37,000 characters -- while a training run rebuilds its machine on
+    every episode. Without the cache that translation dominated the step
+    budget. The cache holds a handful of carts; keying on the source means a
+    re-extracted or edited cart translates again on its own.
     """
     for pass_fn in (_token_edits, _compound_edits, _short_if_edits):
         src = apply_edits(src, pass_fn(src, mask_literals(src)))

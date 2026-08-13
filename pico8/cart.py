@@ -7,6 +7,7 @@ This module pulls that ROM out and decodes it: the compressed Lua code
 section and the sprite sheet. Shared by tools/extract_cart.py and the runtime.
 """
 
+from functools import lru_cache
 import json
 from pathlib import Path
 import re
@@ -162,11 +163,16 @@ def decompress_code(rom):
     return "".join(GLYPHS.get(b, chr(b)) for b in out)
 
 
+@lru_cache(maxsize=4)
 def sprite_sheet(rom):
     """Decode ROM 0x0000-0x1fff into 128 rows of 128 palette indices.
 
     Two pixels per byte, low nibble first — the same layout the .p8 __gfx__
     section uses.
+
+    Cached for the same reason as preprocess(): a training run builds a machine
+    per episode, and decoding 16,384 pixels each time is pure repetition. The
+    result is treated as read-only by every caller.
     """
     rows = []
     for y in range(128):
