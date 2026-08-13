@@ -136,14 +136,57 @@ def test_same_seed_and_actions_are_deterministic():
         np.testing.assert_array_equal(a, b)
 
 
-def test_near_miss_means_within_one_cell_without_collision():
-    env = DodgeEnv()
-    env.reset(seed=31)
-    env.machine.lua.execute("enemies={{x=69,y=64,s=4,p=0}}")
-    assert env._is_near_miss()
-    env.machine.lua.execute("enemies={{x=66,y=64,s=4,p=0}}")
-    assert not env._is_near_miss()
-    env.close()
+def test_headless_drawing_changes_nothing_about_the_game():
+    """Nulling the draw builtins must not move the shared RNG stream.
+
+    drawgame() calls spawntrail(), which draws two random values per powerup
+    enemy per frame, so anything that skipped the draw traversal would change
+    which enemies spawn later. Binding the builtins as Lua no-ops leaves the
+    traversal and its arguments intact, which is what this pins down.
+    """
+    from pico8 import cart
+    from pico8.backends import NullBackend
+    from pico8.machine import Machine
+
+    class CountingBackend:
+        """Draws for real, as far as the machine can tell.
+
+        Deliberately not a Backend subclass: __getattr__ only fires for names
+        that normal lookup misses, and Backend defines every drawing method.
+        """
+
+        draws = True
+
+        def __init__(self):
+            self.calls = 0
+
+        def __getattr__(self, name):
+            def record(*args):
+                self.calls += 1
+            return record
+
+    rom, _ = cart.read_rom(Path("dodge.p8.png"))
+    code = cart.decompress_code(rom)
+
+    def run(backend):
+        machine = Machine(rom, code, backend, seed=77)
+        machine.start_game(difficulty=1, patterns=True, powerups=True)
+        trace = []
+        for frame in range(400):
+            machine.set_buttons(1 << (frame // 31) % 4)
+            machine.step()
+            g = machine.globals
+            trace.append((float(g.px), float(g.py), float(g.score),
+                          [(float(g.enemies[i].x), float(g.enemies[i].y),
+                            float(g.enemies[i].p))
+                           for i in range(1, len(g.enemies) + 1)]))
+            if g.isdead:
+                break
+        return trace
+
+    drawing = CountingBackend()
+    assert run(drawing) == run(NullBackend())
+    assert drawing.calls > 0, "the drawing backend must actually have been used"
 
 
 def test_center_survival_scalar_uses_euclidean_distance():

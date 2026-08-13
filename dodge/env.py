@@ -134,45 +134,6 @@ class DodgeEnv(gym.Env):
             "shrink_pickups": int(events.shrink_pickups),
         }
 
-    @staticmethod
-    def _rect_gap(left_a, top_a, right_a, bottom_a,
-                  left_b, top_b, right_b, bottom_b):
-        dx = max(left_b - right_a, left_a - right_b, 0)
-        dy = max(top_b - bottom_a, top_a - bottom_b, 0)
-        return max(dx, dy)
-
-    def _is_near_miss(self):
-        g = self.machine.globals
-        size = float(g.size)
-        player = (float(g.px) - size + 1, float(g.py) - size + 1,
-                  float(g.px) + size - 1, float(g.py) + size - 1)
-        enemies = g.enemies
-        for index in range(1, len(enemies) + 1):
-            enemy = enemies[index]
-            if int(enemy.p) >= 2:
-                continue
-            hazard = (float(enemy.x), float(enemy.y),
-                      float(enemy.x) + float(enemy.s),
-                      float(enemy.y) + float(enemy.s))
-            gap = self._rect_gap(*player, *hazard)
-            if 0 < gap <= 4:
-                return True
-
-        pattern = g.cp
-        if pattern is not None:
-            rects = pattern.rects
-            for index in range(1, len(rects) + 1):
-                rect = rects[index]
-                if int(pattern.tpe) != 1 and float(rect.sh) != 2:
-                    continue
-                hazard = (float(rect.x), float(rect.y),
-                          float(rect.x) + float(rect.w),
-                          float(rect.y) + float(rect.h))
-                gap = self._rect_gap(*player, *hazard)
-                if 0 < gap <= 4:
-                    return True
-        return False
-
     def step(self, action):
         if self.machine is None:
             raise RuntimeError("reset() must be called before step()")
@@ -182,7 +143,6 @@ class DodgeEnv(gym.Env):
         survived = 0
         survival_credit = 0.0
         patterns_survived = 0
-        near_misses = 0
         for _ in range(self.action_repeat):
             # Keep training strictly on the cart's keyboard movement branch.
             self.machine.globals.input = 1
@@ -193,8 +153,6 @@ class DodgeEnv(gym.Env):
                     and not bool(self.machine.globals.isdead):
                 patterns_survived += 1
             self.previous_pattern_active = pattern_active
-            if not bool(self.machine.globals.isdead) and self._is_near_miss():
-                near_misses += 1
             if self.render_clock is not None:
                 self.render_clock.tick(self.metadata["render_fps"])
             if bool(self.machine.globals.isdead):
@@ -240,7 +198,6 @@ class DodgeEnv(gym.Env):
         training_events.update({
             "survival_frames": survived,
             "patterns_survived": patterns_survived,
-            "near_misses": near_misses,
             "deaths": int(terminated),
         })
         info = {

@@ -48,7 +48,6 @@ EVENT_SPECS = (
     ("freeze_pickups", "Freeze pickups", (94, 181, 225)),
     ("shrink_pickups", "Shrink pickups", (177, 130, 224)),
     ("patterns_survived", "Patterns survived", GREEN),
-    ("near_misses", "Near-miss frames", (232, 144, 72)),
     ("deaths", "Deaths", RED),
 )
 

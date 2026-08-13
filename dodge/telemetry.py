@@ -15,7 +15,6 @@ EVENT_KEYS = (
     "freeze_pickups",
     "shrink_pickups",
     "patterns_survived",
-    "near_misses",
     "deaths",
 )
 

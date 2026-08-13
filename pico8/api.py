@@ -8,6 +8,12 @@ prelude.lua instead.
 BTNP_DELAY = 15
 BTNP_INTERVAL = 4
 
+# Everything a backend that declares draws = False replaces with a Lua no-op.
+# None of these return a value the cart reads, so removing them changes only
+# what reaches the screen.
+DRAWING_BUILTINS = ("cls", "pset", "rect", "rectfill", "circfill", "ovalfill",
+                    "line", "spr", "print", "pal", "palt", "fillp", "camera")
+
 
 def _num(value, default=0):
     """Lua passes nil for omitted arguments."""
@@ -70,6 +76,20 @@ def install(machine, lua):
     g.sfx = noop
     g.music = noop
     g.printh = noop
+
+    # A headless backend would discard all of this anyway, so bind Lua no-ops
+    # and skip the crossing. flip() is excluded: the machine ends frames
+    # through it, including during the cart's boot splash.
+    #
+    # This is the one binding decided at construction rather than per call, so
+    # a machine built headless stays headless -- reassigning machine.backend
+    # afterwards will not restore drawing. Build a new Machine instead, which
+    # is what DodgeEnv.reset() already does.
+    if not getattr(machine.backend, "draws", True):
+        lua.execute("local function noop() end\n"
+                    + "\n".join(f"{name}=noop" for name in DRAWING_BUILTINS))
+        g.flip = lambda: machine.flip()
+        return
 
     g.cls = lambda col=None: machine.backend.cls(int(_num(col)))
     g.pset = lambda x, y, c=None: machine.backend.pset(x, y, c)

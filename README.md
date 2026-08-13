@@ -157,6 +157,31 @@ Environments run in separate processes (`SubprocVecEnv`); stepping them in one
 process would diversify experience without adding throughput, since every Dodge
 environment hosts its own LuaJIT machine.
 
+### Headless simulation
+
+Training never looks at a pixel, so a backend can declare `draws = False` and
+have the drawing builtins bound as Lua no-ops instead of Python callbacks. Lua
+still walks the whole draw path and still evaluates every argument — it has to,
+because `drawgame()` calls `spawntrail()`, which draws two random values per
+powerup enemy per frame from the same stream that decides what spawns next.
+Only the Lua-to-Python crossing goes away, about nineteen per frame.
+
+| | Env steps/s |
+| --- | --- |
+| drawing live, near-miss counter on | 1,319 |
+| drawing null | 1,580 |
+| near-miss counter removed | 1,649 |
+| both | **2,253** |
+
+Neither change pays much alone: remove one and the other becomes the wall, since
+both cost the same thing. Together they make the environment 1.7x faster.
+
+That is not 1.7x on training. With eight workers the collection phase is
+dominated by its 64 sequential policy forward passes and the process round
+trips around them, not by simulation, so the full cycle only moves from 1.74s to
+1.69s. The environment headroom shows up if the env count rises, and in anything
+that steps a single environment — evaluation, or watching a policy play.
+
 ## PPO bots
 
 Both architectures observe the previous and current decision frames, ordered previous
