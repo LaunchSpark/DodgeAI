@@ -152,3 +152,61 @@ def test_hazard_channels_keep_their_order_and_meaning():
     assert HAZARD_CHANNELS == 16
     lethal_channel = grids[0, CELL_TYPES + CELL_TYPES - 1]
     assert lethal_channel[0, 0] == 1.0
+
+
+def test_sense_features_report_threat_geometry_and_closing_speed():
+    """Distances a convolution would have to infer, handed over directly."""
+    from dodge.observe import ENEMY_NORMAL, PICKUP_FREEZE
+    from dodge.policies import _sense_features
+
+    def observation(threat_prev, threat_curr):
+        obs = torch.zeros(1, OBSERVATION_SIZE)
+        for frame, threat in enumerate((threat_prev, threat_curr)):
+            base = frame * FRAME_OBSERVATION_SIZE
+            obs[0, base] = 64.0 / 127.0       # player pinned at cell (16, 16)
+            obs[0, base + 1] = 64.0 / 127.0
+            if threat is not None:
+                row, col, value = threat
+                obs[0, base + 2 + row * GRID_SIZE + col] = value / CELL_TYPES
+        return obs
+
+    obs = observation((16, 21, ENEMY_NORMAL), (16, 19, ENEMY_NORMAL))
+    coordinates, grids = DodgeHybridExtractor.policy_inputs(obs)
+    vx, vy, nx, ny, distance, closing = _sense_features(coordinates, grids)[0]
+
+    assert nx * GRID_SIZE == pytest.approx(3.0)
+    assert ny * GRID_SIZE == pytest.approx(0.0)
+    assert distance * GRID_SIZE == pytest.approx(3.0)
+    # Five cells away, then three: closing at two cells per decision.
+    assert closing * GRID_SIZE == pytest.approx(2.0)
+
+
+def test_pickups_are_not_treated_as_threats():
+    """A pickup occupies a cell but cannot end the episode."""
+    from dodge.observe import PICKUP_FREEZE
+    from dodge.policies import FAR_AWAY, _sense_features
+
+    obs = torch.zeros(1, OBSERVATION_SIZE)
+    for frame in range(2):
+        base = frame * FRAME_OBSERVATION_SIZE
+        obs[0, base] = obs[0, base + 1] = 64.0 / 127.0
+        obs[0, base + 2 + 16 * GRID_SIZE + 19] = PICKUP_FREEZE / CELL_TYPES
+
+    coordinates, grids = DodgeHybridExtractor.policy_inputs(obs)
+    senses = _sense_features(coordinates, grids)[0]
+    assert senses[4] == pytest.approx(FAR_AWAY), "no threat in range"
+    assert senses[5] == pytest.approx(0.0), "nothing closing"
+
+
+def test_velocity_comes_from_the_two_decision_frames():
+    from dodge.policies import _sense_features
+
+    obs = torch.zeros(1, OBSERVATION_SIZE)
+    obs[0, 0], obs[0, 1] = 60.0 / 127.0, 64.0 / 127.0
+    obs[0, FRAME_OBSERVATION_SIZE] = 68.0 / 127.0
+    obs[0, FRAME_OBSERVATION_SIZE + 1] = 64.0 / 127.0
+
+    coordinates, grids = DodgeHybridExtractor.policy_inputs(obs)
+    vx, vy = _sense_features(coordinates, grids)[0][:2]
+    assert vx * GRID_SIZE == pytest.approx(2.0)   # 8px right = 2 cells
+    assert vy * GRID_SIZE == pytest.approx(0.0)

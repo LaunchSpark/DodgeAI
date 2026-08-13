@@ -164,7 +164,16 @@ were near, and player position only arrived through a separate branch after the 
 layout had been flattened away. It costs nothing in the environment, since those
 coordinates are already part of the observation. Hazard channels keep their original
 order and count, so a checkpoint from before this migrates by copying into the leading
-channels while the player connections start fresh. Its CNN branch uses `32 -> 64 -> 64` filters and emits 128 features;
+channels while the player connections start fresh.
+
+The coordinate branch also receives six derived senses: player velocity, the
+nearest lethal cell's offset and distance, and how fast that distance is
+closing. Every one is a function of values already in the observation, so they
+cost nothing in the environment; they are supplied because the *shape* of the
+function matters. Reading "a threat is three cells right and gaining two cells
+per decision" off a pair of one-hot grids is a lot to ask of three
+convolutions, and basic dodging is exactly that question. Pickups and pattern
+telegraphs are excluded from the threat search, since neither ends an episode. Its CNN branch uses `32 -> 64 -> 64` filters and emits 128 features;
 a small MLP encodes the four player coordinates into 32 features. Separate
 `128 -> 64` actor and critic heads consume the combined representation. This preserves
 neighbor relationships while allowing the two frames to express movement. The original

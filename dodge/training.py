@@ -22,8 +22,9 @@ from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
 from .env import DodgeEnv
 from .observe import FRAME_OBSERVATION_SIZE, FRAME_STACK_SIZE
-from .policies import (ARCHITECTURES, HYBRID_INPUT_CHANNELS,
-                       architecture_name, policy_kwargs)
+from .policies import (ARCHITECTURES, COORDINATE_INPUTS,
+                       HYBRID_INPUT_CHANNELS, architecture_name,
+                       policy_kwargs)
 from .telemetry import DashboardSnapshot, EVENT_KEYS, ModelEntry
 
 
@@ -136,15 +137,28 @@ def migrate_single_frame_policy(source, target):
 
 
 GRID_CONV_WEIGHT = "features_extractor.grid_net.0.weight"
+COORDINATE_WEIGHT = "features_extractor.coordinate_net.0.weight"
 
 
-def migrate_grid_channels(source_params, target, path, device="cpu"):
-    """Load a checkpoint whose grid convolution has fewer input channels.
+def needs_input_migration(params):
+    """True when a checkpoint predates inputs the current policy expects."""
+    policy = params.get("policy", {})
+    grid = policy.get(GRID_CONV_WEIGHT)
+    coordinates = policy.get(COORDINATE_WEIGHT)
+    return ((grid is not None and grid.shape[1] != HYBRID_INPUT_CHANNELS)
+            or (coordinates is not None
+                and coordinates.shape[1] != COORDINATE_INPUTS))
 
-    The player channels were appended after the hazard channels precisely so
-    that an older checkpoint's weights occupy the leading slice. Everything
-    else is copied by name and shape; the player connections start from the new
-    policy's own initialization, as if those inputs had just been added.
+
+def migrate_widened_inputs(source_params, target, path, device="cpu"):
+    """Load a checkpoint whose first layers take fewer inputs than they now do.
+
+    New inputs are always appended -- player channels after the hazard
+    channels, derived senses after the raw coordinates -- so an older
+    checkpoint's weights occupy the leading slice of each widened layer.
+    Everything else is copied by name and shape; the new connections start from
+    the current policy's own initialization, as if those inputs had just been
+    added to a network that was otherwise mid-training.
     """
     target_state = target.policy.state_dict()
     for name, target_value in target_state.items():
@@ -153,10 +167,12 @@ def migrate_grid_channels(source_params, target, path, device="cpu"):
             continue
         if source_value.shape == target_value.shape:
             target_value.copy_(source_value)
-        elif (source_value.dim() == 4 and target_value.dim() == 4
+        elif (source_value.dim() == target_value.dim()
+                and source_value.dim() in (2, 4)
                 and source_value.shape[0] == target_value.shape[0]
                 and source_value.shape[2:] == target_value.shape[2:]
                 and source_value.shape[1] < target_value.shape[1]):
+            # Widened input dimension: convolution channels or linear columns.
             target_value[:, :source_value.shape[1]].copy_(source_value)
     target.policy.load_state_dict(target_state)
 
@@ -393,16 +409,15 @@ class PPOTrainingSession:
         )
 
     def _load_model(self, path, env):
-        # Inspected before construction: a checkpoint from before the player
-        # channels has a narrower first convolution, and building the policy
-        # around it raises a shape error rather than something recoverable.
+        # Inspected before construction: a checkpoint predating the player
+        # channels or the derived senses has narrower first layers, and building
+        # the policy around it raises a shape error rather than something
+        # recoverable.
         _, params, _ = load_from_zip_file(path, device=self.device)
-        grid_weight = params.get("policy", {}).get(GRID_CONV_WEIGHT)
-        if grid_weight is not None and \
-                grid_weight.shape[1] != HYBRID_INPUT_CHANNELS:
+        if needs_input_migration(params):
             model = self._new_model(env, architecture="hybrid-cnn")
-            return migrate_grid_channels(params["policy"], model, path,
-                                         device=self.device)
+            return migrate_widened_inputs(params["policy"], model, path,
+                                          device=self.device)
 
         # Loaded without an env first, because a legacy checkpoint's observation
         # space may not match and load(path, env=...) rejects that outright.
