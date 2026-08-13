@@ -206,6 +206,29 @@ def test_checkpoint_loads_into_a_different_env_count(tmp_path, saved_envs, loade
     assert model.get_env().num_envs == loaded_envs
 
 
+def test_loaded_checkpoint_adopts_the_session_buffer_size(tmp_path):
+    """Resuming must not inherit the checkpoint's own rollout length.
+
+    A model saved at n_steps=512 loaded into four envs would collect 2048
+    samples per update -- four times the intended buffer, and four times the
+    wait between learning steps.
+    """
+    from dodge.training import DashboardPPO, PPOTrainingSession
+
+    saved = DashboardPPO("MlpPolicy", _matching_vec_env(1),
+                         n_steps=512, batch_size=64, n_epochs=1, device="cpu")
+    path = tmp_path / "wide.zip"
+    saved.save(path)
+    assert saved.n_steps == 512
+
+    session = PPOTrainingSession(model_dir=tmp_path, logs_dir=tmp_path,
+                                 n_envs=4, rollout_steps=128, autostart=False)
+    model = session._load_model(path, _matching_vec_env(4))
+    assert model.n_steps == 128
+    assert model.rollout_buffer.buffer_size == 128
+    assert model.n_envs * model.n_steps == 512
+
+
 def test_rejects_a_non_positive_env_count(tmp_path):
     from dodge.training import PPOTrainingSession
     with pytest.raises(ValueError):

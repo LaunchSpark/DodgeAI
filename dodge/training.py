@@ -332,7 +332,16 @@ class PPOTrainingSession:
         # asserts the checkpoint was trained on the same number of environments.
         # Without this, changing --envs makes every existing checkpoint
         # unloadable. The second read costs well under a second.
-        model = DashboardPPO.load(path, env=env, device="cpu")
+        #
+        # n_steps comes from the session rather than the checkpoint so the
+        # buffer stays at n_envs * rollout_steps. Inheriting a checkpoint's own
+        # value multiplies it by the env count -- a model saved at 512 would
+        # collect 2048 samples per update across four envs, quadrupling the
+        # wait between learning steps.
+        model = DashboardPPO.load(
+            path, env=env, device="cpu",
+            custom_objects={"n_steps": self.rollout_steps},
+        )
         model.set_learning_tracker(self._track_learning)
         return model
 
