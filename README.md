@@ -112,7 +112,7 @@ The **Rewards** button opens sliders over the reward function. They write
 
     {
       "survival_per_frame": 0.01,
-      "center_bonus": 0.5,
+      "edge_penalty": 0.5,
       "death_penalty": 1.0,
       "score_weight": 1.0,
       "uncontrolled_score_weight": 0.0
@@ -123,6 +123,17 @@ training process from the next episode without restarting anything. That
 indirection is deliberate: environments run in separate processes, so a slider
 cannot reach them through memory. A missing or malformed file falls back to the
 defaults rather than stopping a run.
+
+`edge_penalty` is the survival credit given up against a wall. Survival pays a
+flat rate across the middle 60% of the arena and tapers only in the outer band,
+so the agent is discouraged from cowering in a corner — where there is nowhere
+left to dodge — without being paid to hold any particular spot.
+
+It replaces a `center_bonus` that peaked at the exact centre and fell away in
+every direction. That shape had a bug in it: the agent spawns at the centre, so
+*any* movement lowered its income and standing perfectly still was the
+best-paying action on the board. A file still using the old key is read at its
+old value; only the name and the shape changed.
 
 `uncontrolled_score_weight` is worth knowing about. The cart credits 0.5
 whenever an enemy dies to *another enemy* or to a pattern, which the agent does

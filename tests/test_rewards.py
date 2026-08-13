@@ -65,3 +65,21 @@ def test_every_slider_matches_a_config_field_and_a_sane_range(spec):
     assert 0 < spec.step <= (spec.maximum - spec.minimum)
     default = getattr(RewardConfig(), spec.name)
     assert spec.minimum <= default <= spec.maximum
+
+
+def test_the_old_centre_bonus_key_still_loads():
+    """rewards.json is hand-edited and lives outside git, so a rename must not
+    silently reset a weight the user chose."""
+    import json
+    from pathlib import Path
+    import tempfile
+    from dodge.rewards import load
+
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "rewards.json"
+        path.write_text(json.dumps({"center_bonus": 0.35, "death_penalty": 2.0}),
+                        encoding="utf-8")
+        config = load(path)
+
+    assert config.edge_penalty == 0.35
+    assert config.death_penalty == 2.0

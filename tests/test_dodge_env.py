@@ -189,15 +189,36 @@ def test_headless_drawing_changes_nothing_about_the_game():
     assert drawing.calls > 0, "the drawing backend must actually have been used"
 
 
-def test_center_survival_scalar_uses_euclidean_distance():
-    assert center_survival_scalar(5, 5, screen_width=10) == pytest.approx(1.5)
-    assert center_survival_scalar(10, 5, screen_width=10) == pytest.approx(0.5)
-    assert center_survival_scalar(10, 10, screen_width=10) == pytest.approx(
-        1.5 - np.sqrt(2)
-    )
+def test_survival_credit_is_flat_across_the_interior():
+    """The centre must not out-pay its surroundings.
+
+    A peak at the centre paid the agent to stand still, because that is where
+    it spawns and any movement reduced its income. Flat interior, no attractor.
+    """
+    centre = center_survival_scalar(5, 5, screen_width=10)
+    assert centre == pytest.approx(1.0)
+    for x, y in ((5, 6), (6, 5), (6.5, 6.5), (7, 5), (3, 5)):
+        assert center_survival_scalar(x, y, screen_width=10) == pytest.approx(centre)
 
 
-def test_center_survival_reward_is_fifty_percent_higher():
+def test_survival_credit_tapers_only_near_the_wall():
+    scalar = center_survival_scalar
+    # Plateau ends at 0.6 of the half-arena: 5 +/- 3 on a 10-wide screen.
+    assert scalar(8, 5, screen_width=10) == pytest.approx(1.0)
+    assert scalar(9, 5, screen_width=10) == pytest.approx(0.75)
+    assert scalar(10, 5, screen_width=10) == pytest.approx(0.5)
+    # Corners lie beyond a cardinal edge; the taper clamps instead of inverting.
+    assert scalar(10, 10, screen_width=10) == pytest.approx(0.5)
+    assert scalar(0, 0, screen_width=10) == pytest.approx(0.5)
+
+
+def test_edge_penalty_of_zero_pays_every_position_equally():
+    for x, y in ((5, 5), (10, 5), (10, 10)):
+        assert center_survival_scalar(x, y, screen_width=10,
+                                      edge_penalty=0.0) == pytest.approx(1.0)
+
+
+def test_survival_reward_at_the_spawn_point_is_the_flat_rate():
     env = DodgeEnv(action_repeat=1)
     env.reset(seed=31)
 
@@ -205,8 +226,8 @@ def test_center_survival_reward_is_fifty_percent_higher():
 
     assert not terminated
     assert info["survived_frames"] == 1
-    assert info["survival_reward"] == pytest.approx(0.015)
-    assert reward == pytest.approx(0.015)
+    assert info["survival_reward"] == pytest.approx(0.01)
+    assert reward == pytest.approx(0.01)
     env.close()
 
 

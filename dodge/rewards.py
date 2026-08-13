@@ -18,7 +18,10 @@ CONFIG_PATH = Path("rewards.json")
 @dataclass
 class RewardConfig:
     survival_per_frame: float = 0.01
-    center_bonus: float = 0.5
+    # Survival credit lost at the wall. The interior is flat, so this only
+    # discourages hugging an edge; it does not pay the agent to sit still on
+    # the centre pixel, which the previous centre-peaked shape did.
+    edge_penalty: float = 0.5
     death_penalty: float = 1.0
     score_weight: float = 1.0
     # The cart credits 0.5 whenever an enemy dies to another enemy or to a
@@ -50,8 +53,8 @@ class SliderSpec:
 SLIDERS = (
     SliderSpec("survival_per_frame", "Survival / frame", 0.0, 0.05, 0.001,
                "Paid for every frame survived"),
-    SliderSpec("center_bonus", "Centre bonus", 0.0, 1.0, 0.05,
-               "Extra survival credit at the arena centre"),
+    SliderSpec("edge_penalty", "Edge penalty", 0.0, 1.0, 0.05,
+               "Survival credit lost against a wall"),
     SliderSpec("death_penalty", "Death penalty", 0.0, 5.0, 0.1,
                "Charged once, on the frame the agent dies"),
     SliderSpec("score_weight", "Score weight", 0.0, 2.0, 0.05,
@@ -61,6 +64,11 @@ SLIDERS = (
 )
 
 UNCONTROLLED_SCORE_PER_ENEMY = 0.5
+
+# Weights that changed name. Both were "how much position matters", on the same
+# 0..1 scale, so an existing file carries its value over rather than silently
+# reverting to a default.
+RENAMED = {"center_bonus": "edge_penalty"}
 
 
 def load(path=CONFIG_PATH):
@@ -77,7 +85,8 @@ def load(path=CONFIG_PATH):
     if not isinstance(raw, dict):
         return RewardConfig()
     known = {field.name for field in fields(RewardConfig)}
-    values = {key: value for key, value in raw.items()
+    values = {RENAMED.get(key, key): value for key, value in raw.items()}
+    values = {key: value for key, value in values.items()
               if key in known and isinstance(value, (int, float))}
     return RewardConfig(**values).clamped()
 

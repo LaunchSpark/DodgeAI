@@ -20,15 +20,30 @@ from .observe import ARENA_SIZE, FRAME_STACK_SIZE, OBSERVATION_SIZE, observe_fra
 # can both change them; see RewardConfig for the defaults and their ranges.
 
 
-def center_survival_scalar(x, y, screen_width=ARENA_SIZE, center_bonus=0.5):
-    """Scale survival credit by distance from the arena centre.
+# How much of the half-arena pays full survival credit.
+CENTRE_PLATEAU = 0.6
 
-    At the default bonus this runs from 1.5x at the centre to 0.5x at a
-    cardinal edge. A bonus of 0 pays every position equally.
+
+def center_survival_scalar(x, y, screen_width=ARENA_SIZE, edge_penalty=0.5):
+    """Full survival credit across the interior, tapering only near the walls.
+
+    This used to peak at the exact centre and fall away in every direction,
+    which made standing perfectly still the best-paying action available: the
+    agent spawns at the centre, so any movement at all reduced its income. That
+    is a reward for doing nothing, in a game about moving.
+
+    A plateau keeps the part that was wanted -- do not cower against a wall,
+    where there is nowhere left to dodge -- without paying the agent to freeze
+    on one pixel. Inside the plateau every position pays the same, so position
+    only matters once the agent nears an edge.
     """
     center = screen_width / 2.0
-    distance = math.hypot(float(x) - center, float(y) - center)
-    return max(0.0, 1.0 + center_bonus - center_bonus * 2.0 * distance / center)
+    distance = math.hypot(float(x) - center, float(y) - center) / center
+    if distance <= CENTRE_PLATEAU:
+        return 1.0
+    # Corners sit past 1.0, so the taper is clamped rather than going negative.
+    taper = min((distance - CENTRE_PLATEAU) / (1.0 - CENTRE_PLATEAU), 1.0)
+    return max(0.0, 1.0 - edge_penalty * taper)
 
 
 class DodgeEnv(gym.Env):
@@ -161,7 +176,7 @@ class DodgeEnv(gym.Env):
             survival_credit += center_survival_scalar(
                 self.machine.globals.px,
                 self.machine.globals.py,
-                center_bonus=self.reward_config.center_bonus,
+                edge_penalty=self.reward_config.edge_penalty,
             )
 
         self.observation_frames = [
