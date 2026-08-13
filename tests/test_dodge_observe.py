@@ -7,6 +7,8 @@ import pytest
 pytest.importorskip("lupa.luajit21")
 
 from dodge.observe import (
+    ENEMY_BLAST,
+    ENEMY_NORMAL,
     CELL_COUNT,
     FRAME_OBSERVATION_SIZE,
     FRAME_STACK_SIZE,
@@ -72,3 +74,51 @@ def test_lethal_pattern_wins_when_cells_overlap_enemy(game):
     """)
     grid = cell_grid(game.globals)
     assert grid[3, 2] == HAZARD_LETHAL
+
+
+def test_paint_priority_covers_every_entity():
+    """A category with no rank would raise the moment it was painted."""
+    from dodge.observe import (ENEMY_CELL, HAZARD_LETHAL, HAZARD_WARNING,
+                               PAINT_PRIORITY)
+    for value in ENEMY_CELL.values():
+        assert value in PAINT_PRIORITY
+    assert HAZARD_WARNING in PAINT_PRIORITY
+    assert HAZARD_LETHAL in PAINT_PRIORITY
+
+
+def test_lethal_outranks_harmless_in_every_overlap():
+    """Ranking by raw ID hid a lethal blast behind a pickup, and a lethal
+    enemy behind a harmless warning telegraph."""
+    from dodge.observe import (ENEMY_BLAST, ENEMY_KAMIKAZE, ENEMY_NORMAL,
+                               HAZARD_LETHAL, HAZARD_WARNING, PAINT_PRIORITY,
+                               PICKUP_EXPLODE, PICKUP_FREEZE, PICKUP_SHRINK)
+    lethal = (HAZARD_LETHAL, ENEMY_BLAST, ENEMY_KAMIKAZE, ENEMY_NORMAL)
+    harmless = (HAZARD_WARNING, PICKUP_EXPLODE, PICKUP_FREEZE, PICKUP_SHRINK)
+    for danger in lethal:
+        for safe in harmless:
+            assert PAINT_PRIORITY[danger] > PAINT_PRIORITY[safe], (
+                f"{danger} must not be hidden behind {safe}")
+
+
+@pytest.mark.skipif(not Path("dodge.p8.png").exists(), reason="cartridge absent")
+@pytest.mark.parametrize("lua,expected", [
+    # A blast passes through other entities (dodge.lua:1017), so it is one of
+    # only two overlaps the cart can actually produce.
+    ("enemies={{x=60,y=60,s=20,p=-1},{x=64,y=64,s=8,p=3}}", ENEMY_BLAST),
+    # A pattern only destroys enemies once lethal (dodge.lua:2099), so enemies
+    # sit inside its warning telegraph -- the other reachable overlap.
+    ("enemies={{x=64,y=64,s=6,p=0}} cp={tpe=0,rects={{x=48,y=48,w=32,h=32,sh=1}}}",
+     ENEMY_NORMAL),
+    ("enemies={{x=64,y=64,s=6,p=0}} cp={tpe=0,rects={{x=48,y=48,w=32,h=32,sh=2}}}",
+     HAZARD_LETHAL),
+])
+def test_overlapping_cells_report_the_dangerous_entity(lua, expected):
+    from dodge.env import DodgeEnv
+    from dodge.observe import cell_grid
+
+    env = DodgeEnv(action_repeat=1)
+    env.reset(seed=3)
+    env.machine.lua.execute(lua)
+    value = int(cell_grid(env.machine.globals)[16, 16])
+    env.close()
+    assert value == expected

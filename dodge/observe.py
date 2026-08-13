@@ -24,6 +24,29 @@ PICKUP_SHRINK = 6
 HAZARD_WARNING = 7
 HAZARD_LETHAL = 8
 
+# Which entity survives when two want the same cell, ranked by how much it
+# matters to staying alive. Kept separate from the IDs above so the channel a
+# category occupies never moves: reordering the IDs would silently repoint every
+# trained filter at a different entity type.
+#
+# Only two overlaps can actually persist in the cart. A kamikaze blast is
+# excluded from enemy-vs-enemy collision (dodge.lua:1017) so it passes through
+# other entities, and a pattern only destroys enemies once it turns lethal
+# (dodge.lua:2099) so enemies sit inside its warning telegraph. Everything else
+# annihilates on contact and cannot overlap. Ranking by raw ID got both of those
+# backwards: a pickup outranked a lethal blast, and a harmless warning outranked
+# a lethal enemy.
+PAINT_PRIORITY = {
+    HAZARD_LETHAL: 6,
+    ENEMY_BLAST: 5,
+    ENEMY_KAMIKAZE: 4,
+    ENEMY_NORMAL: 3,
+    HAZARD_WARNING: 2,
+    PICKUP_EXPLODE: 1,
+    PICKUP_FREEZE: 1,
+    PICKUP_SHRINK: 1,
+}
+
 ENEMY_CELL = {
     0: ENEMY_NORMAL,
     1: ENEMY_KAMIKAZE,
@@ -34,8 +57,12 @@ ENEMY_CELL = {
 }
 
 
-def _paint(grid, x, y, width, height, value):
-    """Paint every 4px cell touched by an axis-aligned rectangle."""
+def _paint(grid, ranks, x, y, width, height, value):
+    """Paint every 4px cell touched by an axis-aligned rectangle.
+
+    A cell keeps whichever entity ranks highest in PAINT_PRIORITY, so a lethal
+    threat is never hidden behind something harmless.
+    """
     if width <= 0 or height <= 0:
         return
     left = max(0, math.floor(x / CELL_SIZE))
@@ -44,15 +71,18 @@ def _paint(grid, x, y, width, height, value):
     bottom = min(GRID_SIZE - 1, math.floor((y + height - 1e-9) / CELL_SIZE))
     if left > right or top > bottom:
         return
-    # Larger IDs are more important when entities overlap; lethal hazards are
-    # therefore never hidden by a pickup or ordinary enemy.
+    rank = PAINT_PRIORITY[value]
     view = grid[top:bottom + 1, left:right + 1]
-    np.maximum(view, value, out=view)
+    rank_view = ranks[top:bottom + 1, left:right + 1]
+    replace = rank_view < rank
+    view[replace] = value
+    rank_view[replace] = rank
 
 
 def cell_grid(globals_):
     """Return the 32x32 categorical map before normalization."""
     grid = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.uint8)
+    ranks = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.uint8)
 
     enemies = globals_.enemies
     for index in range(1, len(enemies) + 1):
@@ -60,10 +90,12 @@ def cell_grid(globals_):
         personality = int(enemy.p)
         value = ENEMY_CELL.get(personality, ENEMY_NORMAL)
         if personality >= 2:
-            _paint(grid, float(enemy.x) - 4, float(enemy.y) - 4, 8, 8, value)
+            _paint(grid, ranks, float(enemy.x) - 4, float(enemy.y) - 4,
+                   8, 8, value)
         else:
             size = float(enemy.s)
-            _paint(grid, float(enemy.x), float(enemy.y), size, size, value)
+            _paint(grid, ranks, float(enemy.x), float(enemy.y),
+                   size, size, value)
 
     pattern = globals_.cp
     if pattern is not None:
@@ -73,7 +105,7 @@ def cell_grid(globals_):
             rect = rects[index]
             lethal = lethal_pattern or float(rect.sh) == 2
             value = HAZARD_LETHAL if lethal else HAZARD_WARNING
-            _paint(grid, float(rect.x), float(rect.y),
+            _paint(grid, ranks, float(rect.x), float(rect.y),
                    float(rect.w), float(rect.h), value)
     return grid
 
