@@ -149,7 +149,14 @@ class DodgeFieldExtractor(BaseFeaturesExtractor):
 
     def _field_from_trunk(self, trunk):
         context = self.context_net(F.adaptive_avg_pool2d(trunk, CONTEXT_GRID))
-        context = F.interpolate(context, size=trunk.shape[-2:], mode="nearest")
+        # Bilinear, not nearest. Nearest holds each of the 4x4 context values
+        # flat across an 8x8 cell block -- 32x32px of a 128px arena -- so the
+        # context arrived as sixteen hard-edged tiles that swamped the trunk's
+        # per-cell detail. A global summary should be a smooth low-frequency
+        # surface; the step at a block edge is not a fact about danger, and the
+        # controller samples across those edges.
+        context = F.interpolate(context, size=trunk.shape[-2:],
+                                mode="bilinear", align_corners=False)
         return self.field_head(torch.cat((trunk, context), dim=1))
 
     def field(self, observations):

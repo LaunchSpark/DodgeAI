@@ -153,3 +153,36 @@ def test_it_trains_and_survives_a_save_load_cycle(tmp_path):
     assert architecture_name(restored) == "field-cnn"
     action, _ = restored.predict(np.zeros(OBSERVATION_SIZE, dtype=np.float32))
     assert 0 <= int(action) < 9
+
+
+def test_global_context_is_smooth_not_tiled():
+    """Nearest upsampling made the context sixteen hard-edged tiles.
+
+    The 4x4 context grid is broadcast back to 32x32. Held flat, each value
+    covers an 8x8 cell block -- 32x32px of a 128px arena -- and the picture is
+    dominated by block edges rather than by anything about danger. The step at
+    a boundary is also a lie the controller samples across.
+    """
+    import torch.nn.functional as F
+
+    from dodge.field import CONTEXT_GRID
+    from dodge.policies import HYBRID_INPUT_CHANNELS
+
+    extractor = _model().policy.features_extractor
+    grids = torch.rand(1, HYBRID_INPUT_CHANNELS, GRID_SIZE, GRID_SIZE)
+    with torch.no_grad():
+        trunk = extractor.field_net(grids)
+        small = extractor.context_net(F.adaptive_avg_pool2d(trunk, CONTEXT_GRID))
+        context = F.interpolate(small, size=(GRID_SIZE, GRID_SIZE),
+                                mode="bilinear", align_corners=False)
+
+    block = GRID_SIZE // CONTEXT_GRID
+    inside = context[0, :, :block, :block]
+    assert float(inside.std()) > 0.0, "context is piecewise constant across a block"
+
+    # And the whole point of the branch must survive: full-arena reach.
+    probe = torch.zeros(1, HYBRID_INPUT_CHANNELS, GRID_SIZE, GRID_SIZE,
+                        requires_grad=True)
+    extractor._field_from_trunk(extractor.field_net(probe))[0, 0, 16, 16].backward()
+    reached = torch.nonzero(probe.grad[0].abs().sum(0).sum(1))[:, 0]
+    assert int(reached.max() - reached.min()) + 1 == GRID_SIZE
