@@ -39,13 +39,67 @@ def test_action_offsets_are_distinct_and_symmetric():
 
 
 def test_the_network_only_produces_a_field():
-    from dodge.field import DodgeFieldExtractor
+    from dodge.field import SAMPLE_FRAMES, DodgeFieldExtractor
 
     model = _model()
     extractor = model.policy.features_extractor
     assert isinstance(extractor, DodgeFieldExtractor)
     field = extractor.field(torch.rand(4, OBSERVATION_SIZE))
-    assert field.shape == (4, 1, GRID_SIZE, GRID_SIZE)
+    # One field per future time, not one field.
+    assert field.shape == (4, len(SAMPLE_FRAMES), GRID_SIZE, GRID_SIZE)
+
+
+def test_each_sample_is_read_from_the_slice_for_its_arrival_time():
+    """The pairing is what makes "lethal now, clear later" expressible.
+
+    Reading any other slice would ask whether a cell is safe at a time the
+    player is not there, which is the question a single static field is stuck
+    with.
+    """
+    from dodge.field import N_ACTIONS, SAMPLE_FRAMES
+
+    slices, batch = len(SAMPLE_FRAMES), 2
+    sampled = torch.arange(batch * slices * N_ACTIONS * slices,
+                           dtype=torch.float32)
+    sampled = sampled.reshape(batch, slices, N_ACTIONS, slices)
+
+    paired = sampled.permute(0, 2, 1, 3).diagonal(dim1=2, dim2=3)
+
+    assert paired.shape == (batch, N_ACTIONS, slices)
+    for b in range(batch):
+        for action in range(N_ACTIONS):
+            for k in range(slices):
+                assert paired[b, action, k] == sampled[b, k, action, k]
+
+
+def test_the_field_can_see_the_whole_arena():
+    """Two lethal bars in pattern 11 start 151px apart.
+
+    With only the convolution trunk the reach was 11 cells, 44px, so no output
+    cell could see both and "which half is safe" was unanswerable.
+    """
+    from dodge.observe import CELL_SIZE
+    from dodge.policies import HYBRID_INPUT_CHANNELS
+
+    extractor = _model().policy.features_extractor
+    grids = torch.zeros(1, HYBRID_INPUT_CHANNELS, GRID_SIZE, GRID_SIZE,
+                        requires_grad=True)
+    extractor._field_from_trunk(extractor.field_net(grids))[0, 0, 16, 16].backward()
+
+    reached = torch.nonzero(grids.grad[0].abs().sum(0).sum(1))[:, 0]
+    span = int(reached.max() - reached.min()) + 1
+    assert span * CELL_SIZE >= GRID_SIZE * CELL_SIZE,         f"only {span * CELL_SIZE}px of a {GRID_SIZE * CELL_SIZE}px arena"
+
+
+def test_the_horizon_outlasts_a_sweeping_pattern():
+    """Pattern 11's bars cross at 0.7px a frame; the manoeuvre is seconds long."""
+    from dodge.field import SAMPLE_FRAMES
+
+    assert max(SAMPLE_FRAMES) >= 90, "under 1.5s cannot see the bar move"
+    # The discount must leave the far samples with real weight, or the horizon
+    # is decorative.
+    from dodge.field import SAMPLE_DECAY
+    assert SAMPLE_DECAY ** max(SAMPLE_FRAMES) > 0.1
 
 
 def test_it_is_far_smaller_than_the_hybrid_network():

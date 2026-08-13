@@ -135,7 +135,7 @@ the player, read the field along those paths, and let the totals be the logits
 
 | | hybrid-cnn | field-cnn |
 | --- | --- | --- |
-| Parameters | 644,842 | **90,851** |
+| Parameters | 644,842 | **104,984** |
 | Largest single layer | `Linear(4096, 128)`, 87% of the model | none over 37k |
 | Output | 9 logits | 32x32 danger field |
 

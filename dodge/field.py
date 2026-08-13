@@ -48,12 +48,20 @@ from .policies import (HYBRID_INPUT_CHANNELS, NEGATIVE_SLOPE, COORDINATE_INPUTS,
 
 N_ACTIONS = len(ACTION_MASKS)
 
-# Frames ahead at which each action's path is sampled. The first is the
-# decision interval itself; the rest are the coast after the button is
-# released, which is what the environment actually does.
-SAMPLE_FRAMES = (2, 4, 8, 12, 18, 24)
-# Later samples are discounted: they are both less certain and further away.
-SAMPLE_DECAY = 0.93
+# Frames ahead at which each action is judged, and equally the times the field
+# is predicted for: slice k answers "how dangerous is this cell at frame
+# SAMPLE_FRAMES[k]".
+#
+# Stretched to nearly two seconds because the manoeuvres that were failing take
+# that long. Pattern 11 sweeps two lethal bars across the arena at 0.7px a
+# frame; playing it means letting the near bar pass and moving into the space
+# behind it, which needs the bar's position seconds out, not the 17px of travel
+# a 24-frame horizon could see.
+SAMPLE_FRAMES = (4, 12, 24, 48, 72, 108)
+# Gentle enough that the far samples still carry weight: at the old 0.93 the
+# 108-frame sample would be discounted to 0.0004 and the horizon would be
+# decorative.
+SAMPLE_DECAY = 0.985
 
 # Initial logit sharpness. Low enough that the first rollouts are near
 # uniform -- committing hard to a randomly initialised field would be
@@ -62,6 +70,8 @@ SAMPLE_DECAY = 0.93
 INITIAL_TEMPERATURE = 0.5
 
 TRUNK_CHANNELS = 32
+CONTEXT_CHANNELS = 16
+CONTEXT_GRID = 4
 VALUE_FEATURES = 64
 FIELD_FEATURES_DIM = N_ACTIONS + VALUE_FEATURES
 
@@ -111,7 +121,21 @@ class DodgeFieldExtractor(BaseFeaturesExtractor):
             nn.Conv2d(64, TRUNK_CHANNELS, 3, padding=1),
             activation(),
         )
-        self.field_head = nn.Conv2d(TRUNK_CHANNELS, 1, 1)
+        # Arena-wide context, folded back in at full resolution. The trunk's
+        # receptive field is 11 cells, 44px; pattern 11's two bars start 151px
+        # apart, so no output cell could see both and "which half is safe" was
+        # not a question the field could ask. Pooling to 4x4 and broadcasting
+        # back gives every cell the whole arena's summary while the field stays
+        # fully convolutional.
+        self.context_net = nn.Sequential(
+            nn.Conv2d(TRUNK_CHANNELS, 32, 3, padding=1),
+            activation(),
+            nn.Conv2d(32, CONTEXT_CHANNELS, 3, padding=1),
+            activation(),
+        )
+        # One output per time slice rather than one field.
+        self.field_head = nn.Conv2d(TRUNK_CHANNELS + CONTEXT_CHANNELS,
+                                    len(SAMPLE_FRAMES), 1)
         self.value_net = nn.Sequential(
             nn.Linear(TRUNK_CHANNELS + COORDINATE_INPUTS, VALUE_FEATURES),
             activation(),
@@ -123,15 +147,23 @@ class DodgeFieldExtractor(BaseFeaturesExtractor):
         self.register_buffer("sample_weights",
                              torch.as_tensor(_sample_weights()))
 
+    def _field_from_trunk(self, trunk):
+        context = self.context_net(F.adaptive_avg_pool2d(trunk, CONTEXT_GRID))
+        context = F.interpolate(context, size=trunk.shape[-2:], mode="nearest")
+        return self.field_head(torch.cat((trunk, context), dim=1))
+
     def field(self, observations):
-        """The danger field alone, for rendering and for inspection."""
+        """Danger per cell per time slice: (batch, len(SAMPLE_FRAMES), 32, 32).
+
+        Slice 0 is the nearest future and is what the watch overlay draws.
+        """
         _, grids = DodgeHybridExtractor.policy_inputs(observations)
-        return self.field_head(self.field_net(grids))
+        return self._field_from_trunk(self.field_net(grids))
 
     def forward(self, observations):
         coordinates, grids = DodgeHybridExtractor.policy_inputs(observations)
         trunk = self.field_net(grids)
-        field = self.field_head(trunk)
+        field = self._field_from_trunk(trunk)
 
         # Current-frame player position, in pixels.
         position = coordinates[:, -2:] * (ARENA_SIZE - 1)
@@ -140,12 +172,19 @@ class DodgeFieldExtractor(BaseFeaturesExtractor):
         # grid_sample wants normalised coordinates, and (x, y) order.
         normalised = points / (GRID_SIZE * CELL_SIZE / 2.0) - 1.0
         batch = observations.shape[0]
+        # Samples every slice at every point: (batch, slices, actions, samples).
         sampled = F.grid_sample(
             field, normalised.reshape(batch, N_ACTIONS, len(SAMPLE_FRAMES), 2),
             mode="bilinear", padding_mode="border", align_corners=False,
         )
-        # (batch, 1, actions, samples) -> danger per action along its path
-        danger = (sampled.squeeze(1) * self.sample_weights).sum(dim=-1)
+        # Each sample must be read from the slice for its own arrival time --
+        # where the player will be at frame t, judged by the field predicted
+        # for frame t. That pairing is the diagonal; taking any other entry
+        # would ask whether a cell is safe at a time the player is not there.
+        # It is what lets "lethal now, clear in two seconds" be expressed at
+        # all, which a single field per cell cannot say.
+        paired = sampled.permute(0, 2, 1, 3).diagonal(dim1=2, dim2=3)
+        danger = (paired * self.sample_weights).sum(dim=-1)
 
         senses = _sense_features(coordinates, grids)
         pooled = trunk.mean(dim=(2, 3))
