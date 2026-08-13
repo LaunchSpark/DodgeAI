@@ -50,6 +50,16 @@ def resolve_device(device, architecture):
     return get_device("cpu")
 
 
+MINIBATCHES_PER_EPOCH = 16
+MIN_MINIBATCH = 64
+
+
+def minibatch_size(buffer_samples):
+    """Split a rollout buffer into a workable number of optimizer passes."""
+    return min(max(MIN_MINIBATCH, buffer_samples // MINIBATCHES_PER_EPOCH),
+               buffer_samples)
+
+
 @dataclass
 class _SaveRequest:
     path: Path
@@ -317,7 +327,7 @@ class PPOTrainingSession:
         logs_dir=Path("artifacts/tensorboard"),
         total_steps=250_000,
         n_envs=8,
-        rollout_steps=64,
+        rollout_steps=256,
         difficulty=1,
         patterns=False,
         powerups=False,
@@ -335,12 +345,22 @@ class PPOTrainingSession:
         if n_envs < 1:
             raise ValueError("n_envs must be at least 1")
         # PPO's buffer is n_envs * rollout_steps samples per update, held at
-        # 512 by the defaults. Environments are favoured over steps because
-        # collection makes one forward pass per step regardless of batch size,
-        # and at these sizes that pass is dominated by kernel launches: eight
-        # envs halve the number of passes without changing the simulation work.
-        # Not pushed further because at 32 steps GAE starts leaning on the
-        # critic, which is currently the weak part.
+        # 2048 by the defaults.
+        #
+        # Eight envs rather than more steps: collection makes one forward pass
+        # per step regardless of batch size, and at these sizes that pass is
+        # dominated by kernel launches, so envs cut the number of passes
+        # without changing the simulation work.
+        #
+        # 256 steps because rollout length is close to free once the minibatch
+        # scales with the buffer -- collection and the update both grow with
+        # it, so samples/second stays flat and mainly the cadence changes. The
+        # longer rollout cuts gradient noise by drawing each update from four
+        # times as much fresh experience, and cuts how much of each advantage
+        # rests on the bootstrap at the rollout boundary from 5.5% to 1.4%.
+        # Both matter here because the critic is the weak part. At roughly 100
+        # decisions an episode it also means every env's rollout spans a full
+        # episode, so most terminals in the buffer are real deaths.
         self.n_envs = n_envs
         self.rollout_steps = rollout_steps
         self.architecture = architecture
@@ -397,11 +417,16 @@ class PPOTrainingSession:
             env,
             learning_rate=3e-4,
             n_steps=self.rollout_steps,
-            # The buffer holds n_envs * rollout_steps samples, so the guard has
-            # to account for both. Clamping to rollout_steps alone shrank the
-            # minibatch whenever envs were traded for steps, which multiplies
-            # the number of optimizer passes for no reason.
-            batch_size=min(64, self.n_envs * self.rollout_steps),
+            # Sixteen minibatches an epoch, floored at 64 samples and capped by
+            # the buffer itself.
+            #
+            # The minibatch has to track the buffer, not sit at a constant: the
+            # buffer is n_envs * rollout_steps, and a fixed 64 would have put 32
+            # minibatches in every epoch once the buffer reached 2048, doubling
+            # the optimizer passes when the update is already most of the cycle.
+            # The floor keeps small buffers from being split into gradients too
+            # noisy to be worth taking.
+            batch_size=minibatch_size(self.n_envs * self.rollout_steps),
             n_epochs=10,
             gamma=0.995,
             gae_lambda=0.95,

@@ -12,6 +12,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
 from dodge.env import DodgeEnv
 from dodge.policies import ARCHITECTURES, policy_kwargs
+from dodge.training import minibatch_size
 
 
 def main():
@@ -20,13 +21,13 @@ def main():
     parser.add_argument("--device", default="auto",
                         help="torch device for the policy update")
     parser.add_argument("--envs", type=int, default=8,
-                        help="games stepped in parallel processes (default 4)")
+                        help="games stepped in parallel processes (default 8)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--difficulty", choices=("easy", "normal", "hard"), default="easy")
     parser.add_argument("--patterns", action="store_true")
     parser.add_argument("--powerups", action="store_true")
     parser.add_argument("--action-repeat", type=int, default=4)
-    parser.add_argument("--rollout-steps", type=int, default=64)
+    parser.add_argument("--rollout-steps", type=int, default=256)
     parser.add_argument("--architecture", choices=ARCHITECTURES, default="hybrid-cnn")
     parser.add_argument("--name", default=None)
     parser.add_argument("--models-dir", type=Path, default=Path("artifacts/models"))
@@ -62,7 +63,7 @@ def main():
         env,
         learning_rate=3e-4,
         n_steps=args.rollout_steps,
-        batch_size=64,
+        batch_size=minibatch_size(args.envs * args.rollout_steps),
         n_epochs=10,
         gamma=0.995,
         gae_lambda=0.95,

@@ -126,19 +126,18 @@ the cycle rather than a fifth, so it is the next thing worth optimising.
 
 ### Parallel environments
 
-Training defaults to eight games stepped in parallel processes:
+Training defaults to eight games stepped in parallel processes, 256 steps each:
 
-    python training_gui.py --envs 8 --rollout-steps 64
+    python training_gui.py --envs 8 --rollout-steps 256
 
 PPO's buffer holds `envs * rollout-steps` samples per update, which the defaults
-keep at 512. Environments are favoured over steps for a reason that is not about
-simulation: collection makes **one forward pass per step regardless of batch
-size**, and at these sizes that pass is dominated by kernel launches rather than
-arithmetic. Halving the steps and doubling the envs therefore halves the number
-of passes while the simulation work is unchanged.
+keep at 2048. The two factors are set for different reasons.
 
-Measured at a constant 512-sample buffer, with the update time identical
-throughout:
+**Envs, not steps, for parallelism.** Collection makes **one forward pass per
+step regardless of batch size**, and at these sizes that pass is dominated by
+kernel launches rather than arithmetic, so more envs cut the number of passes
+while the simulation work is unchanged. Measured at a constant 512-sample
+buffer, update time identical throughout:
 
 | Envs x steps | Collect | Full cycle | Throughput |
 | --- | --- | --- | --- |
@@ -147,11 +146,46 @@ throughout:
 | 16 x 32 | 0.44s | 1.64s | 313 steps/s |
 
 16 environments is fastest but is not the default, because shortening the
-rollout costs advantage quality. With `gamma=0.995` and `gae_lambda=0.95` the
-advantage weight halves every 12 steps, so a 64-step rollout captures 97.3% of
-it before bootstrapping, while 32 steps captures only 83.5% — pushing a sixth of
-the advantage onto the critic, currently the weakest part of the system. Six
-percent more throughput is not worth that.
+rollout costs advantage quality — see below — and the weak part of this system
+is the critic.
+
+**Rollout length is close to free**, as long as the minibatch scales with it.
+Collection and the update both grow with rollout length, so samples per second
+is roughly flat and mainly the update cadence changes:
+
+| Envs x steps | Minibatch | Collect | Update | Cycle | Throughput |
+| --- | --- | --- | --- | --- | --- |
+| 8 x 64 | 64 | 0.50s | 1.15s | 1.65s | 310 steps/s |
+| 8 x 256 | 64 | 1.90s | 5.02s | 6.92s | 296 steps/s |
+| 8 x 256 | **128** | 1.96s | 3.18s | 5.14s | **399 steps/s** |
+
+The minibatch is `buffer / 16`, floored at 64 — see `minibatch_size()`. Holding
+it at a constant 64 would have put 32 minibatches in every epoch at this buffer
+size, and the update is already most of the cycle; letting it grow keeps the
+optimizer at 16 passes an epoch and is *faster than the old default* despite
+learning from four times as much experience per update, because a bigger
+minibatch covers the launch cost of a GPU pass better.
+
+Length itself is worth spending on for two reasons. It cuts gradient noise by
+drawing each update from more fresh experience. And it shrinks how much of each
+advantage rests on the value estimate at the rollout boundary: with
+`gamma=0.995` and `gae_lambda=0.95`, the final sample's advantage is 99.5%
+bootstrap, the one before it 48%, falling below 10% about eight steps back.
+
+| Rollout | Samples over 10% bootstrap | Buffer mean |
+| --- | --- | --- |
+| 64 | 8 / 64 (12%) | 5.5% |
+| 128 | 8 / 128 (6%) | 2.8% |
+| 256 | 8 / 256 (3%) | 1.4% |
+
+Episodes run about 100 decisions at present, so a 256-step rollout also spans
+more than one full episode per env — most of the buffer's terminals are real
+deaths rather than bootstrapped guesses.
+
+Note that rollout boundaries do not cut episodes: PPO carries `_last_obs` across
+collections, so an episode simply continues into the next rollout, and a death
+*inside* a rollout already contributes a true terminal through `episode_starts`.
+The boundary costs an advantage estimate, not an episode.
 
 Environments run in separate processes (`SubprocVecEnv`); stepping them in one
 process would diversify experience without adding throughput, since every Dodge
@@ -177,10 +211,11 @@ Neither change pays much alone: remove one and the other becomes the wall, since
 both cost the same thing. Together they make the environment 1.7x faster.
 
 That is not 1.7x on training. With eight workers the collection phase is
-dominated by its 64 sequential policy forward passes and the process round
-trips around them, not by simulation, so the full cycle only moves from 1.74s to
-1.69s. The environment headroom shows up if the env count rises, and in anything
-that steps a single environment — evaluation, or watching a policy play.
+dominated by its sequential policy forward passes and the process round trips
+around them, not by simulation; measured at 8 x 64, the full cycle moved only
+from 1.74s to 1.69s. The environment headroom shows up if the env count rises,
+and in anything that steps a single environment — evaluation, or watching a
+policy play.
 
 ## PPO bots
 

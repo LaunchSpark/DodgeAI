@@ -413,6 +413,7 @@ def test_checkpoint_without_player_channels_migrates(tmp_path):
 
 
 @pytest.mark.parametrize("n_envs,rollout_steps,expected", [
+    (8, 256, 128),   # the defaults: a 2048-sample buffer, 16 minibatches
     (8, 64, 64),     # buffer 512 comfortably exceeds the target minibatch
     (16, 32, 64),    # buffer is still 512 even though each env is short
     (1, 8, 8),       # genuinely small buffer must clamp
