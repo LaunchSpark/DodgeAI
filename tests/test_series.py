@@ -117,3 +117,35 @@ def test_odd_capacity_is_rejected():
     except ValueError:
         return
     raise AssertionError("expected ValueError for an odd capacity")
+
+
+def test_copy_is_detached_from_the_original():
+    """The dashboard renders from a copy so it need not hold the trainer's lock."""
+    from dodge.series import RunSeries
+
+    series = RunSeries()
+    series.extend([1.0, 2.0, 3.0])
+    clone = series.copy()
+    series.extend([100.0] * 20)
+
+    assert clone.as_list() == [1.0, 2.0, 3.0]
+    assert clone.count == 3
+    assert clone.latest == 3.0
+    # A snapshot of the run so far, not a live view: the copy's baseline is
+    # the mean of the three samples it actually holds.
+    assert clone.baseline == 2.0
+    assert len(series) > len(clone), "the original kept growing"
+
+
+def test_copy_survives_compaction_of_the_original():
+    from dodge.series import CAPACITY, RunSeries
+
+    series = RunSeries()
+    series.extend(range(CAPACITY))
+    clone = series.copy()
+    before, interval = clone.as_list(), clone.interval
+    series.extend(range(CAPACITY * 4))
+
+    assert clone.as_list() == before
+    assert series.interval > interval, "the original compacted further"
+    assert clone.interval == interval, "compaction must not reach the copy"

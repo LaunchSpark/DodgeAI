@@ -2,7 +2,7 @@
 
 import random
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from .series import RunSeries
@@ -52,6 +52,27 @@ class DashboardSnapshot:
     events: dict[str, EventCount] = field(
         default_factory=lambda: {key: EventCount() for key in EVENT_KEYS}
     )
+
+    def copy(self):
+        """A detached copy the dashboard can render from outside the lock.
+
+        The trainer writes this structure from the PPO callback on every step.
+        Rendering directly from it means holding that lock for the length of a
+        frame, which stalls collection; copying costs microseconds because
+        every series here is capacity-bounded.
+        """
+        return replace(
+            self,
+            reward=self.reward.copy(),
+            entropy=self.entropy.copy(),
+            episode_length=self.episode_length.copy(),
+            enemies_killed=self.enemies_killed.copy(),
+            events={
+                key: EventCount(count.rollout, count.total,
+                                deque(count.history, maxlen=count.history.maxlen))
+                for key, count in self.events.items()
+            },
+        )
 
 
 @dataclass(frozen=True)

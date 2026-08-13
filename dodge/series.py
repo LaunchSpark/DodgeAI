@@ -118,3 +118,16 @@ class RunSeries:
 
     def as_list(self):
         return list(self.values)
+
+    def copy(self):
+        """A detached copy, so a reader can work without holding the writer's lock.
+
+        Every mutable field is rebuilt; the scalars carry over as they are. The
+        cost is bounded by CAPACITY, which is the whole point of this class.
+        """
+        clone = RunSeries.__new__(RunSeries)
+        clone.__dict__.update(self.__dict__)
+        for name in ("values", "trend", "_bucket", "_trend_bucket",
+                     "_baseline_samples"):
+            setattr(clone, name, list(getattr(self, name)))
+        return clone

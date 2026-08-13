@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from contextlib import nullcontext
 from dataclasses import dataclass
+from functools import lru_cache
 import json
 from pathlib import Path
 import sys
@@ -22,6 +23,11 @@ try:
 except ImportError:  # The GUI remains usable before requirements are refreshed.
     psutil = None
 
+
+# Charts move at the pace of finished episodes, not of a game loop, so a
+# 60Hz redraw spent a whole core to show the same numbers three times over.
+DASHBOARD_FPS = 20
+SYSTEM_POLL_SECONDS = 1.0
 
 WINDOW_SIZE = (1328, 760)
 MIN_WINDOW_SIZE = (1000, 650)
@@ -52,6 +58,7 @@ EVENT_SPECS = (
 )
 
 
+@lru_cache(maxsize=1)
 def accelerator_name():
     """What the policy update will actually run on.
 
@@ -85,6 +92,9 @@ class DashboardRenderer:
         self.font_title = pygame.font.SysFont("segoeui", 16, bold=True)
         self.font_value = pygame.font.SysFont("segoeui", 16, bold=True)
         self.buttons: list[Button] = []
+        self._background = None
+        self._system_reading = None
+        self._system_read_at = 0.0
 
     @staticmethod
     def _card(surface, rect, title=None):
@@ -114,10 +124,20 @@ class DashboardRenderer:
         return text + suffix
 
     def _draw_background(self, surface):
-        surface.fill(BG)
-        for y in range(10, surface.get_height(), 20):
-            for x in range(10, surface.get_width(), 20):
-                pygame.draw.circle(surface, (49, 47, 44), (x, y), 1)
+        """Blit the dotted backdrop, rebuilding it only when the window resizes.
+
+        Drawn directly this was 2,560 one-pixel circles a frame, none of which
+        ever change.
+        """
+        size = surface.get_size()
+        if self._background is None or self._background.get_size() != size:
+            background = pygame.Surface(size)
+            background.fill(BG)
+            for y in range(10, size[1], 20):
+                for x in range(10, size[0], 20):
+                    pygame.draw.circle(background, (49, 47, 44), (x, y), 1)
+            self._background = background
+        surface.blit(self._background, (0, 0))
 
     def _draw_chart(self, surface, rect, title, series, color, suffix="",
                     rising=True, elapsed=0.0):
@@ -152,11 +172,15 @@ class DashboardRenderer:
             raw = to_points(series.values)
             trend = to_points(series.trend)
 
-            overlay = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
-            polygon = raw + [(raw[-1][0], plot.bottom), (raw[0][0], plot.bottom)]
+            # The translucent fill needs its own surface, but only plot-sized:
+            # allocating and blitting a whole window per chart was most of the
+            # render cost, and eleven of them were done every frame.
+            overlay = pygame.Surface((plot.w, plot.h + 1), pygame.SRCALPHA)
+            local = [(x - plot.x, y - plot.y) for x, y in raw]
+            polygon = local + [(local[-1][0], plot.h), (local[0][0], plot.h)]
             pygame.draw.polygon(overlay, (*color, 34), polygon)
-            pygame.draw.lines(overlay, (*color, 105), False, raw, 1)
-            surface.blit(overlay, (0, 0))
+            pygame.draw.lines(overlay, (*color, 105), False, local, 1)
+            surface.blit(overlay, plot.topleft)
             pygame.draw.lines(surface, color, False, trend, 3)
 
             self._text(surface, self.font_small, f"{high:.1f}", MUTED,
@@ -436,17 +460,32 @@ class DashboardRenderer:
             return "Complete", 1.0, GREEN
         return "Rollout", data.rollout_progress, GREEN
 
+    def _system_reading_cached(self):
+        """CPU and memory, read at most once a second.
+
+        psutil.virtual_memory() alone measured 5.8ms on this machine, which is
+        an absurd share of a frame for three numbers that move slowly and are
+        displayed to the nearest percent.
+        """
+        now = time.monotonic()
+        if self._system_reading is not None \
+                and now - self._system_read_at < SYSTEM_POLL_SECONDS:
+            return self._system_reading
+        if psutil:
+            reading = (psutil.cpu_percent(),
+                       psutil.virtual_memory().percent,
+                       psutil.Process().memory_info().rss / (1024 * 1024))
+        else:
+            reading = (0, 0, 0)
+        self._system_reading = reading
+        self._system_read_at = now
+        return reading
+
     def _draw_system(self, surface, rect):
         self._card(surface, rect, "System")
         self._text(surface, self.font_title, "System", TEXT,
                    (rect.centerx, rect.y + 11), "midtop")
-        if psutil:
-            cpu = psutil.cpu_percent()
-            memory = psutil.virtual_memory().percent
-            process_mb = psutil.Process().memory_info().rss / (1024 * 1024)
-        else:
-            cpu = memory = 0
-            process_mb = 0
+        cpu, memory, process_mb = self._system_reading_cached()
         rows = (
             ("CPU", cpu, f"{cpu:.0f}%", CYAN),
             ("Memory", memory, f"{process_mb:.0f} MB", GREEN),
@@ -510,10 +549,11 @@ class DashboardRenderer:
              round(rect.bottom - value / high * rect.h))
             for i, value in enumerate(values)
         ]
-        overlay = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
-        polygon = points + [(points[-1][0], rect.bottom), (points[0][0], rect.bottom)]
+        overlay = pygame.Surface((rect.w, rect.h + 1), pygame.SRCALPHA)
+        local = [(x - rect.x, y - rect.y) for x, y in points]
+        polygon = local + [(local[-1][0], rect.h), (local[0][0], rect.h)]
         pygame.draw.polygon(overlay, (*color, 35), polygon)
-        surface.blit(overlay, (0, 0))
+        surface.blit(overlay, rect.topleft)
         pygame.draw.lines(surface, color, False, points, 2)
 
     def _draw_toast(self, surface, text):
@@ -804,29 +844,38 @@ class TrainingDashboard:
         toast = self.toast if time.monotonic() < self.toast_until else None
         lock = getattr(self.session, "lock", nullcontext())
         modal_open = self.model_menu_open or self.reward_menu_open
+        # Copy under the lock, draw outside it. The PPO callback takes this
+        # same lock on every step, so rendering while holding it left the
+        # trainer -- and all eight environment processes behind it -- waiting
+        # on charts.
         with lock:
-            self.renderer.render(self.surface, self.session.data,
-                                 None if modal_open else toast)
-            if self.reward_menu_open:
-                self.reward_regions = self.renderer.draw_reward_menu(
-                    self.surface, self.reward_config, self.reward_config_path
-                )
-                if toast:
-                    self.renderer._draw_toast(self.surface, toast)
-            if self.model_menu_open:
-                self.model_regions = self.renderer.draw_model_menu(
-                    self.surface, self.model_name, self.model_entries,
-                    self.selected_model, self.model_offset,
-                    self.model_name_focused, self.model_name_cursor,
-                    self.model_name_selected,
-                )
-                if toast:
-                    self.renderer._draw_toast(self.surface, toast)
+            data = self.session.data.copy()
+        self.renderer.render(self.surface, data, None if modal_open else toast)
+        if self.reward_menu_open:
+            self.reward_regions = self.renderer.draw_reward_menu(
+                self.surface, self.reward_config, self.reward_config_path
+            )
+            if toast:
+                self.renderer._draw_toast(self.surface, toast)
+        if self.model_menu_open:
+            self.model_regions = self.renderer.draw_model_menu(
+                self.surface, self.model_name, self.model_entries,
+                self.selected_model, self.model_offset,
+                self.model_name_focused, self.model_name_cursor,
+                self.model_name_selected,
+            )
+            if toast:
+                self.renderer._draw_toast(self.surface, toast)
         pygame.display.flip()
 
     def run(self):
         clock = pygame.time.Clock()
         running = True
+        # Input is polled at 60Hz so clicks and drags stay responsive; only the
+        # redraw is throttled, since nothing on screen changes faster than
+        # DASHBOARD_FPS can show.
+        frame_interval = 1.0 / DASHBOARD_FPS
+        next_draw = 0.0
         try:
             while running:
                 dt = min(clock.tick(60) / 1000.0, 0.1)
@@ -862,7 +911,12 @@ class TrainingDashboard:
                                 max(event.h, MIN_WINDOW_SIZE[1]))
                         self.surface = pygame.display.set_mode(size, pygame.RESIZABLE)
                 self.session.tick(dt)
-                self.draw()
+                now = time.monotonic()
+                if now >= next_draw:
+                    # Advance from the deadline, not from now, so the cadence
+                    # does not drift; clamped so a stall cannot leave a backlog.
+                    next_draw = max(now, next_draw + frame_interval)
+                    self.draw()
         finally:
             pygame.key.stop_text_input()
             self.session.close()

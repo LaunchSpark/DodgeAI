@@ -236,3 +236,69 @@ def test_achievement_heading_fits_long_model_names():
     fitted = renderer._fit_text(renderer.font_title, title, 180)
     assert fitted.endswith("...")
     assert renderer.font_title.size(fitted)[0] <= 180
+
+
+def test_rendering_happens_outside_the_telemetry_lock(tmp_path):
+    """The PPO callback takes this lock on every step.
+
+    Holding it for the length of a frame stalled the trainer, and behind it
+    every environment subprocess, while charts were drawn.
+    """
+    import threading
+    from training_gui import DashboardRenderer, TrainingDashboard
+
+    class LockedSession(_StubSession):
+        def __init__(self, path):
+            super().__init__(path)
+            self.lock = threading.Lock()
+
+    session = LockedSession(tmp_path / "rewards.json")
+    dashboard = TrainingDashboard(session, hidden=True)
+
+    held = []
+    original = DashboardRenderer.render
+
+    def spy(self, surface, data, toast=None):
+        held.append(session.lock.locked())
+        return original(self, surface, data, toast)
+
+    dashboard.renderer.render = spy.__get__(dashboard.renderer)
+    dashboard.draw()
+
+    assert held == [False], "render ran while the trainer's lock was held"
+    pygame.quit()
+
+
+def test_dashboard_renders_from_a_copy_not_the_live_snapshot(tmp_path):
+    """A copy is what makes releasing the lock safe."""
+    from training_gui import DashboardRenderer, TrainingDashboard
+
+    session = _StubSession(tmp_path / "rewards.json")
+    dashboard = TrainingDashboard(session, hidden=True)
+
+    seen = []
+    original = DashboardRenderer.render
+
+    def spy(self, surface, data, toast=None):
+        seen.append(data)
+        return original(self, surface, data, toast)
+
+    dashboard.renderer.render = spy.__get__(dashboard.renderer)
+    dashboard.draw()
+
+    assert seen[0] is not session.data
+    assert seen[0].reward.as_list() == session.data.reward.as_list()
+    pygame.quit()
+
+
+def test_system_readings_are_polled_about_once_a_second():
+    """psutil.virtual_memory() measured 5.8ms -- far too slow for a frame."""
+    from training_gui import DashboardRenderer
+
+    pygame.font.init()   # an earlier test's pygame.quit() tears this down
+    renderer = DashboardRenderer()
+    first = renderer._system_reading_cached()
+    assert renderer._system_reading_cached() is first, "cached between frames"
+
+    renderer._system_read_at -= 2.0
+    assert renderer._system_reading_cached() is not first, "refreshed after a second"

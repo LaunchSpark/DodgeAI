@@ -44,7 +44,7 @@ Start PPO training in the Dodge dashboard:
     python training_gui.py
 
 Training runs on a background thread so the window stays responsive. Pause/Resume controls
-rollout collection, Reset creates a fresh policy, Models saves or loads real
+rollout collection, Rewards opens the reward weights, Models saves or loads real
 Stable-Baselines3 `.zip` checkpoints, and Watch Agent opens the current policy in a second
 rendered game window. Each watch launch saves an immutable snapshot, chooses a new random
 episode seed, and labels the game window with its exact PPO update and seed. The active
@@ -60,6 +60,27 @@ held in memory only, so restarting the dashboard starts a fresh curve.
 
 Use `python training_gui.py --screenshot out.png` to render one frame of sample telemetry
 without training — useful for working on the dashboard itself.
+
+The dashboard is meant to cost a fraction of a core, since it competes with eight
+environment processes for four of them. Watching it is not free, but it is close:
+
+| | Before | Now |
+| --- | --- | --- |
+| Render | 45.7 ms | 7.5 ms |
+| Telemetry lock held | the whole render | 25 us |
+| Redraw rate | 60 attempted, ~22 achieved | 20 |
+| Share of a core | ~100% | ~15% |
+
+The lock mattered more than the drawing. The PPO callback takes the same lock on every
+step, so rendering while holding it stalled the trainer — and every environment
+subprocess behind it — for the length of a frame. The dashboard now copies telemetry
+under the lock and draws from the copy, which is what `DashboardSnapshot.copy()` and
+`RunSeries.copy()` exist for; both series are capacity-bounded, so the copy is cheap by
+construction. The render itself was dominated by allocating and blitting a full-window
+alpha surface for each of eleven chart fills, and by redrawing 2,560 background dots that
+never change; the overlays are now plot-sized and the backdrop is cached per window size.
+Input is still polled at 60Hz so clicks and drags stay responsive — only the redraw is
+throttled.
 
 ### Reward weights
 
