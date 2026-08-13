@@ -118,6 +118,16 @@ exactly like `hybrid-cnn`'s. Stable-Baselines3 records the policy class in the
 checkpoint, and the input-migration check keys off layer names a field policy
 does not have, so nothing special-cases it.
 
+The Models panel lists the checkpoints on disk, and loading one switches the
+running session's architecture — so an architecture with nothing saved yet
+cannot be picked there, because there is nothing to click. Write a starting
+point for it:
+
+    python tools/new_policy.py field-cnn
+
+That leaves an untrained `field-cnn.zip` in `artifacts/models`, after which the
+architecture is selectable from the dashboard without relaunching.
+
 The network's only output is a scalar danger per arena cell; it never picks an
 action. Choosing is arithmetic — simulate where each of the nine actions takes
 the player, read the field along those paths, and let the totals be the logits

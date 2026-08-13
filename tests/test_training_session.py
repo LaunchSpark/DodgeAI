@@ -588,3 +588,32 @@ def test_the_dashboard_command_line_accepts_every_architecture(tmp_path):
             "--architecture", architecture,
             "--screenshot", str(tmp_path / f"{architecture}.png"),
         ]) == 0
+
+
+@pytest.mark.parametrize("architecture", ["field-cnn", "mlp"])
+def test_new_policy_tool_makes_an_architecture_selectable(tmp_path, architecture):
+    """The Models panel lists files, and loading one switches architecture.
+
+    So an architecture with no checkpoint on disk is unreachable from the
+    dashboard -- there is nothing to click. This writes the starting point.
+    """
+    from stable_baselines3.common.env_util import make_vec_env
+
+    from dodge.env import DodgeEnv
+    from dodge.policies import architecture_name
+    from dodge.training import PPOTrainingSession
+    from tools.new_policy import main
+
+    assert main([architecture, "--models-dir", str(tmp_path)]) == 0
+
+    session = PPOTrainingSession(model_dir=tmp_path, logs_dir=tmp_path,
+                                 autostart=False, device="cpu", n_envs=1,
+                                 rollout_steps=16)
+    assert architecture in [entry.name for entry in session.available_models()]
+
+    env = make_vec_env(DodgeEnv, n_envs=1, env_kwargs={"max_episode_frames": 20})
+    try:
+        loaded = session._load_model(tmp_path / f"{architecture}.zip", env)
+        assert architecture_name(loaded) == architecture
+    finally:
+        env.close()
