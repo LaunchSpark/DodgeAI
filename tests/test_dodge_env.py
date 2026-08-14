@@ -12,7 +12,8 @@ from gymnasium.utils.env_checker import check_env
 
 from dodge.env import DodgeEnv, center_survival_scalar
 from dodge.rewards import RewardConfig
-from dodge.observe import FRAME_OBSERVATION_SIZE, OBSERVATION_SIZE
+from dodge.observe import (CELL_COUNT, OBSERVATION_SIZE, PLAYER_VALUES,
+                           VELOCITY_SCALE)
 
 pytestmark = pytest.mark.skipif(not Path("dodge.p8.png").exists(), reason="dodge.p8.png not present")
 
@@ -82,10 +83,6 @@ def test_environment_step_returns_expected_contract():
     assert observation.shape == (OBSERVATION_SIZE,)
     assert observation.dtype == np.float32
     assert info["seed"] == 11
-    np.testing.assert_array_equal(
-        observation[:FRAME_OBSERVATION_SIZE],
-        observation[FRAME_OBSERVATION_SIZE:],
-    )
 
     observation, reward, terminated, truncated, info = env.step(2)
     assert observation.shape == (OBSERVATION_SIZE,)
@@ -96,41 +93,43 @@ def test_environment_step_returns_expected_contract():
     env.close()
 
 
-def test_the_older_frame_is_a_full_lookback_behind():
-    """The two observed frames are DECISION_LOOKBACK decisions apart.
+def test_the_observation_carries_velocity_not_history():
+    """One frame. Motion is given per cell rather than inferred from a stack.
 
-    At one decision every moving thing in the game covers less than a 4px
-    cell, so the categorical grid usually showed no change and hazard motion
-    was quantised out of the observation.
+    Everything in this game moves under one 4px cell per decision, so a frame
+    difference usually showed nothing at all.
     """
-    from dodge.observe import DECISION_LOOKBACK
-
-    env = DodgeEnv(action_repeat=2, max_episode_frames=40)
-    env.reset(seed=11)
-
-    currents = []
-    for _ in range(DECISION_LOOKBACK + 2):
-        observation, *_ = env.step(2)
-        older = observation[:FRAME_OBSERVATION_SIZE]
-        currents.append(observation[FRAME_OBSERVATION_SIZE:].copy())
-        if len(currents) > DECISION_LOOKBACK:
-            np.testing.assert_array_equal(currents[-1 - DECISION_LOOKBACK], older)
-        assert older[0] < currents[-1][0], "the player moved right over the gap"
-    env.close()
-
-
-def test_the_lookback_holds_intermediate_frames_without_sending_them():
-    env = DodgeEnv(action_repeat=2, max_episode_frames=40, observation_lookback=3)
+    env = DodgeEnv(action_repeat=4, max_episode_frames=None, powerups=True)
     observation, _ = env.reset(seed=11)
+    assert observation.shape == (OBSERVATION_SIZE,)
 
-    assert len(env.decision_frames) == 4, "three decisions back plus the current one"
-    assert observation.shape == (OBSERVATION_SIZE,), "still two frames on the wire"
+    for _ in range(40):
+        observation, *_ = env.step(2)     # hold right
+    categories = observation[PLAYER_VALUES:PLAYER_VALUES + CELL_COUNT]
+    vx = observation[PLAYER_VALUES + CELL_COUNT:PLAYER_VALUES + 2 * CELL_COUNT]
+    occupied = categories > 0
+
+    assert occupied.any(), "the arena should have entities by now"
+    assert np.all(vx[~occupied] == 0.0), "empty cells carry no velocity"
     env.close()
 
 
-def test_a_lookback_below_one_is_rejected():
-    with pytest.raises(ValueError):
-        DodgeEnv(observation_lookback=0)
+def test_the_player_reports_its_own_velocity():
+    """Without a second frame there is nothing else to derive momentum from."""
+    env = DodgeEnv(action_repeat=4, max_episode_frames=None)
+    observation, _ = env.reset(seed=11)
+    assert observation[2] == 0.0 and observation[3] == 0.0
+
+    for _ in range(20):
+        observation, *_ = env.step(2)     # hold right
+    # Terminal speed is 2.5px a frame, scaled by VELOCITY_SCALE.
+    assert observation[2] == pytest.approx(2.5 / VELOCITY_SCALE, abs=0.02)
+    assert observation[3] == 0.0
+
+    for _ in range(20):
+        observation, *_ = env.step(1)     # hold left
+    assert observation[2] < 0.0, "velocity is signed"
+    env.close()
 
 
 def test_same_seed_and_actions_are_deterministic():

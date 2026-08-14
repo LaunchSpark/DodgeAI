@@ -1,4 +1,22 @@
-"""Convert Dodge's Lua state into a small, fixed PPO observation."""
+"""Convert Dodge's Lua state into a small, fixed PPO observation.
+
+One frame, not a stack. Motion is supplied directly: every occupied cell also
+carries the velocity of whatever occupies it, read from the game rather than
+inferred.
+
+Inference was the problem. A two-frame stack asks the network to recover motion
+from the difference between two categorical grids, and everything in this game
+moves less than one 4px cell per decision -- enemies 0.54-0.74, pattern bars
+0.70, the player 0.80 -- so the usual outcome was no visible change at all.
+Widening the gap to two decisions helped but did not fix it: differencing still
+conflates everything in a region, so two enemies crossing near each other
+cannot keep separate velocities, and sub-cell motion is still lost.
+
+A velocity raster has neither failure. It is exact, it is per entity, and it
+costs about 120us a step against the ~2000us a physics forecast would need.
+Empty cells hold zero, which is unambiguous because the category channels say
+separately whether a cell is occupied at all.
+"""
 
 import math
 
@@ -10,26 +28,18 @@ CELL_SIZE = 4
 GRID_SIZE = ARENA_SIZE // CELL_SIZE
 CELL_COUNT = GRID_SIZE * GRID_SIZE
 CELL_TYPES = 8
-FRAME_OBSERVATION_SIZE = 2 + CELL_COUNT
-FRAME_STACK_SIZE = 2
 
-# How many decisions back the older of the two observed frames is taken from.
-#
-# The observation is still two frames; this is the gap between them. At one
-# decision (4 game frames) every moving thing in the game covers less than a
-# single 4px cell -- enemies 0.54-0.74 cells, pattern bars 0.70, the player
-# 0.80 -- so the categorical grid usually shows no change at all and hazard
-# motion is quantised out of the observation entirely. At two decisions
-# everything lands at 1.1-1.6 cells, which is unambiguous, while the worst case
-# in the game (the player at p99 on hard) is only 3.9 cells, far short of any
-# correspondence problem.
-#
-# The player's own motion is exact either way, since its coordinates are floats.
-# This is entirely about enemies and pattern bars, whose movement is visible
-# only through the grid.
-DECISION_LOOKBACK = 2
+# px, py, dpx, dpy. The player's own velocity has to be given explicitly now
+# that there is no second frame to derive it from -- without it the agent would
+# not know its own momentum, which matters in a game with friction.
+PLAYER_VALUES = 4
 
-OBSERVATION_SIZE = FRAME_OBSERVATION_SIZE * FRAME_STACK_SIZE
+# Divisor putting velocities in roughly [-1, 1]. The fastest thing in the game
+# is the player at its terminal 2.5px a frame; enemies reach about 3 on hard.
+VELOCITY_SCALE = 4.0
+
+# player values, then the categorical grid, then one velocity plane per axis.
+OBSERVATION_SIZE = PLAYER_VALUES + 3 * CELL_COUNT
 
 EMPTY = 0
 ENEMY_NORMAL = 1
@@ -74,7 +84,8 @@ ENEMY_CELL = {
 }
 
 
-def _paint(grid, ranks, x, y, width, height, value):
+def _paint(grid, ranks, x, y, width, height, value, velocity=None,
+           planes=None):
     """Paint every 4px cell touched by an axis-aligned rectangle.
 
     A cell keeps whichever entity ranks highest in PAINT_PRIORITY, so a lethal
@@ -94,25 +105,44 @@ def _paint(grid, ranks, x, y, width, height, value):
     replace = rank_view < rank
     view[replace] = value
     rank_view[replace] = rank
+    if planes is not None:
+        # The winner of the cell supplies its velocity too, so the two always
+        # describe the same entity.
+        planes[0][top:bottom + 1, left:right + 1][replace] = velocity[0]
+        planes[1][top:bottom + 1, left:right + 1][replace] = velocity[1]
 
 
-def cell_grid(globals_):
-    """Return the 32x32 categorical map before normalization."""
+def cell_grid(globals_, with_velocity=False):
+    """The 32x32 categorical map, optionally with a velocity plane per axis.
+
+    Velocities are the entity's real displacement per frame -- the cart moves
+    enemies by ``vx * spd * frz * e.spd`` (dodge.lua:1043), not by vx alone --
+    so the number means pixels, whatever the difficulty is doing to the global
+    speed.
+    """
     grid = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.uint8)
     ranks = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.uint8)
+    planes = ((np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.float32),
+               np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.float32))
+              if with_velocity else None)
+    step = float(globals_.spd) * float(globals_.frz) if with_velocity else 0.0
 
     enemies = globals_.enemies
     for index in range(1, len(enemies) + 1):
         enemy = enemies[index]
         personality = int(enemy.p)
         value = ENEMY_CELL.get(personality, ENEMY_NORMAL)
+        velocity = None
+        if with_velocity:
+            own = step * float(enemy.spd)
+            velocity = (float(enemy.vx) * own, float(enemy.vy) * own)
         if personality >= 2:
             _paint(grid, ranks, float(enemy.x) - 4, float(enemy.y) - 4,
-                   8, 8, value)
+                   8, 8, value, velocity, planes)
         else:
             size = float(enemy.s)
             _paint(grid, ranks, float(enemy.x), float(enemy.y),
-                   size, size, value)
+                   size, size, value, velocity, planes)
 
     pattern = globals_.cp
     if pattern is not None:
@@ -122,22 +152,38 @@ def cell_grid(globals_):
             rect = rects[index]
             lethal = lethal_pattern or float(rect.sh) == 2
             value = HAZARD_LETHAL if lethal else HAZARD_WARNING
+            velocity = None
+            if with_velocity:
+                # Pattern rects carry dx/dy as a direction and spd as a rate.
+                rate = float(rect.spd) if rect.spd is not None else 0.0
+                velocity = (float(rect.dx or 0) * rate * float(globals_.frz),
+                            float(rect.dy or 0) * rate * float(globals_.frz))
             _paint(grid, ranks, float(rect.x), float(rect.y),
-                   float(rect.w), float(rect.h), value)
+                   float(rect.w), float(rect.h), value, velocity, planes)
+    if with_velocity:
+        return grid, planes[0], planes[1]
     return grid
 
 
-def observe_frame(machine):
-    """Return [player_x, player_y, 1024 normalized cell values]."""
+def observe(machine):
+    """The whole observation: player state, categories, then the two velocity planes.
+
+    Layout, in order:
+        0..3        px, py, dpx, dpy  -- position normalised, velocity scaled
+        4..1027     categorical cell values, normalised by CELL_TYPES
+        1028..2051  vx of whatever occupies each cell
+        2052..3075  vy of the same
+    """
     globals_ = machine.globals
-    observation = np.empty(FRAME_OBSERVATION_SIZE, dtype=np.float32)
+    observation = np.empty(OBSERVATION_SIZE, dtype=np.float32)
     observation[0] = np.clip(float(globals_.px) / 127.0, 0.0, 1.0)
     observation[1] = np.clip(float(globals_.py) / 127.0, 0.0, 1.0)
-    observation[2:] = cell_grid(globals_).reshape(-1).astype(np.float32) / CELL_TYPES
+    observation[2] = np.clip(float(globals_.dpx) / VELOCITY_SCALE, -1.0, 1.0)
+    observation[3] = np.clip(float(globals_.dpy) / VELOCITY_SCALE, -1.0, 1.0)
+
+    grid, vx, vy = cell_grid(globals_, with_velocity=True)
+    start = PLAYER_VALUES
+    observation[start:start + CELL_COUNT] =         grid.reshape(-1).astype(np.float32) / CELL_TYPES
+    observation[start + CELL_COUNT:start + 2 * CELL_COUNT] =         np.clip(vx.reshape(-1) / VELOCITY_SCALE, -1.0, 1.0)
+    observation[start + 2 * CELL_COUNT:] =         np.clip(vy.reshape(-1) / VELOCITY_SCALE, -1.0, 1.0)
     return observation
-
-
-def observe(machine):
-    """Return a reset-safe stack with the current game frame duplicated."""
-    frame = observe_frame(machine)
-    return np.concatenate((frame, frame))

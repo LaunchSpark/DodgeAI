@@ -1,4 +1,4 @@
-"""A convolutional danger field, read by a fixed controller.
+"""VelocityFlow: a convolutional danger field, read by a fixed controller.
 
 The network's only output is a scalar danger per arena cell. It never chooses
 an action. Choosing is arithmetic: simulate where each of the nine actions
@@ -22,6 +22,11 @@ Why this shape rather than the hybrid extractor's:
 * **It can be looked at.** The output is a picture. After a policy collapse
   that hid behind healthy-looking entropy for two million steps, an
   architecture whose internal state renders is worth something by itself.
+
+* **Motion is given, not inferred.** Its input is one frame carrying a velocity
+  per occupied cell, so nothing has to be recovered from the difference between
+  two quantised grids -- a difference that was usually zero, since everything
+  in this game moves under one cell per decision.
 
 The known limitation, established by the analytic version in gradient.py: a
 scalar over positions cannot express pursuit. "Step sideways because it is
@@ -104,7 +109,7 @@ def _sample_weights(frames=SAMPLE_FRAMES, decay=SAMPLE_DECAY):
     return weights / weights.sum()
 
 
-class DodgeFieldExtractor(BaseFeaturesExtractor):
+class VelocityFlowExtractor(BaseFeaturesExtractor):
     """Produce a danger field, then read it along each action's path."""
 
     def __init__(self, observation_space, action_repeat=4):
@@ -229,7 +234,7 @@ class _FieldLogits(nn.Module):
         return danger / spread * self.log_temperature.exp()
 
 
-class DodgeFieldPolicy(ActorCriticPolicy):
+class VelocityFlowPolicy(ActorCriticPolicy):
     """ActorCritic whose logits come from the field, not from a head."""
 
     def _build(self, lr_schedule):

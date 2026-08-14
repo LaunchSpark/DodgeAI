@@ -10,8 +10,8 @@ from dodge.observe import (
     ENEMY_BLAST,
     ENEMY_NORMAL,
     CELL_COUNT,
-    FRAME_OBSERVATION_SIZE,
-    FRAME_STACK_SIZE,
+    PLAYER_VALUES,
+    VELOCITY_SCALE,
     GRID_SIZE,
     HAZARD_LETHAL,
     OBSERVATION_SIZE,
@@ -43,21 +43,37 @@ def game():
 def test_grid_has_1024_cells():
     assert GRID_SIZE == 32
     assert CELL_COUNT == 1024
-    assert FRAME_OBSERVATION_SIZE == 1026
-    assert FRAME_STACK_SIZE == 2
-    assert OBSERVATION_SIZE == 2052
+    assert PLAYER_VALUES == 4
+    assert OBSERVATION_SIZE == PLAYER_VALUES + 3 * CELL_COUNT == 3076
 
 
-def test_observation_starts_with_normalized_player_coordinates(game):
+def test_observation_starts_with_player_position_then_velocity(game):
     game.globals.px = 31.75
     game.globals.py = 95.25
+    game.globals.dpx = -2.0
+    game.globals.dpy = 1.0
     result = observe(game)
-    assert result.shape == (2052,)
+    assert result.shape == (OBSERVATION_SIZE,)
     assert result.dtype == np.float32
     assert result[0] == pytest.approx(0.25)
     assert result[1] == pytest.approx(0.75)
-    np.testing.assert_array_equal(result[:1026], result[1026:])
-    assert np.all((0 <= result) & (result <= 1))
+    assert result[2] == pytest.approx(-2.0 / VELOCITY_SCALE)
+    assert result[3] == pytest.approx(1.0 / VELOCITY_SCALE)
+    # Positions are in [0, 1]; velocities are signed, so the box is [-1, 1].
+    assert np.all((-1 <= result) & (result <= 1))
+
+
+def test_velocity_planes_follow_the_entity_that_owns_the_cell(game):
+    game.lua.execute("enemies={{x=8,y=12,s=4,p=0,vx=0.5,vy=-0.25,spd=1}} cp=nil")
+    game.globals.spd = 2.0
+    game.globals.frz = 1.0
+    grid, vx, vy = cell_grid(game.globals, with_velocity=True)
+
+    # The cart moves enemies by vx * spd * frz * e.spd, not by vx alone.
+    assert vx[3, 2] == pytest.approx(0.5 * 2.0)
+    assert vy[3, 2] == pytest.approx(-0.25 * 2.0)
+    assert np.count_nonzero(grid) == 1
+    assert np.count_nonzero(vx) == 1, "only the occupied cell carries velocity"
 
 
 def test_enemy_rectangle_paints_touched_cell(game):

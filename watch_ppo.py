@@ -34,7 +34,7 @@ def main():
                         help="sample actions instead of choosing the most likely action")
     parser.add_argument("--field", action=argparse.BooleanOptionalAction,
                         default=True,
-                        help="draw a field-cnn policy's danger field as the "
+                        help="draw a velocity-flow policy's danger field as the "
                              "background (ignored by other architectures)")
     parser.add_argument("--frames", type=int,
                         help="exit after this many rendered game frames")
@@ -56,7 +56,7 @@ def main():
         max_episode_frames=None,
     )
     observation, _ = env.reset(seed=seed)
-    # Only field-cnn has a field to show. Computed once per decision and left
+    # Only velocity-flow has a field to show. Computed once per decision, left
     # in place for the four frames the environment renders before deciding
     # again, so watching costs one extra forward pass per decision rather than
     # one per frame.

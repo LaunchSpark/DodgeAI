@@ -10,8 +10,8 @@ pytest.importorskip("stable_baselines3")
 pytest.importorskip("lupa.luajit21")
 
 from dodge.telemetry import ModelEntry
-from dodge.observe import FRAME_OBSERVATION_SIZE, OBSERVATION_SIZE
-from dodge.training import DashboardPPO, PPOTrainingSession, migrate_single_frame_policy
+from dodge.observe import OBSERVATION_SIZE
+from dodge.training import DashboardPPO, PPOTrainingSession
 from watch_ppo import window_title
 
 pytestmark = pytest.mark.skipif(not Path("dodge.p8.png").exists(), reason="dodge.p8.png not present")
@@ -85,7 +85,7 @@ def test_live_session_pauses_saves_and_resumes(tmp_path):
         total_steps=512,
         rollout_steps=64,
         # This exercises the session lifecycle, not a policy shape. mlp is the
-        # cheapest, and on CPU the default field-cnn takes ~4x longer per
+        # cheapest, and on CPU the default velocity-flow takes ~4x longer per
         # forward because it never downsamples -- enough to time this out.
         architecture="mlp",
     )
@@ -409,68 +409,6 @@ def test_save_and_load_set_the_active_model_name(tmp_path, monkeypatch):
     assert session.data.model_name == "aggressive-v2"
 
 
-def test_legacy_policy_weights_migrate_to_current_frame_inputs():
-    import gymnasium as gym
-    from gymnasium import spaces
-    from stable_baselines3 import PPO
-
-    class ObservationEnv(gym.Env):
-        def __init__(self, width):
-            self.observation_space = spaces.Box(0.0, 1.0, (width,), dtype=np.float32)
-            self.action_space = spaces.Discrete(9)
-
-        def reset(self, *, seed=None, options=None):
-            super().reset(seed=seed)
-            return np.zeros(self.observation_space.shape, dtype=np.float32), {}
-
-        def step(self, action):
-            observation = np.zeros(self.observation_space.shape, dtype=np.float32)
-            return observation, 0.0, False, False, {}
-
-    def model(width, seed):
-        return PPO(
-            "MlpPolicy",
-            ObservationEnv(width),
-            n_steps=8,
-            batch_size=8,
-            n_epochs=1,
-            seed=seed,
-            device="cpu",
-        )
-
-    legacy = model(FRAME_OBSERVATION_SIZE, 3)
-    target = model(OBSERVATION_SIZE, 7)
-    initialized = {
-        name: value.clone()
-        for name, value in target.policy.state_dict().items()
-    }
-    legacy.num_timesteps = 1234
-    legacy._n_updates = 50
-
-    migrate_single_frame_policy(legacy, target)
-
-    legacy_state = legacy.policy.state_dict()
-    migrated = target.policy.state_dict()
-    for name in (
-        "mlp_extractor.policy_net.0.weight",
-        "mlp_extractor.value_net.0.weight",
-    ):
-        np.testing.assert_array_equal(
-            migrated[name][:, :FRAME_OBSERVATION_SIZE].cpu(),
-            initialized[name][:, :FRAME_OBSERVATION_SIZE].cpu(),
-        )
-        np.testing.assert_array_equal(
-            migrated[name][:, FRAME_OBSERVATION_SIZE:].cpu(),
-            legacy_state[name].cpu(),
-        )
-    np.testing.assert_array_equal(
-        migrated["action_net.weight"].cpu(),
-        legacy_state["action_net.weight"].cpu(),
-    )
-    assert target.num_timesteps == 1234
-    assert target._n_updates == 50
-
-
 def test_checkpoint_without_player_channels_migrates(tmp_path):
     """A hybrid checkpoint from before the player channels must still load.
 
@@ -539,11 +477,11 @@ def test_minibatch_size_follows_the_whole_buffer(tmp_path, monkeypatch,
     assert captured["batch_size"] == expected
 
 
-@pytest.mark.parametrize("architecture", ["hybrid-cnn", "field-cnn", "mlp"])
+@pytest.mark.parametrize("architecture", ["velocity-flow", "hybrid-cnn", "mlp"])
 def test_every_architecture_saves_and_loads_through_the_session(tmp_path, architecture):
     """Loading must not special-case an architecture.
 
-    field-cnn swaps the action head for a policy subclass, so it is the one
+    velocity-flow swaps the action head for a policy subclass, so it is the one
     most likely to need a bespoke path. It does not: Stable-Baselines3 records
     the policy class in the checkpoint, and the migration check keys off
     hybrid-cnn's layer names, which a field policy simply does not have.
@@ -596,7 +534,7 @@ def test_the_dashboard_command_line_accepts_every_architecture(tmp_path):
         ]) == 0
 
 
-@pytest.mark.parametrize("architecture", ["field-cnn", "mlp"])
+@pytest.mark.parametrize("architecture", ["velocity-flow", "mlp"])
 def test_new_policy_tool_makes_an_architecture_selectable(tmp_path, architecture):
     """The Models panel lists files, and loading one switches architecture.
 

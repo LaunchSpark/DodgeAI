@@ -1,4 +1,4 @@
-"""The field policy: a CNN that only draws danger, and a controller that reads it."""
+"""VelocityFlow: a CNN that only draws danger, and a controller that reads it."""
 
 import numpy as np
 import pytest
@@ -15,14 +15,14 @@ from dodge.policies import policy_class, policy_kwargs, architecture_name
 
 def _model(seed=0):
     from dodge.env import DodgeEnv
-    return PPO(policy_class("field-cnn"), DodgeEnv(max_episode_frames=20),
+    return PPO(policy_class("velocity-flow"), DodgeEnv(max_episode_frames=20),
                n_steps=16, batch_size=8, n_epochs=1, seed=seed, device="cpu",
-               policy_kwargs=policy_kwargs("field-cnn"))
+               policy_kwargs=policy_kwargs("velocity-flow"))
 
 
 def test_action_offsets_are_distinct_and_symmetric():
     """A clamp at the arena edge once made 'left' identical to 'idle'."""
-    from dodge.field import action_offsets
+    from dodge.velocity import action_offsets
 
     offsets = action_offsets()
     assert np.allclose(offsets[ACTION_NAMES.index("idle")], 0.0)
@@ -39,11 +39,11 @@ def test_action_offsets_are_distinct_and_symmetric():
 
 
 def test_the_network_only_produces_a_field():
-    from dodge.field import SAMPLE_FRAMES, DodgeFieldExtractor
+    from dodge.velocity import SAMPLE_FRAMES, VelocityFlowExtractor
 
     model = _model()
     extractor = model.policy.features_extractor
-    assert isinstance(extractor, DodgeFieldExtractor)
+    assert isinstance(extractor, VelocityFlowExtractor)
     field = extractor.field(torch.rand(4, OBSERVATION_SIZE))
     # One field per future time, not one field.
     assert field.shape == (4, len(SAMPLE_FRAMES), GRID_SIZE, GRID_SIZE)
@@ -56,7 +56,7 @@ def test_each_sample_is_read_from_the_slice_for_its_arrival_time():
     player is not there, which is the question a single static field is stuck
     with.
     """
-    from dodge.field import N_ACTIONS, SAMPLE_FRAMES
+    from dodge.velocity import N_ACTIONS, SAMPLE_FRAMES
 
     slices, batch = len(SAMPLE_FRAMES), 2
     sampled = torch.arange(batch * slices * N_ACTIONS * slices,
@@ -93,12 +93,12 @@ def test_the_field_can_see_the_whole_arena():
 
 def test_the_horizon_outlasts_a_sweeping_pattern():
     """Pattern 11's bars cross at 0.7px a frame; the manoeuvre is seconds long."""
-    from dodge.field import SAMPLE_FRAMES
+    from dodge.velocity import SAMPLE_FRAMES
 
     assert max(SAMPLE_FRAMES) >= 90, "under 1.5s cannot see the bar move"
     # The discount must leave the far samples with real weight, or the horizon
     # is decorative.
-    from dodge.field import SAMPLE_DECAY
+    from dodge.velocity import SAMPLE_DECAY
     assert SAMPLE_DECAY ** max(SAMPLE_FRAMES) > 0.1
 
 
@@ -144,13 +144,13 @@ def test_the_policy_starts_exploratory_but_state_dependent():
 
 def test_it_trains_and_survives_a_save_load_cycle(tmp_path):
     model = _model(seed=3)
-    assert architecture_name(model) == "field-cnn"
+    assert architecture_name(model) == "velocity-flow"
     model.learn(total_timesteps=32)
 
-    path = tmp_path / "field-cnn"
+    path = tmp_path / "velocity-flow"
     model.save(path)
     restored = PPO.load(path, device="cpu")
-    assert architecture_name(restored) == "field-cnn"
+    assert architecture_name(restored) == "velocity-flow"
     action, _ = restored.predict(np.zeros(OBSERVATION_SIZE, dtype=np.float32))
     assert 0 <= int(action) < 9
 
@@ -165,7 +165,7 @@ def test_global_context_is_smooth_not_tiled():
     """
     import torch.nn.functional as F
 
-    from dodge.field import CONTEXT_GRID
+    from dodge.velocity import CONTEXT_GRID
     from dodge.policies import HYBRID_INPUT_CHANNELS
 
     extractor = _model().policy.features_extractor

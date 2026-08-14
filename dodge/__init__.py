@@ -2,20 +2,20 @@
 
 from .observe import (
     CELL_COUNT,
-    FRAME_OBSERVATION_SIZE,
-    FRAME_STACK_SIZE,
     GRID_SIZE,
     OBSERVATION_SIZE,
+    PLAYER_VALUES,
+    VELOCITY_SCALE,
+    cell_grid,
     observe,
-    observe_frame,
 )
 
 __all__ = [
     "CELL_COUNT",
-    "FRAME_OBSERVATION_SIZE",
-    "FRAME_STACK_SIZE",
     "GRID_SIZE",
     "OBSERVATION_SIZE",
+    "PLAYER_VALUES",
+    "VELOCITY_SCALE",
+    "cell_grid",
     "observe",
-    "observe_frame",
 ]

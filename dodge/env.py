@@ -1,6 +1,5 @@
 """Gymnasium environment for the first state-based Dodge PPO bot."""
 
-from collections import deque
 from pathlib import Path
 import math
 
@@ -14,8 +13,7 @@ from pico8.machine import Machine
 
 from . import rewards
 from .actions import ACTION_MASKS, action_mask
-from .observe import (ARENA_SIZE, DECISION_LOOKBACK, OBSERVATION_SIZE,
-                      observe_frame)
+from .observe import ARENA_SIZE, OBSERVATION_SIZE, observe
 
 
 # Reward weights live in dodge/rewards.py so the dashboard and a text editor
@@ -59,7 +57,6 @@ class DodgeEnv(gym.Env):
         powerups=False,
         action_repeat=4,
         max_episode_frames=3600,
-        observation_lookback=DECISION_LOOKBACK,
         render_mode=None,
         scale=5,
         caption="Dodge PPO Agent",
@@ -78,11 +75,6 @@ class DodgeEnv(gym.Env):
         if max_episode_frames is not None and max_episode_frames < 1:
             raise ValueError("max_episode_frames must be positive or None")
         self.max_episode_frames = max_episode_frames
-        if observation_lookback < 1:
-            raise ValueError("observation_lookback must be at least 1")
-        # The observation stays two frames; this is how many decisions apart
-        # they are. Intermediate frames are retained but not sent.
-        self.observation_lookback = observation_lookback
         if render_mode not in (None, "human"):
             raise ValueError("render_mode must be None or 'human'")
         self.render_mode = render_mode
@@ -90,8 +82,9 @@ class DodgeEnv(gym.Env):
         self.caption = caption
 
         self.action_space = spaces.Discrete(len(ACTION_MASKS))
+        # Velocities are signed, so the box is not the unit interval.
         self.observation_space = spaces.Box(
-            low=0.0,
+            low=-1.0,
             high=1.0,
             shape=(OBSERVATION_SIZE,),
             dtype=np.float32,
@@ -112,7 +105,6 @@ class DodgeEnv(gym.Env):
         self.previous_score = 0.0
         self.previous_events = {}
         self.previous_pattern_active = False
-        self.decision_frames = None
         self.render_clock = None
         self.backend = None
         if self.render_mode == "human":
@@ -141,18 +133,10 @@ class DodgeEnv(gym.Env):
         self.previous_score = float(self.machine.globals.score)
         self.previous_events = self._event_totals()
         self.previous_pattern_active = self.machine.globals.cp is not None
-        initial_frame = observe_frame(self.machine)
-        self.decision_frames = deque(
-            (initial_frame.copy() for _ in range(self.observation_lookback + 1)),
-            maxlen=self.observation_lookback + 1,
-        )
         return self._observation(), {"seed": episode_seed, "score": 0.0, "frames": 0}
 
     def _observation(self):
-        # Oldest and newest: the frames the policy sees, a lookback apart.
-        return np.concatenate(
-            (self.decision_frames[0], self.decision_frames[-1])
-        ).astype(np.float32, copy=False)
+        return observe(self.machine)
 
     def _event_totals(self):
         events = self.machine.globals.training_events
@@ -192,7 +176,6 @@ class DodgeEnv(gym.Env):
                 edge_penalty=self.reward_config.edge_penalty,
             )
 
-        self.decision_frames.append(observe_frame(self.machine))
 
         score = float(self.machine.globals.score)
         score_delta = score - self.previous_score

@@ -21,7 +21,6 @@ from stable_baselines3.common.utils import get_device
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
 from .env import DodgeEnv
-from .observe import FRAME_OBSERVATION_SIZE, FRAME_STACK_SIZE
 from .policies import (ARCHITECTURES, COORDINATE_INPUTS, DEFAULT_ARCHITECTURE,
                        HYBRID_INPUT_CHANNELS, architecture_name,
                        dead_unit_fraction, policy_class, policy_kwargs)
@@ -37,7 +36,7 @@ DEAD_UNIT_SAMPLES = 512
 # 1070: the hybrid-cnn update runs 5.1x faster there (7.20s -> 1.40s), while the
 # MLP is unchanged (0.686s -> 0.693s) because its layers are too small to cover
 # the transfer and launch overhead. Stable-Baselines3 warns about exactly this.
-GPU_ARCHITECTURES = ("hybrid-cnn", "field-cnn")
+GPU_ARCHITECTURES = ("hybrid-cnn", "velocity-flow")
 
 
 def resolve_device(device, architecture):
@@ -109,44 +108,6 @@ class DashboardPPO(PPO):
             return super().train()
         finally:
             optimizer.step = original_step
-
-
-def migrate_single_frame_policy(source, target):
-    """Copy a one-frame PPO policy into the current half of a two-frame policy."""
-    source_width = int(np.prod(source.observation_space.shape))
-    target_width = int(np.prod(target.observation_space.shape))
-    if source_width != FRAME_OBSERVATION_SIZE or \
-            target_width != FRAME_OBSERVATION_SIZE * FRAME_STACK_SIZE:
-        raise ValueError(
-            f"Cannot migrate observation size {source_width} to {target_width}"
-        )
-    if source.action_space != target.action_space:
-        raise ValueError("Cannot migrate a model with a different action space")
-
-    source_state = source.policy.state_dict()
-    target_state = target.policy.state_dict()
-    first_layers = {
-        "mlp_extractor.policy_net.0.weight",
-        "mlp_extractor.value_net.0.weight",
-    }
-    current_frame_start = target_width - source_width
-    for name, target_value in target_state.items():
-        source_value = source_state.get(name)
-        if source_value is None:
-            continue
-        if source_value.shape == target_value.shape:
-            target_value.copy_(source_value)
-        elif name in first_layers and \
-                source_value.shape == target_value[:, current_frame_start:].shape:
-            # Previous-frame columns retain the new policy's normal initialization.
-            target_value[:, current_frame_start:].copy_(source_value)
-    target.policy.load_state_dict(target_state)
-
-    # Keep progress metadata, but use a fresh optimizer for the enlarged network.
-    target.num_timesteps = source.num_timesteps
-    target._n_updates = source._n_updates
-    target._episode_num = source._episode_num
-    return target
 
 
 GRID_CONV_WEIGHT = "features_extractor.grid_net.0.weight"
@@ -436,7 +397,7 @@ class PPOTrainingSession:
 
     def _build_model(self, env, architecture):
         return DashboardPPO(
-            # field-cnn replaces the action head, so it needs its own policy
+            # velocity-flow replaces the action head, so it needs its own policy
             # class rather than only a features extractor.
             policy_class(architecture),
             env,
@@ -475,15 +436,6 @@ class PPOTrainingSession:
             model = self._new_model(env, architecture="hybrid-cnn")
             return migrate_widened_inputs(params["policy"], model, path,
                                           device=self.device)
-
-        # Loaded without an env first, because a legacy checkpoint's observation
-        # space may not match and load(path, env=...) rejects that outright.
-        source = DashboardPPO.load(path, device=self.device)
-        if source.observation_space != env.observation_space:
-            source.set_learning_tracker(self._track_learning)
-            return migrate_single_frame_policy(
-                source, self._new_model(env, architecture="mlp")
-            )
 
         # Rebound by loading again with the env rather than by set_env, which
         # asserts the checkpoint was trained on the same number of environments.

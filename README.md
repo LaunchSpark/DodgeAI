@@ -107,7 +107,7 @@ the next levers are a lower or annealed learning rate and normalising the
 extractor's output; the run to watch is one where the figure rises steadily
 rather than one where it starts high.
 
-### Field CNN
+### VelocityFlow
 
 The default policy shape. `--architecture hybrid-cnn` or `mlp` selects the
 others:
@@ -134,9 +134,9 @@ action. Choosing is arithmetic — simulate where each of the nine actions takes
 the player, read the field along those paths, and let the totals be the logits
 — so every bit of learning pressure lands on the field.
 
-| | hybrid-cnn | field-cnn |
+| | hybrid-cnn | velocity-flow |
 | --- | --- | --- |
-| Parameters | 644,842 | **104,984** |
+| Parameters | 642,826 | **102,968** |
 | Training throughput | 475 steps/s | 130 steps/s |
 | Largest single layer | `Linear(4096, 128)`, 87% of the model | none over 37k |
 | Output | 9 logits | 32x32 danger field |
@@ -362,33 +362,42 @@ policy play.
 
 ## PPO bots
 
-### Observation lookback
+### Observation
 
-The observation is two frames, and they are `DECISION_LOOKBACK` decisions
-apart — two by default, so eight game frames at the standard interval. The
-older frame is a full lookback behind; the current one is always current, so
-nothing about the present is stale.
+One frame, 3,076 values:
 
-One decision was too short to show motion at all. Measured across the
-difficulties, in 4px cells moved per gap:
+    0..3        px, py, dpx, dpy
+    4..1027     categorical cell values, 32x32
+    1028..2051  vx of whatever occupies each cell
+    2052..3075  vy of the same
 
-| | 1 decision | 2 decisions |
-| --- | --- | --- |
-| Enemy (easy → hard) | 0.54 → 0.74 | 1.07 → 1.48 |
-| Pattern bar | 0.70 | 1.40 |
-| Player | 0.80 | 1.62 |
+There is no frame stack. Motion is read from the game rather than inferred,
+because inference was failing: everything here moves less than one 4px cell per
+decision — enemies 0.54–0.74, pattern bars 0.70, the player 0.80 — so the
+difference between two categorical grids was usually nothing at all. Widening
+the gap to two decisions helped but could not fix the shape of the problem,
+since differencing conflates everything in a region and two enemies crossing
+cannot keep separate velocities.
 
-Everything moved less than one cell, so the categorical grid usually showed no
-change and hazard motion was quantised out of the observation entirely. At two
-decisions everything lands at 1.1–1.6 cells. The worst case in the game — the
-player at p99 on hard — is 3.9 cells, far short of any correspondence problem
-for a field that now sees 32.
+A velocity raster has neither failure. It is exact, it is per entity, and it
+costs about 120us a step. Measured against what a frame difference can recover,
+in cells of error when extrapolated forward:
 
-This is only about hazards. The player's coordinates are floats, so its own
-motion was always exact; enemies and bars are visible only through the grid.
-The derived `velocity` and `closing` features are reported *per decision*
-rather than per gap, so their units do not move when the lookback or the
-decision interval changes.
+| Frames ahead | Velocity raster | Physics forecast | 2-frame inference |
+| --- | --- | --- | --- |
+| 24 | exact now | 0.12 | 0.60 |
+| 48 | exact now | 0.71 | 2.22 |
+
+Empty cells hold zero, which is unambiguous because the category channels say
+separately whether a cell is occupied — no epsilon needed. Velocities are
+signed, so the observation box is [-1, 1] rather than the unit interval, and
+the player's own `dpx, dpy` are supplied explicitly: without a second frame
+there is nothing else to derive momentum from, and it matters in a game with
+friction.
+
+`closing` is now exact too. It was the change in distance between two rounded
+frames; it is now the threat's real velocity minus the player's, projected onto
+the line between them.
 
 ### Architectures
 

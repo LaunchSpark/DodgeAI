@@ -11,13 +11,13 @@ from .observe import (
     ARENA_SIZE,
     CELL_SIZE,
     CELL_TYPES,
-    DECISION_LOOKBACK,
+
     ENEMY_BLAST,
     ENEMY_KAMIKAZE,
     ENEMY_NORMAL,
     HAZARD_LETHAL,
-    FRAME_OBSERVATION_SIZE,
-    FRAME_STACK_SIZE,
+    CELL_COUNT,
+    PLAYER_VALUES,
     GRID_SIZE,
     OBSERVATION_SIZE,
 )
@@ -25,13 +25,14 @@ from .observe import (
 
 # Ordered best-first; the head of this list is what everything defaults to.
 #
-# field-cnn leads because it is the shape the failures drove us to. It emits a
-# danger field per future instant instead of nine logits, which makes "lethal
-# now, clear in two seconds" expressible -- the sentence a sweeping pattern
-# requires. It sees the whole arena rather than a 44px window, carries a sixth
-# of hybrid-cnn parameters, has no dense layer to die in, and its internal
-# state is a picture you can watch.
-ARCHITECTURES = ("field-cnn", "hybrid-cnn", "mlp")
+# velocity-flow leads because it is the shape the failures drove us to. It
+# emits a danger field per future instant instead of nine logits, which makes
+# "lethal now, clear in two seconds" expressible -- the sentence a sweeping
+# pattern requires. It reads a velocity per occupied cell rather than inferring
+# motion from a history frame. It sees the whole arena rather than a 44px
+# window, carries a sixth of hybrid-cnn parameters, has no dense layer to die
+# in, and its internal state is a picture you can watch.
+ARCHITECTURES = ("velocity-flow", "hybrid-cnn", "mlp")
 DEFAULT_ARCHITECTURE = ARCHITECTURES[0]
 HYBRID_FEATURES_DIM = 160
 
@@ -58,11 +59,12 @@ def activation():
 # checkpoint trained without the player channels migrates by copying into the
 # leading channels. A convolution learns an arbitrary combination across its
 # inputs, so this ordering costs nothing.
-HAZARD_CHANNELS = FRAME_STACK_SIZE * CELL_TYPES
-PLAYER_CHANNELS = FRAME_STACK_SIZE
-HYBRID_INPUT_CHANNELS = HAZARD_CHANNELS + PLAYER_CHANNELS
-# Raw coordinates for both frames, plus the derived senses.
-COORDINATE_INPUTS = FRAME_STACK_SIZE * 2 + 6
+HAZARD_CHANNELS = CELL_TYPES
+PLAYER_CHANNELS = 1
+VELOCITY_CHANNELS = 2
+HYBRID_INPUT_CHANNELS = HAZARD_CHANNELS + PLAYER_CHANNELS + VELOCITY_CHANNELS
+# Player state (px, py, dpx, dpy) plus the derived senses.
+COORDINATE_INPUTS = PLAYER_VALUES + 6
 
 
 # Channel offsets within one frame's eight that can kill the agent. Pickups and
@@ -76,61 +78,58 @@ FAR_AWAY = 4.0
 
 
 def _sense_features(coordinates, grids):
-    """Nearest-threat geometry and how fast it is closing.
+    """Nearest-threat geometry, and how fast it is actually closing.
 
-    Everything here is a function of values already in the observation, so it
-    adds no work to the environment. It is supplied anyway because the shape of
-    the function matters: reading "a threat is two cells up-left and gaining"
-    off a pair of one-hot grids is a lot to ask of three convolutions, and
-    dodging is exactly that question.
-
-    Returns velocity, the nearest lethal cell's offset and distance, and the
-    change in that distance between the two decision frames.
+    Every term here is now exact rather than inferred. Velocity comes straight
+    from the observation, and the closing rate is the real relative speed along
+    the line to the threat -- the threat's own velocity, read from its cell,
+    minus the player's, projected onto that line. Before, closing had to be the
+    change in distance between two quantised frames, which is a noisy estimate
+    of a quantity the game knows precisely.
     """
     batch = coordinates.shape[0]
     device, dtype = coordinates.device, coordinates.dtype
     scale = float(GRID_SIZE)
-    player = coordinates.reshape(batch, FRAME_STACK_SIZE, 2) \
-        * ((ARENA_SIZE - 1) / CELL_SIZE)
+    player = coordinates[:, :2] * ((ARENA_SIZE - 1) / CELL_SIZE)
+    player_velocity = coordinates[:, 2:4]
 
-    # Both frames are handled in one batched pass rather than a Python loop.
-    # At the batch sizes rollout collection uses, this is dominated by kernel
-    # launches, not arithmetic, so the number of operations is what costs.
     cell_x, cell_y, lethal_index = _grid_axes(device, dtype)
-    hazard = grids[:, :HAZARD_CHANNELS].reshape(
-        batch, FRAME_STACK_SIZE, CELL_TYPES, GRID_SIZE, GRID_SIZE)
-    occupied = hazard.index_select(2, lethal_index).amax(dim=2) > 0
+    hazard = grids[:, :HAZARD_CHANNELS]
+    occupied = hazard.index_select(1, lethal_index).amax(dim=1) > 0
 
-    dx = cell_x - player[:, :, 0].reshape(batch, FRAME_STACK_SIZE, 1, 1)
-    dy = cell_y - player[:, :, 1].reshape(batch, FRAME_STACK_SIZE, 1, 1)
-    # Squared distance is enough to find the nearest cell; the square root is
-    # then taken once per frame instead of once per cell.
+    dx = cell_x - player[:, 0].reshape(batch, 1, 1)
+    dy = cell_y - player[:, 1].reshape(batch, 1, 1)
     squared = dx * dx + dy * dy
     beyond = float(GRID_SIZE * GRID_SIZE * 16)
     masked = torch.where(occupied, squared, squared.new_full((), beyond))
-    best, index = masked.reshape(batch, FRAME_STACK_SIZE, -1).min(dim=2)
+    best, index = masked.reshape(batch, -1).min(dim=1)
 
     empty = best >= beyond
     distance = torch.where(empty, best.new_full((), FAR_AWAY),
                            torch.sqrt(best.clamp(max=beyond - 1.0)) / scale)
-    nearest_x = (index % GRID_SIZE).to(dtype) - player[:, :, 0]
-    nearest_y = torch.div(index, GRID_SIZE, rounding_mode="floor").to(dtype) \
-        - player[:, :, 1]
+    column = (index % GRID_SIZE).to(dtype)
+    row = torch.div(index, GRID_SIZE, rounding_mode="floor").to(dtype)
+    nearest_x = column - player[:, 0]
+    nearest_y = row - player[:, 1]
+
+    # Closing speed: relative velocity projected onto the line to the threat.
+    # Positive means the gap is shrinking.
+    rows = torch.arange(batch, device=device)
+    flat = grids.reshape(batch, grids.shape[1], -1)
+    threat_vx = flat[rows, HAZARD_CHANNELS + PLAYER_CHANNELS, index]
+    threat_vy = flat[rows, HAZARD_CHANNELS + PLAYER_CHANNELS + 1, index]
+    relative_x = threat_vx - player_velocity[:, 0]
+    relative_y = threat_vy - player_velocity[:, 1]
+    length = torch.sqrt(nearest_x * nearest_x + nearest_y * nearest_y).clamp(min=1e-6)
+    closing = -(relative_x * nearest_x + relative_y * nearest_y) / length
+
     zero = nearest_x.new_zeros(())
     nearest_x = torch.where(empty, zero, nearest_x / scale)
     nearest_y = torch.where(empty, zero, nearest_y / scale)
-
-    # Per decision, not per gap. The two observed frames are DECISION_LOOKBACK
-    # decisions apart, so without this division both features would scale with
-    # the lookback: the same real speed would read differently after a change
-    # to it, and differently again whenever the decision interval moved.
-    velocity = (player[:, -1] - player[:, 0]) / (scale * DECISION_LOOKBACK)
-    closing = ((distance[:, 0] - distance[:, -1])
-               / DECISION_LOOKBACK).unsqueeze(1)
-    return torch.cat((
-        velocity,
-        nearest_x[:, -1].unsqueeze(1), nearest_y[:, -1].unsqueeze(1),
-        distance[:, -1].unsqueeze(1), closing,
+    closing = torch.where(empty, zero, closing)
+    return torch.stack((
+        player_velocity[:, 0], player_velocity[:, 1],
+        nearest_x, nearest_y, distance, closing,
     ), dim=1)
 
 
@@ -144,8 +143,8 @@ def _grid_axes(device, dtype):
     if cached is None:
         axis = torch.arange(GRID_SIZE, device=device, dtype=dtype)
         cached = (
-            axis.reshape(1, 1, 1, GRID_SIZE),
-            axis.reshape(1, 1, GRID_SIZE, 1),
+            axis.reshape(1, 1, GRID_SIZE),
+            axis.reshape(1, GRID_SIZE, 1),
             torch.tensor(LETHAL_OFFSETS, device=device, dtype=torch.long),
         )
         _GRID_AXIS_CACHE[key] = cached
@@ -153,7 +152,7 @@ def _grid_axes(device, dtype):
 
 
 def _player_channels(coordinates, dtype):
-    """Mark the player's own cell in a grid, one channel per decision frame.
+    """Mark the player's own cell in the grid.
 
     The hazard map says nothing about where the agent is, so before this every
     convolution reasoned about threats without knowing what they were near. The
@@ -166,13 +165,13 @@ def _player_channels(coordinates, dtype):
     observation.
     """
     scale = (ARENA_SIZE - 1) / CELL_SIZE
-    cells = (coordinates * scale).long().clamp(0, GRID_SIZE - 1)
-    flat = cells[..., 1] * GRID_SIZE + cells[..., 0]
-    batch, frames = flat.shape
-    channels = torch.zeros(batch, frames, GRID_SIZE * GRID_SIZE,
+    cells = (coordinates[:, :2] * scale).long().clamp(0, GRID_SIZE - 1)
+    flat = cells[:, 1] * GRID_SIZE + cells[:, 0]
+    batch = flat.shape[0]
+    channels = torch.zeros(batch, 1, GRID_SIZE * GRID_SIZE,
                            dtype=dtype, device=coordinates.device)
-    channels.scatter_(2, flat.unsqueeze(-1), 1.0)
-    return channels.reshape(batch, frames, GRID_SIZE, GRID_SIZE)
+    channels.scatter_(2, flat.reshape(batch, 1, 1), 1.0)
+    return channels.reshape(batch, 1, GRID_SIZE, GRID_SIZE)
 
 
 class DodgeHybridExtractor(BaseFeaturesExtractor):
@@ -205,23 +204,27 @@ class DodgeHybridExtractor(BaseFeaturesExtractor):
 
     @staticmethod
     def policy_inputs(observations):
-        """Split flattened frames into coordinates and one-hot grid channels."""
+        """Decode the flat observation into player state and grid channels.
+
+        Channels, in order: eight one-hot entity types, the player's own cell,
+        then the velocity of whatever occupies each cell, one plane per axis.
+        Eleven in total, from a single frame -- the history stack is gone
+        because the velocity it existed to imply is now given outright.
+        """
         batch = observations.shape[0]
-        frames = observations.reshape(batch, FRAME_STACK_SIZE, FRAME_OBSERVATION_SIZE)
-        coordinates = frames[:, :, :2].reshape(batch, FRAME_STACK_SIZE * 2)
-        cells = torch.round(frames[:, :, 2:] * CELL_TYPES).long()
-        cells = cells.clamp(0, CELL_TYPES).reshape(
-            batch, FRAME_STACK_SIZE, GRID_SIZE, GRID_SIZE
-        )
-        # Empty cells become all-zero channels. The remaining eight channels
-        # preserve entity type and spatial neighborhood for each decision frame.
+        coordinates = observations[:, :PLAYER_VALUES]
+        start = PLAYER_VALUES
+        cells = torch.round(
+            observations[:, start:start + CELL_COUNT] * CELL_TYPES
+        ).long().clamp(0, CELL_TYPES).reshape(batch, GRID_SIZE, GRID_SIZE)
+        # Empty cells become all-zero channels; the rest carry entity type.
         grids = F.one_hot(cells, num_classes=CELL_TYPES + 1)[..., 1:]
-        grids = grids.permute(0, 1, 4, 2, 3).reshape(
-            batch, FRAME_STACK_SIZE * CELL_TYPES, GRID_SIZE, GRID_SIZE
-        )
-        grids = grids.to(dtype=observations.dtype)
-        player = _player_channels(frames[:, :, :2], observations.dtype)
-        return coordinates, torch.cat((grids, player), dim=1)
+        grids = grids.permute(0, 3, 1, 2).to(dtype=observations.dtype)
+
+        velocity = observations[:, start + CELL_COUNT:].reshape(
+            batch, VELOCITY_CHANNELS, GRID_SIZE, GRID_SIZE)
+        player = _player_channels(coordinates, observations.dtype)
+        return coordinates, torch.cat((grids, player, velocity), dim=1)
 
     def forward(self, observations):
         coordinates, grids = self.policy_inputs(observations)
@@ -236,23 +239,23 @@ class DodgeHybridExtractor(BaseFeaturesExtractor):
 def policy_class(architecture):
     """The SB3 policy class, which is not always the default one.
 
-    field-cnn replaces the action head entirely -- its logits are readings of
-    a danger field rather than a learned projection -- so it needs its own
+    velocity-flow replaces the action head entirely -- its logits are readings
+    of a danger field rather than a learned projection -- so it needs its own
     ActorCriticPolicy subclass, not just a features extractor.
     """
-    if architecture == "field-cnn":
-        from .field import DodgeFieldPolicy
-        return DodgeFieldPolicy
+    if architecture == "velocity-flow":
+        from .velocity import VelocityFlowPolicy
+        return VelocityFlowPolicy
     return "MlpPolicy"
 
 
 def policy_kwargs(architecture):
     if architecture == "mlp":
         return {}
-    if architecture == "field-cnn":
-        from .field import DodgeFieldExtractor
+    if architecture == "velocity-flow":
+        from .velocity import VelocityFlowExtractor
         return {
-            "features_extractor_class": DodgeFieldExtractor,
+            "features_extractor_class": VelocityFlowExtractor,
             # No policy trunk: the field readings are the logits, so anything
             # between them and the distribution would be a head learning to
             # second-guess the controller.
@@ -290,8 +293,8 @@ def dead_unit_fraction(policy, observations):
 
 def architecture_name(model):
     extractor = model.policy.features_extractor
-    if type(extractor).__name__ == "DodgeFieldExtractor":
-        return "field-cnn"
+    if type(extractor).__name__ == "VelocityFlowExtractor":
+        return "velocity-flow"
     if isinstance(extractor, DodgeHybridExtractor):
         return "hybrid-cnn"
     return "mlp"

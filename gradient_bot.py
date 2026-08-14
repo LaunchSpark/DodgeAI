@@ -100,19 +100,11 @@ def main(argv=None):
 
     if args.compare:
         from stable_baselines3 import PPO
-        from dodge.observe import observe_frame
+        from dodge.observe import observe
         model = PPO.load(args.compare, device="cpu")
-        frames = []
 
         def act(machine):
-            # The checkpoint expects a two-frame stack; keep the same one the
-            # environment builds so the comparison is like for like.
-            frame = observe_frame(machine)
-            if not frames:
-                frames.extend([frame, frame])
-            else:
-                frames[:] = [frames[-1], frame]
-            action, _ = model.predict(np.concatenate(frames), deterministic=True)
+            action, _ = model.predict(observe(machine), deterministic=True)
             return int(action)
 
         lengths, scores = play(act, args.episodes, args.seed, **env_kwargs)
