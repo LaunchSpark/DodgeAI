@@ -155,6 +155,39 @@ def test_it_trains_and_survives_a_save_load_cycle(tmp_path):
     assert 0 <= int(action) < 9
 
 
+def test_the_field_is_sampled_at_the_player_not_its_velocity():
+    """Which coordinates are the position is a layout fact, and it changed.
+
+    The controller reads the field along each action's path, which starts at
+    the player. When the coordinate block was (px, py) across two stacked
+    frames, the last two values were the current position; now the block is
+    (px, py, dpx, dpy) and the last two are velocity. Taking the tail put the
+    sample points at the player's *speed* interpreted as a position, so the
+    field was read somewhere the player was not, and reading moved whenever the
+    player accelerated.
+    """
+    from dodge.observe import PLAYER_VALUES, VELOCITY_SCALE
+    from dodge.velocity import N_ACTIONS
+
+    extractor = _model(seed=7).policy.features_extractor
+    base = torch.rand(1, OBSERVATION_SIZE)
+    base[0, :PLAYER_VALUES] = torch.tensor((0.25, 0.75, 0.0, 0.0))
+
+    def danger(px, py, dpx, dpy):
+        observation = base.clone()
+        observation[0, :PLAYER_VALUES] = torch.tensor(
+            (px, py, dpx / VELOCITY_SCALE, dpy / VELOCITY_SCALE))
+        with torch.no_grad():
+            return extractor(observation)[0, :N_ACTIONS]
+
+    still = danger(0.25, 0.75, 0.0, 0.0)
+    # Velocity is already an input to the field and to the senses; it must not
+    # additionally decide *where* the field is read.
+    torch.testing.assert_close(danger(0.25, 0.75, 2.5, -2.5), still)
+    # Position must, or the controller is reading a fixed spot.
+    assert not torch.allclose(danger(0.75, 0.25, 0.0, 0.0), still)
+
+
 def test_global_context_is_smooth_not_tiled():
     """Nearest upsampling made the context sixteen hard-edged tiles.
 

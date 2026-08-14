@@ -177,8 +177,12 @@ class VelocityFlowExtractor(BaseFeaturesExtractor):
         trunk = self.field_net(grids)
         field = self._field_from_trunk(trunk)
 
-        # Current-frame player position, in pixels.
-        position = coordinates[:, -2:] * (ARENA_SIZE - 1)
+        # Player position, in pixels. The leading pair, not the trailing one:
+        # the coordinate block is (px, py, dpx, dpy), and it used to be (px, py)
+        # for each of two stacked frames, where the tail was the current
+        # position. Taking the tail now samples the field at the player's
+        # velocity, which is nowhere near the player.
+        position = coordinates[:, :2] * (ARENA_SIZE - 1)
         # (batch, actions, samples, 2)
         points = position[:, None, None, :] + self.offsets[None]
         # grid_sample wants normalised coordinates, and (x, y) order.
