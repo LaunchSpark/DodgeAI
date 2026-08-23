@@ -753,3 +753,39 @@ def test_v2_splits_the_buffer_into_larger_minibatches():
     assert minibatch_size(2048, "velocity-flow") == 128
     assert minibatch_size(2048, "velocity-flow-v2") == 256
     assert minibatch_size(2048) == 128, "the default stays v1's"
+
+
+def test_completed_updates_survive_kl_early_stopping(tmp_path):
+    """target_kl breaks the epoch loop early, so _n_updates // n_epochs
+    under-counts. v2 sets it, and the number names every watch snapshot."""
+    from stable_baselines3.common.env_util import make_vec_env
+    from dodge.env import DodgeEnv
+    from dodge.training import DashboardPPO
+    from dodge.policies import policy_class, policy_kwargs
+
+    env = make_vec_env(DodgeEnv, n_envs=1, env_kwargs={"max_episode_frames": 20})
+    model = DashboardPPO(policy_class("mlp"), env, n_steps=16, batch_size=8,
+                         n_epochs=10, target_kl=0.0, device="cpu", seed=0,
+                         policy_kwargs=policy_kwargs("mlp"))
+    assert model.completed_updates == 0
+
+    model.learn(total_timesteps=32)
+
+    # target_kl=0.0 stops after the first epoch every time, so the old
+    # derivation would report 0 updates however many actually completed.
+    assert model.completed_updates == 2, "one per train() call"
+    assert model._n_updates < model.completed_updates * model.n_epochs
+    env.close()
+
+
+def test_the_session_reads_the_explicit_counter(tmp_path):
+    from dodge.training import PPOTrainingSession
+
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+
+    class Stub:
+        completed_updates = 7
+        _n_updates = 3
+        n_epochs = 10
+
+    assert session._completed_updates(Stub()) == 7

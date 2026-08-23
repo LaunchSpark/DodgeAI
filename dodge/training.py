@@ -117,6 +117,10 @@ class DashboardPPO(PPO):
     """PPO variant that exposes optimizer minibatch progress to the dashboard."""
 
     def __init__(self, *args, learning_tracker=None, **kwargs):
+        # Counted rather than derived. _n_updates // n_epochs was the old
+        # answer, and target_kl breaks the epoch loop early, so for any
+        # architecture that sets it the quotient is short.
+        self.completed_updates = 0
         self._learning_tracker = learning_tracker
         super().__init__(*args, **kwargs)
 
@@ -148,9 +152,13 @@ class DashboardPPO(PPO):
 
         optimizer.step = tracked_step
         try:
-            return super().train()
+            result = super().train()
         finally:
             optimizer.step = original_step
+        # Only after train() returned and the hook is off: a raised exception
+        # is not a completed update.
+        self.completed_updates += 1
+        return result
 
 
 GRID_CONV_WEIGHT = "features_extractor.grid_net.0.weight"
@@ -694,6 +702,10 @@ class PPOTrainingSession:
 
     @staticmethod
     def _completed_updates(model):
+        counter = getattr(model, "completed_updates", None)
+        if counter is not None:
+            return int(counter)
+        # Checkpoints written before the counter existed.
         epochs = max(int(getattr(model, "n_epochs", 1)), 1)
         return int(getattr(model, "_n_updates", 0)) // epochs
 
