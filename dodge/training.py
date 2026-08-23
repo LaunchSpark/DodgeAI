@@ -111,6 +111,22 @@ class _SaveRequest:
     finished: threading.Event
     error: Exception | None = None
     completed_update: int = 0
+    kind: str = "save"
+    notify: bool = False
+
+
+@dataclass(frozen=True)
+class SessionEvent:
+    """Something the trainer finished, for the GUI to turn into a toast.
+
+    The event loop cannot block on the trainer, so results come back here
+    instead of as return values.
+    """
+    kind: str
+    ok: bool
+    message: str
+    path: Path | None = None
+    update: int = 0
 
 
 class DashboardPPO(PPO):
@@ -464,6 +480,7 @@ class PPOTrainingSession:
         self.restart_event = threading.Event()
         self.shutdown_event = threading.Event()
         self.save_requests = queue.Queue()
+        self.events = queue.Queue()
         self.pending_load = None
         self.model = None
         self.active_model_name = architecture or ""
@@ -638,6 +655,13 @@ class PPOTrainingSession:
                 request.error = error
             finally:
                 request.finished.set()
+            if request.notify:
+                saved = request.path.with_suffix(".zip")
+                self._emit(SessionEvent(
+                    request.kind, request.error is None,
+                    str(request.error) if request.error else f"Saved {saved.name}",
+                    saved, request.completed_update,
+                ))
 
     def _track_learning(self, completed, total):
         with self.lock:
@@ -652,6 +676,31 @@ class PPOTrainingSession:
                 return
             request.error = error
             request.finished.set()
+            if request.notify:
+                self._emit(SessionEvent(request.kind, False, str(error)))
+
+    def request_save(self, path, kind="save"):
+        """Queue a checkpoint and return. Results arrive via drain_events()."""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if self.model is None:
+            self._emit(SessionEvent(kind, False, "No model to save yet"))
+            return
+        self.save_requests.put(_SaveRequest(
+            path=path.with_suffix(""), finished=threading.Event(),
+            kind=kind, notify=True,
+        ))
+
+    def drain_events(self):
+        drained = []
+        while True:
+            try:
+                drained.append(self.events.get_nowait())
+            except queue.Empty:
+                return drained
+
+    def _emit(self, event):
+        self.events.put(event)
 
     def _should_stop(self, model):
         self._process_save_requests(model)

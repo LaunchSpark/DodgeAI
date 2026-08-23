@@ -897,3 +897,69 @@ def test_a_failing_train_is_not_counted_and_does_not_reach_the_hook(monkeypatch)
     assert model.completed_updates is None, "and a failure is not counted"
     assert model.policy.optimizer.step.__name__ == "step", "hook restored"
     env.close()
+
+
+def test_request_save_returns_before_the_save_happens(tmp_path):
+    """The caller is the Pygame event loop. It must not wait on the trainer."""
+    from dodge.training import PPOTrainingSession
+
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+    session.model = object()          # non-None so the request is accepted
+
+    session.request_save(tmp_path / "async.zip", kind="save")
+
+    assert session.drain_events() == [], "nothing has been served yet"
+    assert session.save_requests.qsize() == 1
+
+
+def test_serving_a_request_emits_a_success_event(tmp_path):
+    from dodge.training import PPOTrainingSession, SessionEvent
+
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+    session.model = object()
+    session.request_save(tmp_path / "async.zip", kind="save")
+
+    class Stub:
+        completed_updates = 4
+        def save(self, path):
+            Path(f"{path}.zip").write_bytes(b"checkpoint")
+
+    session._process_save_requests(Stub())
+    events = session.drain_events()
+
+    assert len(events) == 1
+    assert events[0].ok and events[0].kind == "save" and events[0].update == 4
+    assert events[0].path == tmp_path / "async.zip"
+    assert session.drain_events() == [], "draining clears"
+
+
+def test_a_failed_save_emits_an_error_event_rather_than_raising(tmp_path):
+    from dodge.training import PPOTrainingSession
+
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+    session.model = object()
+    session.request_save(tmp_path / "async.zip", kind="save")
+
+    class Boom:
+        completed_updates = 0
+        def save(self, path):
+            raise OSError("disk full")
+
+    session._process_save_requests(Boom())
+    events = session.drain_events()
+
+    assert len(events) == 1 and not events[0].ok
+    assert "disk full" in events[0].message
+
+
+def test_shutdown_completes_pending_requests_with_an_error(tmp_path):
+    from dodge.training import PPOTrainingSession
+
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+    session.model = object()
+    session.request_save(tmp_path / "orphan.zip", kind="watch")
+
+    session._fail_save_requests(RuntimeError("training session closed"))
+    events = session.drain_events()
+
+    assert len(events) == 1 and not events[0].ok and events[0].kind == "watch"
