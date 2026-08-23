@@ -767,7 +767,7 @@ def test_completed_updates_survive_kl_early_stopping(tmp_path):
     model = DashboardPPO(policy_class("mlp"), env, n_steps=16, batch_size=8,
                          n_epochs=10, target_kl=0.0, device="cpu", seed=0,
                          policy_kwargs=policy_kwargs("mlp"))
-    assert model.completed_updates == 0
+    assert model.completed_updates is None, "sentinel meaning never counted"
 
     model.learn(total_timesteps=32)
 
@@ -789,3 +789,57 @@ def test_the_session_reads_the_explicit_counter(tmp_path):
         n_epochs = 10
 
     assert session._completed_updates(Stub()) == 7
+
+
+def test_completed_updates_fallback_when_attribute_missing(tmp_path):
+    """A pre-counter model has no completed_updates attribute at all."""
+    from dodge.training import PPOTrainingSession
+
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+
+    class OldCheckpoint:
+        _n_updates = 120  # 12 epochs * 10 updates
+        n_epochs = 10
+
+    # Should fall back to derivation: 120 // 10 == 12
+    assert session._completed_updates(OldCheckpoint()) == 12
+
+
+def test_completed_updates_fallback_when_none(tmp_path):
+    """A fresh model or one explicitly set to None uses the derivation."""
+    from dodge.training import PPOTrainingSession
+
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+
+    class FreshModel:
+        completed_updates = None  # Sentinel value
+        _n_updates = 80   # 8 epochs * 10 updates
+        n_epochs = 10
+
+    # Should fall back to derivation: 80 // 10 == 8
+    assert session._completed_updates(FreshModel()) == 8
+
+
+def test_completed_updates_survives_save_and_load(tmp_path):
+    """A checkpoint preserves completed_updates through save and load."""
+    from dodge.training import DashboardPPO
+
+    # Create a model and train it briefly
+    saved = DashboardPPO("MlpPolicy", _matching_vec_env(1),
+                         n_steps=8, batch_size=8, n_epochs=1, device="cpu")
+    assert saved.completed_updates is None, "starts as sentinel"
+
+    saved.learn(total_timesteps=16)
+    assert saved.completed_updates == 2, "incremented twice (two updates)"
+
+    # Save and load
+    path = tmp_path / "checkpoint.zip"
+    saved.save(path)
+
+    loaded = DashboardPPO.load(path, env=_matching_vec_env(1), device="cpu")
+    # The loaded model preserves its counter from the checkpoint
+    assert loaded.completed_updates == 2, "counter preserved after load"
+
+    # Continue training
+    loaded.learn(total_timesteps=8)
+    assert loaded.completed_updates == 3, "counter continues incrementing"

@@ -119,8 +119,10 @@ class DashboardPPO(PPO):
     def __init__(self, *args, learning_tracker=None, **kwargs):
         # Counted rather than derived. _n_updates // n_epochs was the old
         # answer, and target_kl breaks the epoch loop early, so for any
-        # architecture that sets it the quotient is short.
-        self.completed_updates = 0
+        # architecture that sets it the quotient is short. None is a sentinel
+        # meaning "never counted" (pre-counter checkpoint); load() will preserve
+        # any int value from the checkpoint.
+        self.completed_updates = None
         self._learning_tracker = learning_tracker
         super().__init__(*args, **kwargs)
 
@@ -157,7 +159,7 @@ class DashboardPPO(PPO):
             optimizer.step = original_step
         # Only after train() returned and the hook is off: a raised exception
         # is not a completed update.
-        self.completed_updates += 1
+        self.completed_updates = (self.completed_updates or 0) + 1
         return result
 
 
