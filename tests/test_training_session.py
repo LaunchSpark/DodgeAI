@@ -1012,7 +1012,14 @@ def test_publishing_renames_atomically_and_keeps_three(tmp_path):
     class Stub:
         completed_updates = 0
         def save(self, path):
-            Path(f"{path}.zip").write_bytes(b"checkpoint")
+            # SB3 only appends ".zip" when the given path has no suffix of
+            # its own; a stub that appended unconditionally would hide a bug
+            # where the real code hands SB3 a name that already looks like
+            # it has one.
+            path = Path(path)
+            if path.suffix == "":
+                path = path.with_suffix(".zip")
+            path.write_bytes(b"checkpoint")
 
     model = Stub()
     for update in range(1, 6):
@@ -1037,7 +1044,14 @@ def test_retention_survives_a_locked_file(tmp_path, monkeypatch):
     class Stub:
         completed_updates = 0
         def save(self, path):
-            Path(f"{path}.zip").write_bytes(b"checkpoint")
+            # SB3 only appends ".zip" when the given path has no suffix of
+            # its own; a stub that appended unconditionally would hide a bug
+            # where the real code hands SB3 a name that already looks like
+            # it has one.
+            path = Path(path)
+            if path.suffix == "":
+                path = path.with_suffix(".zip")
+            path.write_bytes(b"checkpoint")
 
     real_unlink = pathlib.Path.unlink
 

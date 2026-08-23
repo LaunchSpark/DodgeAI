@@ -711,10 +711,15 @@ class PPOTrainingSession:
         update = self._completed_updates(model)
         directory = self.live_watch_dir
         directory.mkdir(parents=True, exist_ok=True)
-        stem = directory / f".{snapshot_name(update)}.{secrets.token_hex(4)}"
+        # SB3 only appends ".zip" when the path it's given has an empty
+        # suffix, so the stem must carry no dot beyond the leading one that
+        # hides it -- embedding "update-...zip" in the name would already
+        # look like a suffix to SB3, which would then write the path
+        # unchanged and leave the rename below with nothing to find.
+        stem = directory / f".pending-{int(update):08d}-{secrets.token_hex(4)}"
         try:
             model.save(stem)
-            temporary = stem.with_suffix(stem.suffix + ".zip")
+            temporary = Path(f"{stem}.zip")
             temporary.replace(directory / snapshot_name(update))
         except Exception as error:
             self._emit(SessionEvent("watch", False,
