@@ -1019,7 +1019,13 @@ def test_serving_a_request_emits_a_success_event(tmp_path):
     class Stub:
         completed_updates = 4
         def save(self, path):
-            Path(f"{path}.zip").write_bytes(b"checkpoint")
+            # SB3 only appends ".zip" when the given path has no suffix of
+            # its own; an unconditional append would hide the exact bug this
+            # suite exists to catch.
+            path = Path(path)
+            if path.suffix == "":
+                path = path.with_suffix(".zip")
+            path.write_bytes(b"checkpoint")
 
     session._process_save_requests(Stub())
     events = session.drain_events()
@@ -1028,6 +1034,41 @@ def test_serving_a_request_emits_a_success_event(tmp_path):
     assert events[0].ok and events[0].kind == "save" and events[0].update == 4
     assert events[0].path == tmp_path / "async.zip"
     assert session.drain_events() == [], "draining clears"
+
+
+def test_request_save_with_a_dotted_name_still_produces_a_zip(tmp_path):
+    """A model name containing a dot (e.g. "run2.5") must not confuse SB3's
+    "append .zip only when the suffix is empty" rule.
+
+    request_save used to strip ".zip" off the path with Path.with_suffix
+    before handing it to model.save, and rebuild the reported path the same
+    way afterwards. For "run2.5.zip" that leaves "run2.5" -- which Path
+    treats as already having the suffix ".5" -- so SB3 writes a bare "run2.5"
+    file with no extension at all, and the reconstructed report path is
+    "run2.zip", naming a file that was never written.
+    """
+    from dodge.training import PPOTrainingSession
+
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+    session.model = object()
+    session.request_save(tmp_path / "run2.5.zip", kind="save")
+
+    class Stub:
+        completed_updates = 4
+        def save(self, path):
+            path = Path(path)
+            if path.suffix == "":
+                path = path.with_suffix(".zip")
+            path.write_bytes(b"checkpoint")
+
+    session._process_save_requests(Stub())
+    events = session.drain_events()
+
+    assert len(events) == 1 and events[0].ok
+    assert events[0].path == tmp_path / "run2.5.zip"
+    assert events[0].path.exists(), "the reported path must be the one actually written"
+    assert not (tmp_path / "run2.5").exists(), "must not fall back to a suffix-less file"
+    assert not (tmp_path / "run2.zip").exists(), "must not name the wrong stem"
 
 
 def test_a_failed_save_emits_an_error_event_rather_than_raising(tmp_path):
@@ -1047,6 +1088,55 @@ def test_a_failed_save_emits_an_error_event_rather_than_raising(tmp_path):
 
     assert len(events) == 1 and not events[0].ok
     assert "disk full" in events[0].message
+
+
+def test_successful_save_renames_the_active_model(tmp_path):
+    """The GUI's Save button now reaches request_save, not save_model, which
+    used to be the only place that renamed the active model. Without this,
+    saving "steady-bot" leaves the header and watch-window title still
+    showing the old architecture name."""
+    from dodge.training import PPOTrainingSession
+
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+    session.model = object()
+    session.active_model_name = "hybrid-cnn"
+    session.data.model_name = "hybrid-cnn"
+    session.request_save(tmp_path / "steady-bot.zip", kind="save")
+
+    class Stub:
+        completed_updates = 4
+        def save(self, path):
+            path = Path(path)
+            if path.suffix == "":
+                path = path.with_suffix(".zip")
+            path.write_bytes(b"checkpoint")
+
+    session._process_save_requests(Stub())
+    session.drain_events()
+
+    assert session.active_model_name == "steady-bot"
+    assert session.data.model_name == "steady-bot"
+
+
+def test_a_failed_save_does_not_rename_the_active_model(tmp_path):
+    from dodge.training import PPOTrainingSession
+
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+    session.model = object()
+    session.active_model_name = "hybrid-cnn"
+    session.data.model_name = "hybrid-cnn"
+    session.request_save(tmp_path / "steady-bot.zip", kind="save")
+
+    class Boom:
+        completed_updates = 0
+        def save(self, path):
+            raise OSError("disk full")
+
+    session._process_save_requests(Boom())
+    session.drain_events()
+
+    assert session.active_model_name == "hybrid-cnn"
+    assert session.data.model_name == "hybrid-cnn"
 
 
 def test_shutdown_completes_pending_requests_with_an_error(tmp_path):
@@ -1093,6 +1183,28 @@ def test_request_save_after_close_emits_failure_event(tmp_path):
     assert len(events) == 1 and not events[0].ok and events[0].kind == "save"
     assert "closed" in events[0].message
     assert session.save_requests.qsize() == 0, "request must not be queued"
+
+
+def test_request_save_after_a_training_error_emits_failure_rather_than_stranding(tmp_path):
+    """_run fails every request queued before the error and then sleeps in
+    its error loop without ever calling _process_save_requests again. A
+    request queued after that point would sit in the queue forever -- no
+    toast, and the Save button left permanently disabled -- unless
+    request_save itself rejects it up front."""
+    from dodge.training import PPOTrainingSession
+
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+    session.model = object()
+    session.last_error = RuntimeError("boom")
+    with session.lock:
+        session.data.status = "error"
+
+    session.request_save(tmp_path / "async.zip", kind="save")
+
+    events = session.drain_events()
+    assert len(events) == 1 and not events[0].ok and events[0].kind == "save"
+    assert "boom" in events[0].message
+    assert session.save_requests.qsize() == 0, "must not be queued for a drain that will never come"
 
 
 def test_snapshot_names_sort_lexicographically_with_the_update(tmp_path):

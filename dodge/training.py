@@ -147,6 +147,17 @@ class _SaveRequest:
     completed_update: int = 0
     kind: str = "save"
     notify: bool = False
+    # The path the checkpoint actually lands at once SB3 has applied its own
+    # "append .zip only when the suffix is empty" rule to `path`. Carried
+    # explicitly rather than reconstructed afterwards -- a name with a dot in
+    # it (e.g. "run2.5") already looks like it has a suffix to Path, so
+    # stripping and re-adding ".zip" produces the wrong stem.
+    output_path: Path | None = None
+
+    def __post_init__(self):
+        if self.output_path is None:
+            self.output_path = (self.path if self.path.suffix
+                                else self.path.with_suffix(".zip"))
 
 
 @dataclass(frozen=True)
@@ -699,14 +710,22 @@ class PPOTrainingSession:
                 request.error = error
             finally:
                 request.finished.set()
+            if request.kind == "save" and request.error is None:
+                # request_save is the only path the GUI's Save button reaches,
+                # so a checkpoint written under a new name has to become the
+                # one everything else -- the header, the watch title -- calls
+                # the active model, the same way save_model used to.
+                with self.lock:
+                    self.active_model_name = request.output_path.stem
+                    self.data.model_name = request.output_path.stem
             if request.kind == "config":
                 self._commit_pending_config(request)
             if request.notify:
-                saved = request.path.with_suffix(".zip")
                 self._emit(SessionEvent(
                     request.kind, request.error is None,
-                    str(request.error) if request.error else f"Saved {saved.name}",
-                    saved, request.completed_update,
+                    (str(request.error) if request.error
+                     else f"Saved {request.output_path.name}"),
+                    request.output_path, request.completed_update,
                 ))
 
     def _commit_pending_config(self, request):
@@ -720,7 +739,7 @@ class PPOTrainingSession:
         if request.error is None:
             with self.lock:
                 self.env_kwargs = self.pending_config
-                self.pending_load = request.path.with_suffix(".zip")
+                self.pending_load = request.output_path
                 self.data.status = "reconfiguring"
             self.restart_event.set()
         self.pending_config = None
@@ -814,9 +833,18 @@ class PPOTrainingSession:
         if self.shutdown_event.is_set():
             self._emit(SessionEvent(kind, False, "Training session is closed"))
             return
+        with self.lock:
+            status = self.data.status
+        if status == "error":
+            # _run has already failed every request queued before this one
+            # and gone to sleep in its error loop -- nothing will ever drain
+            # this one, so it must be rejected here rather than stranded.
+            self._emit(SessionEvent(kind, False, f"Training failed: {self.last_error}"))
+            return
+        # `path` is handed to model.save() unchanged; _SaveRequest derives
+        # output_path from it using SB3's own append rule (see __post_init__).
         self.save_requests.put(_SaveRequest(
-            path=path.with_suffix(""), finished=threading.Event(),
-            kind=kind, notify=True,
+            path=path, finished=threading.Event(), kind=kind, notify=True,
         ))
 
     def drain_events(self):
