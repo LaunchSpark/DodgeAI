@@ -751,8 +751,9 @@ class PPOTrainingSession:
         (typically 0) once it has exited. Maintaining this list allows the
         trainer to stop publishing snapshots once the last window closes.
         """
-        self.watchers = [w for w in self.watchers if w.poll() is None]
-        return bool(self.watchers)
+        with self.lock:
+            self.watchers = [w for w in self.watchers if w.poll() is None]
+            return bool(self.watchers)
 
     def _on_post_update(self, model):
         """The safe point. Saves first, then a snapshot if anyone needs one."""
@@ -1076,10 +1077,12 @@ class PPOTrainingSession:
             command.append("--patterns")
         command.append("--powerups" if game_config["powerups"] else "--no-powerups")
         try:
-            self.watchers.append(subprocess.Popen(command, cwd=project))
+            process = subprocess.Popen(command, cwd=project)
         except OSError as error:
             self._emit(SessionEvent("watch", False, f"Could not open window: {error}"))
             return False
+        with self.lock:
+            self.watchers.append(process)
         self.last_watch_label = f"{model_name} | Update {update}"
         self._emit(SessionEvent("watch", True, f"Opening {self.last_watch_label}",
                                 path, update))
