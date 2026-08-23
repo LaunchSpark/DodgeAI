@@ -843,3 +843,57 @@ def test_completed_updates_survives_save_and_load(tmp_path):
     # Continue training
     loaded.learn(total_timesteps=8)
     assert loaded.completed_updates == 3, "counter continues incrementing"
+
+
+def test_the_post_update_hook_runs_after_the_optimizer_hook_is_off():
+    """A save taken while the optimizer step is patched would capture a model
+    mid-update, so the hook has to fire after train() has fully unwound."""
+    from stable_baselines3.common.env_util import make_vec_env
+    from dodge.env import DodgeEnv
+    from dodge.training import DashboardPPO
+    from dodge.policies import policy_class, policy_kwargs
+
+    env = make_vec_env(DodgeEnv, n_envs=1, env_kwargs={"max_episode_frames": 20})
+    seen = []
+    model = DashboardPPO(policy_class("mlp"), env, n_steps=16, batch_size=8,
+                         n_epochs=1, device="cpu", seed=0,
+                         policy_kwargs=policy_kwargs("mlp"))
+    model.set_post_update(lambda m: seen.append(
+        (m.completed_updates, m.policy.optimizer.step.__name__)))
+
+    model.learn(total_timesteps=32)
+
+    assert seen, "the hook never ran"
+    assert all(name == "step" for _, name in seen), "optimizer still patched"
+    assert [update for update, _ in seen] == [1, 2], "once per update, in order"
+    env.close()
+
+
+def test_a_failing_train_is_not_counted_and_does_not_reach_the_hook(monkeypatch):
+    """An update that raised is not a completed update, and a save taken from
+    the hook must never see a model whose train() blew up halfway."""
+    from stable_baselines3 import PPO
+    from stable_baselines3.common.env_util import make_vec_env
+    from dodge.env import DodgeEnv
+    from dodge.training import DashboardPPO
+    from dodge.policies import policy_class, policy_kwargs
+
+    env = make_vec_env(DodgeEnv, n_envs=1, env_kwargs={"max_episode_frames": 20})
+    calls = []
+    model = DashboardPPO(policy_class("mlp"), env, n_steps=16, batch_size=8,
+                         n_epochs=1, device="cpu", seed=0,
+                         policy_kwargs=policy_kwargs("mlp"))
+    model.set_post_update(lambda m: calls.append(m))
+
+    def explode(self):
+        raise RuntimeError("optimizer blew up")
+
+    monkeypatch.setattr(PPO, "train", explode)
+
+    with pytest.raises(RuntimeError, match="optimizer blew up"):
+        model.train()
+
+    assert calls == [], "the hook must not fire for a failed update"
+    assert model.completed_updates is None, "and a failure is not counted"
+    assert model.policy.optimizer.step.__name__ == "step", "hook restored"
+    env.close()

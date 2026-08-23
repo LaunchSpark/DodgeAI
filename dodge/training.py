@@ -116,7 +116,7 @@ class _SaveRequest:
 class DashboardPPO(PPO):
     """PPO variant that exposes optimizer minibatch progress to the dashboard."""
 
-    def __init__(self, *args, learning_tracker=None, **kwargs):
+    def __init__(self, *args, learning_tracker=None, post_update=None, **kwargs):
         # Counted rather than derived. _n_updates // n_epochs was the old
         # answer, and target_kl breaks the epoch loop early, so for any
         # architecture that sets it the quotient is short. None is a sentinel
@@ -124,13 +124,18 @@ class DashboardPPO(PPO):
         # any int value from the checkpoint.
         self.completed_updates = None
         self._learning_tracker = learning_tracker
+        self._post_update = post_update
         super().__init__(*args, **kwargs)
 
     def _excluded_save_params(self):
-        return super()._excluded_save_params() + ["_learning_tracker"]
+        return super()._excluded_save_params() + ["_learning_tracker",
+                                                  "_post_update"]
 
     def set_learning_tracker(self, tracker):
         self._learning_tracker = tracker
+
+    def set_post_update(self, callback):
+        self._post_update = callback
 
     def train(self):
         sample_count = self.rollout_buffer.buffer_size * self.rollout_buffer.n_envs
@@ -160,6 +165,10 @@ class DashboardPPO(PPO):
         # Only after train() returned and the hook is off: a raised exception
         # is not a completed update.
         self.completed_updates = (self.completed_updates or 0) + 1
+        if self._post_update:
+            # The one moment the model is provably not mid-update: train() has
+            # returned and the optimizer hook is back to the real step.
+            self._post_update(self)
         return result
 
 
@@ -524,6 +533,7 @@ class PPOTrainingSession:
             device=self.device,
             policy_kwargs=policy_kwargs(architecture),
             learning_tracker=self._track_learning,
+            post_update=self._process_save_requests,
         )
 
     def _load_model(self, path, env):
@@ -552,6 +562,7 @@ class PPOTrainingSession:
             custom_objects={"n_steps": self.rollout_steps},
         )
         model.set_learning_tracker(self._track_learning)
+        model.set_post_update(self._process_save_requests)
         return model
 
     def _clear_snapshot(self, status="starting"):
