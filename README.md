@@ -173,6 +173,59 @@ a fact about trajectories, not about any cell. Sampling along each action's
 path recovers part of it; if that binds, the fix is a field conditioned on
 time, not a deeper trunk.
 
+### VelocityFlow v2
+
+    python training_gui.py --architecture velocity-flow-v2
+
+v1 stays registered and selectable. That is the point: v2 changes the network
+and the optimizer schedule together, and without a fixed baseline there is no
+way to tell which one moved a result.
+
+Two changes to the network:
+
+* **The critic can see space.** v1 hands the value function
+  `trunk.mean(dim=(2, 3))` -- 32 channel means over the whole field -- so its
+  entire view of the layout is an average, while "am I about to die" is almost
+  entirely a question of layout. v2 adds a 4x4 arena summary at 8 channels,
+  128 numbers behind a 1x1 convolution. The policy keeps full resolution all
+  the way to the field; only the critic was throwing it away.
+* **The trunk's middle runs at 16x16.** Roughly 79M multiply-accumulates a
+  sample down to 22M. Built with `half_resolution=False` it reverts to v1's
+  full-resolution trunk, because this is the one change that trades against
+  the design thesis: the field it draws is smoother, and if what makes the
+  controller work is precision at a threat's edge, this is what costs it.
+
+And a per-architecture hyperparameter table, so v1 keeps the values every
+curve recorded so far was trained under:
+
+| | velocity-flow | v2 | why |
+| --- | --- | --- | --- |
+| `gamma` | 0.995 | **0.99** | 0.995 is a ~13s horizon. Which enemies spawn and which pattern comes next are not predictable from the current frame, so most of that is noise in the value target, capping explained variance whatever the critic does. |
+| `n_epochs` | 10 | **4** | Learning is ~5s of a ~6s cycle and this is the multiplier. |
+| `target_kl` | none | **0.02** | Makes the cut adaptive: an update that has not moved the policy still gets its passes. |
+| `vf_coef` | 0.5 | **1.0** | The critic is the weak half. |
+| minibatch | 128 | **256** | See below. |
+
+**Measured, GTX 1070.** Per-sample optimizer cost is flat from 128 to 256 and
+then degrades badly -- 0.32 ms/sample at 256 against 0.41 at 512 and 2.88 at
+2048, which is memory pressure, not compute. 256 is the floor of that curve,
+and anything larger makes the learning phase slower rather than faster.
+
+| | batch | ms/step | steps/rollout | learning per rollout |
+| --- | --- | --- | --- | --- |
+| velocity-flow | 128 | 40.6 | 160 | 6.50s |
+| velocity-flow-v2 | 256 | 42.9 | 32 | **1.37s** |
+
+A 4.7x cut, against roughly 1s of collection either way -- so about 3.2x on the
+whole cycle. Most of it is `n_epochs`; the trunk's contribution is that it made
+the doubled batch cost the same per step as v1's, at 0.168 ms/sample against
+0.318. v2 is very slightly larger in weights (111,424 against 102,968) because
+of the critic summary, which is not the same thing as slower.
+
+None of this says v2 is better at the game. It is faster per update and the
+critic is better fed; whether that shows up in survival is what the two
+architectures sitting side by side are for.
+
 ### Gradient bot
 
     python gradient_bot.py              # measure against random

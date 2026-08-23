@@ -219,3 +219,89 @@ def test_global_context_is_smooth_not_tiled():
     extractor._field_from_trunk(extractor.field_net(probe))[0, 0, 16, 16].backward()
     reached = torch.nonzero(probe.grad[0].abs().sum(0).sum(1))[:, 0]
     assert int(reached.max() - reached.min()) + 1 == GRID_SIZE
+
+
+def _model_v2(seed=0):
+    from dodge.env import DodgeEnv
+    return PPO(policy_class("velocity-flow-v2"), DodgeEnv(max_episode_frames=20),
+               n_steps=16, batch_size=8, n_epochs=1, seed=seed, device="cpu",
+               policy_kwargs=policy_kwargs("velocity-flow-v2"))
+
+
+def test_v2_is_selectable_and_names_itself_apart_from_v1():
+    """Both stay registered: v1 is the baseline v2 has to beat."""
+    from dodge.policies import ARCHITECTURES
+
+    assert "velocity-flow" in ARCHITECTURES and "velocity-flow-v2" in ARCHITECTURES
+    assert architecture_name(_model_v2()) == "velocity-flow-v2"
+    assert architecture_name(_model()) == "velocity-flow"
+
+
+def test_v2_trains_and_survives_a_save_load_cycle(tmp_path):
+    model = _model_v2(seed=3)
+    model.learn(total_timesteps=32)
+
+    path = tmp_path / "velocity-flow-v2"
+    model.save(path)
+    restored = PPO.load(path, device="cpu")
+
+    assert architecture_name(restored) == "velocity-flow-v2"
+    action, _ = restored.predict(np.zeros(OBSERVATION_SIZE, dtype=np.float32))
+    assert 0 <= int(action) < 9
+
+
+def test_v2_still_emits_a_full_resolution_field():
+    """The trunk runs at half resolution; the field it draws must not.
+
+    The controller samples the field along nine pixel-space paths, so a coarser
+    output would blur exactly the near-threat detail those readings depend on.
+    """
+    from dodge.velocity import SAMPLE_FRAMES
+
+    field = _model_v2().policy.features_extractor.field(torch.rand(4, OBSERVATION_SIZE))
+    assert field.shape == (4, len(SAMPLE_FRAMES), GRID_SIZE, GRID_SIZE)
+
+
+def test_the_v2_critic_can_tell_where_a_threat_is():
+    """v1's critic sees trunk.mean(dim=(2,3)), the same number wherever a
+    threat sits. Contrasted against v1 directly so it cannot pass vacuously."""
+    from dodge.velocity import VALUE_SUMMARY_DIM
+
+    trunk = torch.zeros(2, 32, GRID_SIZE, GRID_SIZE)
+    trunk[0, :, 2, 2] = 1.0                    # near one corner
+    trunk[1, :, 29, 29] = 1.0                  # near the opposite one
+
+    pooled = trunk.mean(dim=(2, 3))
+    assert torch.allclose(pooled[0], pooled[1]), \
+        "the setup: identical means, so only layout differs"
+
+    summary = _model_v2().policy.features_extractor.value_summary(trunk)
+
+    assert summary.shape == (2, VALUE_SUMMARY_DIM)
+    assert not torch.allclose(summary[0], summary[1]), \
+        "the summary must carry what the mean throws away"
+
+
+def test_the_v2_trunk_runs_its_heavy_layers_at_half_resolution():
+    """Where the compute saving comes from, and the flag that turns it off."""
+    import torch.nn.functional as F
+    from gymnasium import spaces
+    from dodge.policies import HYBRID_INPUT_CHANNELS
+    from dodge.velocity import VelocityFlowV2Extractor, _HalfResolutionTrunk
+
+    space = spaces.Box(low=-1.0, high=1.0, shape=(OBSERVATION_SIZE,),
+                       dtype=np.float32)
+    half = VelocityFlowV2Extractor(space)
+    assert isinstance(half.field_net, _HalfResolutionTrunk)
+
+    grids = torch.rand(2, HYBRID_INPUT_CHANNELS, GRID_SIZE, GRID_SIZE)
+    stem = half.field_net.stem(grids)
+    assert stem.shape[-2:] == (GRID_SIZE, GRID_SIZE), "the stem sees every cell"
+    body = half.field_net.body(F.avg_pool2d(stem, 2))
+    assert body.shape[-2:] == (GRID_SIZE // 2, GRID_SIZE // 2), "the body does not"
+    assert half.field_net(grids).shape[-2:] == (GRID_SIZE, GRID_SIZE), \
+        "and it comes back before the field head"
+
+    full = VelocityFlowV2Extractor(space, half_resolution=False)
+    assert not isinstance(full.field_net, _HalfResolutionTrunk), \
+        "the flag has to actually turn it off, or it cannot be A/B'd"

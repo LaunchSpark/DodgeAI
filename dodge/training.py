@@ -37,7 +37,7 @@ DEAD_UNIT_SAMPLES = 512
 # 1070: the hybrid-cnn update runs 5.1x faster there (7.20s -> 1.40s), while the
 # MLP is unchanged (0.686s -> 0.693s) because its layers are too small to cover
 # the transfer and launch overhead. Stable-Baselines3 warns about exactly this.
-GPU_ARCHITECTURES = ("hybrid-cnn", "velocity-flow")
+GPU_ARCHITECTURES = ("hybrid-cnn", "velocity-flow", "velocity-flow-v2")
 
 
 def resolve_device(device, architecture):
@@ -57,10 +57,52 @@ MINIBATCHES_PER_EPOCH = 16
 MIN_MINIBATCH = 64
 
 
-def minibatch_size(buffer_samples):
+# PPO settings that vary by architecture. Keyed rather than global so
+# velocity-flow keeps the values every curve recorded so far was trained
+# under: v2 changes the network and the optimizer schedule together, and
+# without a fixed baseline there is no way to tell which one moved a result.
+DEFAULT_HYPERPARAMETERS = {
+    "gamma": 0.995,
+    "n_epochs": 10,
+    "vf_coef": 0.5,
+    "target_kl": None,
+    "minibatches_per_epoch": MINIBATCHES_PER_EPOCH,
+}
+
+ARCHITECTURE_HYPERPARAMETERS = {
+    "velocity-flow-v2": {
+        # 0.995 is an effective horizon of ~200 decisions, about 13 seconds.
+        # Most of that is unpredictable from the current frame -- which enemies
+        # spawn, at what size, which pattern comes next -- so it is noise
+        # sitting in the value target, capping explained variance no matter how
+        # good the critic is. 0.99 is ~6.7s, still far longer than a dodge.
+        "gamma": 0.99,
+        # Learning is about five seconds of a six-second cycle, and ten epochs
+        # is the multiplier. The late ones run on stale data and are mostly
+        # clipped anyway; target_kl makes the cut adaptive rather than flat, so
+        # an update that has not moved the policy still gets its passes.
+        "n_epochs": 4,
+        "target_kl": 0.02,
+        # The critic is the weak half, so its loss gets equal weight.
+        "vf_coef": 1.0,
+        # 256-sample minibatches: profiled on a GTX 1070, per-sample cost is
+        # flat from 128 to 256 and then degrades badly (512 is 0.41ms/sample
+        # against 0.32, and 2048 is 2.88). 256 is the floor of that curve.
+        "minibatches_per_epoch": 8,
+    },
+}
+
+
+def hyperparameters(architecture=None):
+    """PPO settings for an architecture, falling back to the shared defaults."""
+    return {**DEFAULT_HYPERPARAMETERS,
+            **ARCHITECTURE_HYPERPARAMETERS.get(architecture, {})}
+
+
+def minibatch_size(buffer_samples, architecture=None):
     """Split a rollout buffer into a workable number of optimizer passes."""
-    return min(max(MIN_MINIBATCH, buffer_samples // MINIBATCHES_PER_EPOCH),
-               buffer_samples)
+    per_epoch = hyperparameters(architecture)["minibatches_per_epoch"]
+    return min(max(MIN_MINIBATCH, buffer_samples // per_epoch), buffer_samples)
 
 
 @dataclass
@@ -440,6 +482,7 @@ class PPOTrainingSession:
             return self._build_model(env, architecture)
 
     def _build_model(self, env, architecture):
+        settings = hyperparameters(architecture)
         return DashboardPPO(
             # velocity-flow replaces the action head, so it needs its own policy
             # class rather than only a features extractor.
@@ -456,9 +499,12 @@ class PPOTrainingSession:
             # the optimizer passes when the update is already most of the cycle.
             # The floor keeps small buffers from being split into gradients too
             # noisy to be worth taking.
-            batch_size=minibatch_size(self.n_envs * self.rollout_steps),
-            n_epochs=10,
-            gamma=0.995,
+            batch_size=minibatch_size(self.n_envs * self.rollout_steps,
+                                      architecture),
+            n_epochs=settings["n_epochs"],
+            gamma=settings["gamma"],
+            vf_coef=settings["vf_coef"],
+            target_kl=settings["target_kl"],
             gae_lambda=0.95,
             clip_range=0.2,
             ent_coef=0.01,

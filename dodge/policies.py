@@ -32,7 +32,7 @@ from .observe import (
 # motion from a history frame. It sees the whole arena rather than a 44px
 # window, carries a sixth of hybrid-cnn parameters, has no dense layer to die
 # in, and its internal state is a picture you can watch.
-ARCHITECTURES = ("velocity-flow", "hybrid-cnn", "mlp")
+ARCHITECTURES = ("velocity-flow", "velocity-flow-v2", "hybrid-cnn", "mlp")
 DEFAULT_ARCHITECTURE = ARCHITECTURES[0]
 HYBRID_FEATURES_DIM = 160
 
@@ -243,7 +243,7 @@ def policy_class(architecture):
     of a danger field rather than a learned projection -- so it needs its own
     ActorCriticPolicy subclass, not just a features extractor.
     """
-    if architecture == "velocity-flow":
+    if architecture in ("velocity-flow", "velocity-flow-v2"):
         from .velocity import VelocityFlowPolicy
         return VelocityFlowPolicy
     return "MlpPolicy"
@@ -252,10 +252,12 @@ def policy_class(architecture):
 def policy_kwargs(architecture):
     if architecture == "mlp":
         return {}
-    if architecture == "velocity-flow":
-        from .velocity import VelocityFlowExtractor
+    if architecture in ("velocity-flow", "velocity-flow-v2"):
+        from .velocity import VelocityFlowExtractor, VelocityFlowV2Extractor
         return {
-            "features_extractor_class": VelocityFlowExtractor,
+            "features_extractor_class": (VelocityFlowExtractor
+                                         if architecture == "velocity-flow"
+                                         else VelocityFlowV2Extractor),
             # No policy trunk: the field readings are the logits, so anything
             # between them and the distribution would be a head learning to
             # second-guess the controller.
@@ -293,6 +295,10 @@ def dead_unit_fraction(policy, observations):
 
 def architecture_name(model):
     extractor = model.policy.features_extractor
+    # Exact names, not isinstance: v2 subclasses v1, so isinstance would report
+    # every v2 checkpoint as a v1 one.
+    if type(extractor).__name__ == "VelocityFlowV2Extractor":
+        return "velocity-flow-v2"
     if type(extractor).__name__ == "VelocityFlowExtractor":
         return "velocity-flow"
     if isinstance(extractor, DodgeHybridExtractor):

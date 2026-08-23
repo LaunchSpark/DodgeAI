@@ -11,6 +11,7 @@ pytest.importorskip("lupa.luajit21")
 
 from dodge.telemetry import ModelEntry
 from dodge.observe import OBSERVATION_SIZE
+from dodge.policies import ARCHITECTURES
 from dodge.training import DashboardPPO, PPOTrainingSession
 from watch_ppo import window_title
 
@@ -507,7 +508,7 @@ def test_minibatch_size_follows_the_whole_buffer(tmp_path, monkeypatch,
     assert captured["batch_size"] == expected
 
 
-@pytest.mark.parametrize("architecture", ["velocity-flow", "hybrid-cnn", "mlp"])
+@pytest.mark.parametrize("architecture", ARCHITECTURES)
 def test_every_architecture_saves_and_loads_through_the_session(tmp_path, architecture):
     """Loading must not special-case an architecture.
 
@@ -731,3 +732,24 @@ def test_survival_time_is_banded_by_life(tmp_path, monkeypatch):
         session.data.episode_length.as_list()[0]), "the stack must equal the total"
 
 
+def test_v2_carries_its_own_hyperparameters():
+    """v1 has to keep today's settings, or it stops being a baseline for v2."""
+    from dodge.training import hyperparameters
+
+    v1, v2 = hyperparameters("velocity-flow"), hyperparameters("velocity-flow-v2")
+
+    assert (v1["gamma"], v1["n_epochs"], v1["vf_coef"], v1["target_kl"]) \
+        == (0.995, 10, 0.5, None)
+    assert (v2["gamma"], v2["n_epochs"], v2["vf_coef"], v2["target_kl"]) \
+        == (0.99, 4, 1.0, 0.02)
+
+
+def test_v2_splits_the_buffer_into_larger_minibatches():
+    """Profiled on a 1070: per-sample cost is flat from 128 to 256 and then
+    degrades hard -- 512 makes the learning phase slower, not faster. 256 is
+    the floor of that curve."""
+    from dodge.training import minibatch_size
+
+    assert minibatch_size(2048, "velocity-flow") == 128
+    assert minibatch_size(2048, "velocity-flow-v2") == 256
+    assert minibatch_size(2048) == 128, "the default stays v1's"

@@ -80,6 +80,28 @@ CONTEXT_GRID = 4
 VALUE_FEATURES = 64
 FIELD_FEATURES_DIM = N_ACTIONS + VALUE_FEATURES
 
+# --- velocity-flow-v2 ---------------------------------------------------
+# A coarse arena map for the critic. v1 hands the value function
+# trunk.mean(dim=(2, 3)) -- 32 channel means over the whole 32x32 field --
+# so its entire view of the layout is an average, and "am I about to die"
+# is almost entirely a question of layout. Eight channels on a 4x4 grid is
+# 128 numbers and a 1x1 conv: negligible against the trunk, and enough to
+# tell threats converging on the player from threats in the far corner.
+VALUE_SUMMARY_CHANNELS = 8
+VALUE_SUMMARY_GRID = 4
+VALUE_SUMMARY_DIM = VALUE_SUMMARY_CHANNELS * VALUE_SUMMARY_GRID ** 2
+
+# Run the trunk's three heavy convolutions at 16x16 instead of 32x32 and
+# interpolate back. By multiply-accumulate count that is roughly 79M -> 22M
+# per sample, and the optimizer is where the wall-clock goes: a rollout
+# spends about five seconds learning against one collecting.
+#
+# It is the one change here that trades against the design thesis, so it is
+# a flag rather than a fact. The field it draws is smoother, and if what
+# makes the controller work is precision at a threat's edge, this is what
+# costs it. Build the extractor with half_resolution=False to A/B it.
+HALF_RESOLUTION = True
+
 
 def action_offsets(action_repeat=4, frames=SAMPLE_FRAMES):
     """Where each action moves the player, in pixels, starting from rest.
@@ -152,6 +174,11 @@ class VelocityFlowExtractor(BaseFeaturesExtractor):
         self.register_buffer("sample_weights",
                              torch.as_tensor(_sample_weights()))
 
+    def _value_features(self, trunk, coordinates, senses):
+        """What the critic sees. Overridden by v2, which adds a coarse map."""
+        pooled = trunk.mean(dim=(2, 3))
+        return self.value_net(torch.cat((pooled, coordinates, senses), dim=1))
+
     def _field_from_trunk(self, trunk):
         context = self.context_net(F.adaptive_avg_pool2d(trunk, CONTEXT_GRID))
         # Bilinear, not nearest. Nearest holds each of the 4x4 context values
@@ -203,10 +230,84 @@ class VelocityFlowExtractor(BaseFeaturesExtractor):
         danger = (paired * self.sample_weights).sum(dim=-1)
 
         senses = _sense_features(coordinates, grids)
-        pooled = trunk.mean(dim=(2, 3))
-        value = self.value_net(torch.cat((pooled, coordinates, senses), dim=1))
+        value = self._value_features(trunk, coordinates, senses)
         # Negated: the controller prefers low danger, and these become logits.
         return torch.cat((-danger, value), dim=1)
+
+
+class _HalfResolutionTrunk(nn.Module):
+    """The v1 trunk with its three heavy convolutions at half resolution.
+
+    The stem stays at full resolution so the first layer still sees every 4px
+    cell, and the result is interpolated back before the field head, so the
+    field itself is unchanged in shape. Bilinear rather than nearest for the
+    same reason the context branch is: a step at a block edge is not a fact
+    about danger, and the controller samples across those edges.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.stem = nn.Sequential(
+            nn.Conv2d(HYBRID_INPUT_CHANNELS, 32, 3, padding=1),
+            activation(),
+        )
+        self.body = nn.Sequential(
+            nn.Conv2d(32, 64, 3, padding=1),
+            activation(),
+            # Still dilated, and at half resolution its reach in arena terms
+            # doubles: 11 cells of 8px rather than of 4px.
+            nn.Conv2d(64, 64, 3, padding=2, dilation=2),
+            activation(),
+            nn.Conv2d(64, TRUNK_CHANNELS, 3, padding=1),
+            activation(),
+        )
+
+    def forward(self, grids):
+        stem = self.stem(grids)
+        body = self.body(F.avg_pool2d(stem, 2))
+        return F.interpolate(body, size=stem.shape[-2:],
+                             mode="bilinear", align_corners=False)
+
+
+class VelocityFlowV2Extractor(VelocityFlowExtractor):
+    """v1, with a critic that can see space and a cheaper trunk.
+
+    Two independent changes, kept in one architecture so they can be measured
+    against v1 as a package:
+
+    * The value function receives a 4x4 arena summary as well as the global
+      mean, because a mean over 32x32 cells cannot say *where* anything is.
+    * The trunk's middle runs at 16x16, which is the only structural lever on
+      a training cycle whose time is dominated by the optimizer.
+    """
+
+    def __init__(self, observation_space, action_repeat=4,
+                 half_resolution=HALF_RESOLUTION):
+        super().__init__(observation_space, action_repeat=action_repeat)
+        self.half_resolution = half_resolution
+        if half_resolution:
+            self.field_net = _HalfResolutionTrunk()
+        # 1x1, so the summary is a channel projection of each cell rather than
+        # another receptive field -- the trunk has already done that work.
+        self.value_pool = nn.Conv2d(TRUNK_CHANNELS, VALUE_SUMMARY_CHANNELS, 1)
+        self.value_net = nn.Sequential(
+            nn.Linear(TRUNK_CHANNELS + VALUE_SUMMARY_DIM + COORDINATE_INPUTS,
+                      VALUE_FEATURES),
+            activation(),
+            nn.Linear(VALUE_FEATURES, VALUE_FEATURES),
+            activation(),
+        )
+
+    def value_summary(self, trunk):
+        """A coarse map of the arena for the critic: (batch, 8 * 4 * 4)."""
+        return F.adaptive_avg_pool2d(self.value_pool(trunk),
+                                     VALUE_SUMMARY_GRID).flatten(1)
+
+    def _value_features(self, trunk, coordinates, senses):
+        pooled = trunk.mean(dim=(2, 3))
+        return self.value_net(
+            torch.cat((pooled, self.value_summary(trunk), coordinates, senses),
+                      dim=1))
 
 
 class _FieldLogits(nn.Module):
