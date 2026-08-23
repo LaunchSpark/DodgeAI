@@ -356,6 +356,70 @@ def test_a_failed_preservation_checkpoint_leaves_the_config_alone(tmp_path):
     assert any(not e.ok and e.kind == "config" for e in events)
 
 
+def test_load_model_is_not_hijacked_by_a_stale_pending_config(tmp_path, monkeypatch):
+    """A pending game-config commit must not fire after the user has already
+    chosen a different checkpoint to load.
+
+    _commit_pending_config used to assign pending_load unconditionally once
+    its checkpoint landed. If the user applies a config change and then picks
+    Load Model before that save is served, load_model's choice would be
+    silently overwritten by the stale config commit, restarting on the old
+    policy instead of the one the user actually clicked.
+    """
+    from dodge.telemetry import ModelEntry
+    from dodge.training import PPOTrainingSession
+
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+    session.model = object()
+    monkeypatch.setattr(session, "start", lambda: None)
+
+    assert session.configure_game(
+        difficulty=3, patterns=True, powerups=False, action_repeat=7
+    ) == "pending"
+    assert session.pending_config is not None, "the setup under test"
+
+    chosen = tmp_path / "chosen.zip"
+    chosen.write_bytes(b"checkpoint")
+    session.load_model(ModelEntry("chosen", chosen, "PPO"))
+    assert session.pending_load == chosen
+    assert session.pending_config is None, "load_model must drop the stale config"
+
+    # The config save that was already queued still gets served -- it must
+    # not resurrect the config commit and steal pending_load back.
+    class Stub:
+        completed_updates = 5
+        def save(self, path):
+            path = Path(path)
+            if path.suffix == "":
+                path = path.with_suffix(".zip")
+            path.write_bytes(b"checkpoint")
+
+    session._process_save_requests(Stub())
+    session.drain_events()
+
+    assert session.pending_load == chosen, \
+        "the stale config commit must not have overwritten the chosen checkpoint"
+
+
+def test_reset_drops_a_pending_config(tmp_path):
+    """Same hazard as load_model: Reset must not let a config save queued
+    before the click restart training back into the config's checkpoint."""
+    from dodge.training import PPOTrainingSession
+
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+    session.model = object()
+
+    assert session.configure_game(
+        difficulty=3, patterns=True, powerups=False, action_repeat=7
+    ) == "pending"
+    assert session.pending_config is not None, "the setup under test"
+
+    session.reset()
+
+    assert session.pending_config is None
+    assert session.pending_load is None
+
+
 @pytest.mark.parametrize("n_envs,expected", [(1, "DummyVecEnv"), (4, "SubprocVecEnv")])
 def test_parallel_envs_use_separate_processes(tmp_path, monkeypatch, n_envs, expected):
     """Extra envs are only faster if they are actually stepped in parallel.

@@ -892,6 +892,11 @@ class PPOTrainingSession:
         self.pause_event.clear()
         with self.lock:
             self.pending_load = None
+            # A game-config save may still be queued from before this click.
+            # Without dropping it here, _commit_pending_config would land
+            # after this reset and overwrite pending_load with the old
+            # checkpoint, quietly discarding the reset.
+            self.pending_config = None
             self.active_model_name = self.architecture
             self.data.status = "resetting"
             self.data.model_name = self.active_model_name
@@ -963,6 +968,9 @@ class PPOTrainingSession:
         self.pause_event.clear()
         with self.lock:
             self.pending_load = entry.path
+            # Same reasoning as reset(): a queued config commit must not be
+            # allowed to overwrite this choice once its checkpoint lands.
+            self.pending_config = None
             self.active_model_name = entry.name
             self.data.status = "loading"
             self.data.model_name = entry.name
