@@ -944,9 +944,19 @@ class TrainingDashboard:
         if not self.model_name:
             self._show_toast("Enter a model name")
             return
+        # _insert_model_text only filters non-printable characters, so a "/"
+        # or "\" typed into the field reaches here unchanged. Route through
+        # the session's own sanitizer so Save and the session agree on what
+        # a name means, instead of building a path a stray separator could
+        # turn into a subdirectory.
+        try:
+            safe_name = self.session._safe_name(self.model_name)
+        except ValueError as error:
+            self._show_toast(str(error))
+            return
         self.save_pending = True
         self.session.request_save(
-            self.session.model_dir / f"{self.model_name}.zip", kind="save")
+            self.session.model_dir / f"{safe_name}.zip", kind="save")
         self._show_toast("Saving…")
 
     def _drain_session_events(self):

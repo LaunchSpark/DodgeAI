@@ -779,7 +779,13 @@ class PPOTrainingSession:
     def request_save(self, path, kind="save"):
         """Queue a checkpoint and return. Results arrive via drain_events()."""
         path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            # The caller is the Pygame event loop -- an exception here would
+            # close the window and take training down with it.
+            self._emit(SessionEvent(kind, False, str(error)))
+            return
         if self.model is None:
             self._emit(SessionEvent(kind, False, "No model to save yet"))
             return

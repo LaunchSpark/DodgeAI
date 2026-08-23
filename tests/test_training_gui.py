@@ -131,6 +131,13 @@ class _StubSession:
     def request_save(self, path, kind="save"):
         self.configured.append(("request_save", Path(path).name, kind))
 
+    @staticmethod
+    def _safe_name(name):
+        # Delegate rather than reimplement, so this double can't drift from
+        # what the real session considers a safe name.
+        from dodge.training import PPOTrainingSession
+        return PPOTrainingSession._safe_name(name)
+
     def watch_agent(self):
         self.configured.append(("watch_agent",))
         return self.watch_result
@@ -700,6 +707,23 @@ def test_save_model_without_a_selected_name_does_not_queue(tmp_path):
     assert session.configured == []
     assert not dashboard.save_pending
     assert dashboard.toast
+    pygame.quit()
+
+
+def test_save_model_sanitizes_a_name_with_path_separators(tmp_path):
+    """_insert_model_text only filters non-printable characters, so a typed
+    '/' or '\\' reaches _save_model unchanged. Unsanitized, it would turn a
+    single filename into a subdirectory the session was never asked to make."""
+    from training_gui import TrainingDashboard
+
+    session = _StubSession(tmp_path / "rewards.json")
+    dashboard = TrainingDashboard(session, hidden=True)
+    dashboard.model_name = "sub/dir/name"
+
+    dashboard._save_model()
+
+    assert session.configured == [("request_save", "sub-dir-name.zip", "save")]
+    assert dashboard.save_pending
     pygame.quit()
 
 

@@ -1008,6 +1008,23 @@ def test_shutdown_completes_pending_requests_with_an_error(tmp_path):
     assert len(events) == 1 and not events[0].ok and events[0].kind == "watch"
 
 
+def test_request_save_mkdir_failure_emits_an_error_event_rather_than_raising(tmp_path):
+    """The caller is the Pygame event loop; mkdir runs synchronously in it
+    before any other error handling, so a bad path must not raise there."""
+    from dodge.training import PPOTrainingSession
+
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+    session.model = object()
+    blocker = tmp_path / "blocker"
+    blocker.write_bytes(b"a file, not a directory")
+
+    session.request_save(blocker / "sub" / "async.zip", kind="save")
+
+    events = session.drain_events()
+    assert len(events) == 1 and not events[0].ok and events[0].kind == "save"
+    assert session.save_requests.qsize() == 0, "a path that can't even mkdir must not be queued"
+
+
 def test_request_save_after_close_emits_failure_event(tmp_path):
     """A request_save after close() must not be orphaned but emit a failure event."""
     from dodge.training import PPOTrainingSession
