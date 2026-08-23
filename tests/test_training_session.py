@@ -245,6 +245,46 @@ def test_watch_with_no_snapshot_waits_for_the_next_safe_point(tmp_path, monkeypa
     assert not session.watch_pending
 
 
+def test_watch_launches_while_paused_without_waiting_for_resume(tmp_path, monkeypatch):
+    """Snapshots used to be published only from _on_post_update, which only
+    runs inside train(). Clicking Watch while paused, with no prior
+    snapshot, must not have to wait for the user to resume training --
+    _should_stop's pause loop is one of the spec's listed service points."""
+    from dodge.training import PPOTrainingSession
+
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+    session.model = object()
+    session.pause_event.set()
+
+    commands = []
+    monkeypatch.setattr("dodge.training.subprocess.Popen",
+                        lambda command, cwd: commands.append(command) or _Alive())
+
+    assert session.watch_agent() is False, "nothing to open yet"
+    assert session.watch_pending
+
+    class Stub:
+        completed_updates = 9
+        def save(self, path):
+            path = Path(path)
+            if path.suffix == "":
+                path = path.with_suffix(".zip")
+            path.write_bytes(b"checkpoint")
+
+    def fake_sleep(seconds):
+        # Stand in for the user releasing pause -- but only after this
+        # iteration of the loop has already had a chance to service the
+        # pending watch, which is exactly the behaviour under test.
+        session.pause_event.clear()
+
+    monkeypatch.setattr(time, "sleep", fake_sleep)
+
+    session._should_stop(Stub())
+
+    assert commands, "the pending watch launched during the pause, not after resume"
+    assert not session.watch_pending
+
+
 def test_watch_uses_unique_update_snapshot_and_random_seed(tmp_path, monkeypatch):
     from dodge.training import snapshot_name
 

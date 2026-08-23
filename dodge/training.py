@@ -757,6 +757,16 @@ class PPOTrainingSession:
     def _on_post_update(self, model):
         """The safe point. Saves first, then a snapshot if anyone needs one."""
         self._process_save_requests(model)
+        self._service_pending_watch(model)
+
+    def _service_pending_watch(self, model):
+        """Publish a snapshot and open a waiting watcher, if either is due.
+
+        Shared by the post-update safe point and the pause loop in
+        `_should_stop` -- the spec lists both as service points, and a watch
+        request made while paused must not have to wait for a resume that may
+        never come.
+        """
         if self.watch_pending or self._watchers_alive():
             self._publish_snapshot(model)
         if self.watch_pending:
@@ -863,6 +873,7 @@ class PPOTrainingSession:
         while self.pause_event.is_set() and not self.shutdown_event.is_set() \
                 and not self.restart_event.is_set():
             self._process_save_requests(model)
+            self._service_pending_watch(model)
             with self.lock:
                 self.data.status = "paused"
                 self.data.steps_per_second = 0.0
