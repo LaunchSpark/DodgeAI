@@ -657,6 +657,31 @@ def test_drain_session_events_survives_a_session_with_none(tmp_path):
     pygame.quit()
 
 
+def test_drain_session_events_survives_available_models_raising(tmp_path):
+    """A checkpoint can be deleted between _discover_models' rglob and the
+    stat() available_models sorts on, raising FileNotFoundError straight into
+    the event loop. An exception here closes the window and takes training
+    with it, so the drain must swallow it -- and still clear save_pending and
+    show the toast, not just avoid crashing."""
+    from dodge.training import SessionEvent
+    from training_gui import TrainingDashboard
+
+    class FlakySession(_StubSession):
+        def available_models(self):
+            raise FileNotFoundError("checkpoint vanished mid-scan")
+
+    session = FlakySession(tmp_path / "rewards.json")
+    dashboard = TrainingDashboard(session, hidden=True)
+    dashboard.save_pending = True
+    session.pending_events = [SessionEvent("save", True, "Saved thing.zip", tmp_path / "thing.zip")]
+
+    dashboard._drain_session_events()
+
+    assert not dashboard.save_pending, "the button has to come back even though the refresh failed"
+    assert dashboard.toast == "Saved thing.zip"
+    pygame.quit()
+
+
 def test_drain_session_events_is_a_no_op_without_the_hook(tmp_path):
     """A session that predates drain_events must not crash the loop."""
     from training_gui import TrainingDashboard

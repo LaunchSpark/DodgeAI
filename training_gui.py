@@ -967,22 +967,34 @@ class TrainingDashboard:
 
         Nothing here may raise: this runs inside the event loop, and an
         exception escaping it closes the window and takes training with it.
+        `_discover_models` reaches the filesystem (`available_models` stats
+        every checkpoint it globs), and a file can vanish between the two --
+        another trainer cleaning up, a user deleting it -- so that part is
+        wrapped separately: the toast and the cleared pending flag must still
+        land even if the refresh itself blows up.
         """
         drain = getattr(self.session, "drain_events", None)
         if drain is None:
             return
-        for event in drain():
+        try:
+            events = drain()
+        except Exception:
+            return
+        for event in events:
             if event.kind == "save":
                 self.save_pending = False
                 if event.ok:
-                    self._discover_models(force=True)
-                    self.selected_model = next(
-                        (i for i, entry in enumerate(self.model_entries)
-                         if entry.path == event.path),
-                        None,
-                    )
-                    if self.selected_model is not None:
-                        self.model_offset = max(0, self.selected_model - 4)
+                    try:
+                        self._discover_models(force=True)
+                        self.selected_model = next(
+                            (i for i, entry in enumerate(self.model_entries)
+                             if entry.path == event.path),
+                            None,
+                        )
+                        if self.selected_model is not None:
+                            self.model_offset = max(0, self.selected_model - 4)
+                    except Exception:
+                        pass
             self._show_toast(event.message)
 
     def _load_model(self):
