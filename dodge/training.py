@@ -686,6 +686,9 @@ class PPOTrainingSession:
         if self.model is None:
             self._emit(SessionEvent(kind, False, "No model to save yet"))
             return
+        if self.shutdown_event.is_set():
+            self._emit(SessionEvent(kind, False, "Training session is closed"))
+            return
         self.save_requests.put(_SaveRequest(
             path=path.with_suffix(""), finished=threading.Event(),
             kind=kind, notify=True,

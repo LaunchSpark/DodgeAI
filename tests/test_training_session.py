@@ -963,3 +963,19 @@ def test_shutdown_completes_pending_requests_with_an_error(tmp_path):
     events = session.drain_events()
 
     assert len(events) == 1 and not events[0].ok and events[0].kind == "watch"
+
+
+def test_request_save_after_close_emits_failure_event(tmp_path):
+    """A request_save after close() must not be orphaned but emit a failure event."""
+    from dodge.training import PPOTrainingSession
+
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+    session.model = object()  # non-None so the request would normally be accepted
+    session.close()
+
+    session.request_save(tmp_path / "after_close.zip", kind="save")
+
+    events = session.drain_events()
+    assert len(events) == 1 and not events[0].ok and events[0].kind == "save"
+    assert "closed" in events[0].message
+    assert session.save_requests.qsize() == 0, "request must not be queued"
