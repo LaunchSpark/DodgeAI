@@ -687,10 +687,15 @@ class PPOTrainingSession:
                     latest = self.model_dir / f"{self.model_architecture}-latest"
                     self.model.save(latest)
             except Exception as error:
+                # Assigned before the status flips to "error": request_save
+                # reads status under self.lock and then last_error outside
+                # it, so a request landing in the gap between these two
+                # would otherwise see status == "error" but last_error still
+                # None (or stale), and report "Training failed: None".
+                self.last_error = error
                 with self.lock:
                     self.data.status = "error"
                 self._fail_save_requests(error)
-                self.last_error = error
                 while not self.shutdown_event.is_set() and not self.restart_event.is_set():
                     time.sleep(0.1)
             finally:
