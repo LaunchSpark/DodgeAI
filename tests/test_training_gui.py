@@ -1,4 +1,5 @@
 from collections import deque
+from pathlib import Path
 
 import pytest
 
@@ -97,6 +98,9 @@ class _StubSession:
     def __init__(self, reward_config_path):
         self.data = sample_snapshot()
         self.reward_config_path = reward_config_path
+        # Mirrors PPOTrainingSession.model_dir: the checkpoint directory sits
+        # beside the reward config in the same tmp_path fixture.
+        self.model_dir = Path(reward_config_path).parent
         # Mirrors PPOTrainingSession.env_kwargs, including the settings the
         # Game Config panel does not own -- the panel must not hand those back.
         self.env_kwargs = {
@@ -108,6 +112,8 @@ class _StubSession:
             "max_episode_frames": None,
         }
         self.configured = []
+        self.pending_events = []
+        self.watch_result = True
 
     def tick(self, dt):
         pass
@@ -117,6 +123,17 @@ class _StubSession:
 
     def available_models(self):
         return []
+
+    def drain_events(self):
+        drained, self.pending_events = self.pending_events, []
+        return drained
+
+    def request_save(self, path, kind="save"):
+        self.configured.append(("request_save", Path(path).name, kind))
+
+    def watch_agent(self):
+        self.configured.append(("watch_agent",))
+        return self.watch_result
 
     def game_config(self):
         return dict(self.env_kwargs)
@@ -546,4 +563,164 @@ def test_the_game_panel_sends_only_the_settings_it_owns(tmp_path):
 
     assert session.configured, "Apply never reached the session"
     assert set(session.configured[0]) == set(GAME_DEFAULTS)
+    pygame.quit()
+
+
+def test_session_events_become_toasts(tmp_path):
+    from dodge.training import SessionEvent
+    from training_gui import TrainingDashboard
+
+    session = _StubSession(tmp_path / "rewards.json")
+    session.pending_events = [SessionEvent("save", True, "Saved thing.zip")]
+    dashboard = TrainingDashboard(session, hidden=True)
+
+    dashboard._drain_session_events()
+
+    assert dashboard.toast == "Saved thing.zip"
+    pygame.quit()
+
+
+def test_a_failed_save_event_clears_the_pending_button(tmp_path):
+    from dodge.training import SessionEvent
+    from training_gui import TrainingDashboard
+
+    session = _StubSession(tmp_path / "rewards.json")
+    dashboard = TrainingDashboard(session, hidden=True)
+    dashboard.save_pending = True
+    session.pending_events = [SessionEvent("save", False, "disk full")]
+
+    dashboard._drain_session_events()
+
+    assert dashboard.toast == "disk full"
+    assert not dashboard.save_pending, "the button has to come back"
+    pygame.quit()
+
+
+def test_a_successful_save_event_selects_the_checkpoint_it_wrote(tmp_path):
+    """Drain must reach _discover_models and select by the event's path.
+
+    Not just clear the pending flag: a stub that only cleared the flag would
+    leave this green while the real selection logic silently broke.
+    """
+    from dodge.telemetry import ModelEntry
+    from dodge.training import SessionEvent
+    from training_gui import TrainingDashboard
+
+    class DiscoveringSession(_StubSession):
+        def __init__(self, reward_config_path):
+            super().__init__(reward_config_path)
+            self.entries = []
+
+        def available_models(self):
+            return list(self.entries)
+
+    session = DiscoveringSession(tmp_path / "rewards.json")
+    written = tmp_path / "fresh-bot.zip"
+    session.entries.append(ModelEntry("fresh-bot", written, "PPO"))
+    dashboard = TrainingDashboard(session, hidden=True)
+    dashboard.save_pending = True
+    session.pending_events = [SessionEvent("save", True, "Saved fresh-bot.zip", written)]
+
+    dashboard._drain_session_events()
+
+    assert not dashboard.save_pending
+    assert dashboard.selected_model is not None
+    assert dashboard.model_entries[dashboard.selected_model].path == written
+    pygame.quit()
+
+
+def test_drain_session_events_survives_a_session_with_none(tmp_path):
+    """Nothing here may raise: an exception in the event loop closes the
+    window and takes training with it. A None path or a stale checkpoint
+    must be tolerated, not just a well-formed event."""
+    from dodge.training import SessionEvent
+    from training_gui import TrainingDashboard
+
+    session = _StubSession(tmp_path / "rewards.json")
+    dashboard = TrainingDashboard(session, hidden=True)
+    session.pending_events = [
+        SessionEvent("save", True, "Saved missing.zip", tmp_path / "missing.zip"),
+        SessionEvent("watch", False, "Could not open window: boom"),
+    ]
+
+    dashboard._drain_session_events()
+
+    assert dashboard.selected_model is None
+    assert dashboard.toast == "Could not open window: boom"
+    pygame.quit()
+
+
+def test_drain_session_events_is_a_no_op_without_the_hook(tmp_path):
+    """A session that predates drain_events must not crash the loop."""
+    from training_gui import TrainingDashboard
+
+    class NoEventsSession(_StubSession):
+        drain_events = None
+
+    session = NoEventsSession(tmp_path / "rewards.json")
+    dashboard = TrainingDashboard(session, hidden=True)
+
+    dashboard._drain_session_events()
+    pygame.quit()
+
+
+def test_save_model_queues_a_request_and_disables_the_button(tmp_path):
+    from training_gui import TrainingDashboard
+
+    session = _StubSession(tmp_path / "rewards.json")
+    dashboard = TrainingDashboard(session, hidden=True)
+    dashboard.model_name = "steady-bot"
+
+    dashboard._save_model()
+
+    assert session.configured == [
+        ("request_save", "steady-bot.zip", "save"),
+    ], "the GUI must reach request_save, not save_model, for this to be non-blocking"
+    assert dashboard.save_pending
+    assert dashboard.toast == "Saving…"
+
+    dashboard._save_model()
+
+    assert session.configured == [("request_save", "steady-bot.zip", "save")], \
+        "a pending save must not queue a second request"
+    pygame.quit()
+
+
+def test_save_model_without_a_selected_name_does_not_queue(tmp_path):
+    """model_name is empty until a checkpoint or new name is chosen; saving
+    that unguarded would ask the session to write a file named '.zip'."""
+    from training_gui import TrainingDashboard
+
+    session = _StubSession(tmp_path / "rewards.json")
+    dashboard = TrainingDashboard(session, hidden=True)
+    assert dashboard.model_name == ""
+
+    dashboard._save_model()
+
+    assert session.configured == []
+    assert not dashboard.save_pending
+    assert dashboard.toast
+    pygame.quit()
+
+
+def test_watch_click_only_toasts_the_waiting_case(tmp_path):
+    """A launched watcher's toast now arrives as an event; the click handler
+    reports nothing on success, only that a window is pending."""
+    from training_gui import TrainingDashboard
+
+    session = _StubSession(tmp_path / "rewards.json")
+    session.watch_result = True
+    dashboard = TrainingDashboard(session, hidden=True)
+    dashboard.draw()
+    watch_button = next(b for b in dashboard.renderer.buttons if b.name == "Watch Agent")
+
+    dashboard._click(watch_button.rect.center)
+
+    assert session.configured == [("watch_agent",)]
+    assert dashboard.toast is None
+
+    session.watch_result = False
+    dashboard._click(watch_button.rect.center)
+
+    assert dashboard.toast == "Waiting for current update…"
     pygame.quit()

@@ -799,6 +799,7 @@ class TrainingDashboard:
         self.model_offset = 0
         self.model_discovery_at = 0.0
         self.model_regions = {}
+        self.save_pending = False
         self.model_name_focused = False
         self.model_name_cursor = len(self.model_name)
         self.model_name_selected = False
@@ -938,20 +939,38 @@ class TrainingDashboard:
         self.model_name_cursor += len(text)
 
     def _save_model(self):
-        try:
-            path = self.session.save_model(self.model_name)
-        except (OSError, ValueError) as error:
-            self._show_toast(str(error))
+        if self.save_pending:
             return
-        self.model_entries = self.session.available_models()
-        self.selected_model = next(
-            (index for index, entry in enumerate(self.model_entries) if entry.path == path),
-            None,
-        )
-        if self.selected_model is not None:
-            self.model_offset = max(0, self.selected_model - 4)
-        self.model_discovery_at = time.monotonic() + MODEL_DISCOVERY_SECONDS
-        self._show_toast(f"Saved {path.name}")
+        if not self.model_name:
+            self._show_toast("Enter a model name")
+            return
+        self.save_pending = True
+        self.session.request_save(
+            self.session.model_dir / f"{self.model_name}.zip", kind="save")
+        self._show_toast("Saving…")
+
+    def _drain_session_events(self):
+        """Turn asynchronous trainer results into toasts.
+
+        Nothing here may raise: this runs inside the event loop, and an
+        exception escaping it closes the window and takes training with it.
+        """
+        drain = getattr(self.session, "drain_events", None)
+        if drain is None:
+            return
+        for event in drain():
+            if event.kind == "save":
+                self.save_pending = False
+                if event.ok:
+                    self._discover_models(force=True)
+                    self.selected_model = next(
+                        (i for i, entry in enumerate(self.model_entries)
+                         if entry.path == event.path),
+                        None,
+                    )
+                    if self.selected_model is not None:
+                        self.model_offset = max(0, self.selected_model - 4)
+            self._show_toast(event.message)
 
     def _load_model(self):
         if self.selected_model is None \
@@ -1041,11 +1060,10 @@ class TrainingDashboard:
             elif button.name == "Game Config":
                 self._open_game_config()
             elif button.name == "Watch Agent":
-                if self.session.watch_agent():
-                    label = getattr(self.session, "last_watch_label", None)
-                    self._show_toast(f"Opening {label}" if label else "Opening agent window")
-                else:
-                    self._show_toast("No PPO checkpoint yet")
+                # A launch's success toast now arrives as a SessionEvent; only
+                # the "still waiting" case has nothing else to report it.
+                if not self.session.watch_agent():
+                    self._show_toast("Waiting for current update…")
             elif button.name == "Models":
                 self._open_models()
             return
@@ -1187,6 +1205,7 @@ class TrainingDashboard:
                                 max(event.h, MIN_WINDOW_SIZE[1]))
                         self.surface = pygame.display.set_mode(size, pygame.RESIZABLE)
                 self.session.tick(dt)
+                self._drain_session_events()
                 now = time.monotonic()
                 if now >= next_draw:
                     # Advance from the deadline, not from now, so the cadence
