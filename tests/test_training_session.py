@@ -273,22 +273,31 @@ def test_watch_uses_unique_update_snapshot_and_random_seed(tmp_path, monkeypatch
     assert "--no-powerups" in command
 
 
-def test_game_config_restarts_with_the_live_policy(tmp_path, monkeypatch):
+def test_game_config_restarts_with_the_live_policy(tmp_path):
     session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
     session.model = object()
-    checkpoint = tmp_path / "runtime" / "game-config.zip"
-    saved = []
 
-    def fake_save(path, return_update=False):
-        saved.append(path)
-        return checkpoint
-
-    monkeypatch.setattr(session, "_save_to_path", fake_save)
+    class Stub:
+        completed_updates = 0
+        def save(self, path):
+            # SB3 only appends ".zip" when the given path has no suffix of
+            # its own; an unconditional append would hide a real bug where
+            # the caller hands SB3 a name that already looks like one.
+            path = Path(path)
+            if path.suffix == "":
+                path = path.with_suffix(".zip")
+            path.write_bytes(b"checkpoint")
 
     assert session.configure_game(
         difficulty=3, patterns=True, powerups=False, action_repeat=7
-    )
-    assert saved == [checkpoint]
+    ) == "pending"
+
+    # The commit is not synchronous with the click -- it lands once the
+    # queued checkpoint is actually processed and on disk.
+    session._process_save_requests(Stub())
+    session.drain_events()
+
+    checkpoint = tmp_path / "runtime" / "game-config.zip"
     assert session.pending_load == checkpoint
     assert session.game_config() == {
         "difficulty": 3,
@@ -300,6 +309,51 @@ def test_game_config_restarts_with_the_live_policy(tmp_path, monkeypatch):
     }
     assert session.data.status == "reconfiguring"
     assert session.restart_event.is_set()
+
+
+def test_game_config_waits_for_its_preservation_checkpoint(tmp_path):
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+    session.model = object()
+    before = session.game_config()
+
+    assert session.configure_game(difficulty=3, patterns=False, powerups=True,
+                                  action_repeat=4, lives=0) == "pending"
+    assert session.game_config() == before, "not committed until the save lands"
+    assert not session.restart_event.is_set()
+
+    class Stub:
+        completed_updates = 5
+        def save(self, path):
+            path = Path(path)
+            if path.suffix == "":
+                path = path.with_suffix(".zip")
+            path.write_bytes(b"checkpoint")
+
+    session._process_save_requests(Stub())
+    session.drain_events()
+
+    assert session.game_config()["difficulty"] == 3
+    assert session.restart_event.is_set()
+
+
+def test_a_failed_preservation_checkpoint_leaves_the_config_alone(tmp_path):
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+    session.model = object()
+    before = session.game_config()
+    session.configure_game(difficulty=3, patterns=False, powerups=True,
+                           action_repeat=4, lives=0)
+
+    class Boom:
+        completed_updates = 0
+        def save(self, path):
+            raise OSError("disk full")
+
+    session._process_save_requests(Boom())
+    events = session.drain_events()
+
+    assert session.game_config() == before
+    assert not session.restart_event.is_set()
+    assert any(not e.ok and e.kind == "config" for e in events)
 
 
 @pytest.mark.parametrize("n_envs,expected", [(1, "DummyVecEnv"), (4, "SubprocVecEnv")])

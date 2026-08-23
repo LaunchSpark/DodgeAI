@@ -516,6 +516,10 @@ class PPOTrainingSession:
         self.save_requests = queue.Queue()
         self.events = queue.Queue()
         self.pending_load = None
+        # Staged by configure_game and committed by _commit_pending_config
+        # once its preservation checkpoint lands, so a save that fails leaves
+        # the running game untouched.
+        self.pending_config = None
         self.model = None
         self.active_model_name = architecture or ""
         self.last_error = None
@@ -695,6 +699,8 @@ class PPOTrainingSession:
                 request.error = error
             finally:
                 request.finished.set()
+            if request.kind == "config":
+                self._commit_pending_config(request)
             if request.notify:
                 saved = request.path.with_suffix(".zip")
                 self._emit(SessionEvent(
@@ -702,6 +708,22 @@ class PPOTrainingSession:
                     str(request.error) if request.error else f"Saved {saved.name}",
                     saved, request.completed_update,
                 ))
+
+    def _commit_pending_config(self, request):
+        """Apply a staged game configuration once its checkpoint is on disk.
+
+        A failed save leaves the running game exactly as it was, which is the
+        whole point of staging it rather than applying it at the click.
+        """
+        if self.pending_config is None:
+            return
+        if request.error is None:
+            with self.lock:
+                self.env_kwargs = self.pending_config
+                self.pending_load = request.path.with_suffix(".zip")
+                self.data.status = "reconfiguring"
+            self.restart_event.set()
+        self.pending_config = None
 
     def _watchers_alive(self):
         """Prune exited Popen handles and report whether any remain.
@@ -951,23 +973,23 @@ class PPOTrainingSession:
             if config == self.env_kwargs:
                 return False
 
-        # A restart normally constructs a fresh model. Save and queue the live
-        # policy so only the environments change; SB3 restores its optimizer,
-        # timestep count, and update count with the checkpoint.
-        checkpoint = None
-        if self.model is not None:
-            checkpoint = self._save_to_path(
-                self.model_dir / "runtime" / "game-config.zip"
-            )
+        if self.model is None:
+            with self.lock:
+                self.env_kwargs = config
+                idle = self.architecture is None and self.model is None
+                self.data.status = "idle" if idle else "reconfiguring"
+            if not idle:
+                self.restart_event.set()
+            return True
+
+        # Queued, not taken here: this runs on the event loop, and the trainer
+        # may be mid-update. The config is applied once the checkpoint lands
+        # on disk, so a failed save leaves the running game exactly as it was.
+        self.pending_config = config
         self.pause_event.clear()
-        with self.lock:
-            self.env_kwargs = config
-            self.pending_load = checkpoint
-            idle = self.architecture is None and self.model is None
-            self.data.status = "idle" if idle else "reconfiguring"
-        if not idle:
-            self.restart_event.set()
-        return True
+        self.request_save(self.model_dir / "runtime" / "game-config.zip",
+                          kind="config")
+        return "pending"
 
     def watch_agent(self):
         """Open a watcher without blocking the event loop.

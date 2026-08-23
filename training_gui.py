@@ -844,13 +844,16 @@ class TrainingDashboard:
             self._show_toast("This training session cannot change game settings")
             return
         try:
-            changed = configure(**self.game_config)
+            changed = configure(**{key: self.game_config[key] for key in GAME_DEFAULTS})
         except (OSError, ValueError) as error:
             self._show_toast(str(error))
             return
         self.game_menu_open = False
-        self._show_toast("Game configuration applied" if changed
-                         else "Game configuration unchanged")
+        if changed == "pending":
+            self._show_toast("Applying after this update…")
+        else:
+            self._show_toast("Game configuration applied" if changed
+                             else "Game configuration unchanged")
 
     def _set_reward_from_position(self, spec, track, position):
         span = spec.maximum - spec.minimum
