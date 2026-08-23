@@ -311,6 +311,7 @@ def test_watch_uses_unique_update_snapshot_and_random_seed(tmp_path, monkeypatch
     assert command[command.index("--action-repeat") + 1] == "7"
     assert "--patterns" in command
     assert "--no-powerups" in command
+    assert "--seed" in command, "nothing else covers seed plumbing into the watch command"
 
 
 def test_game_config_restarts_with_the_live_policy(tmp_path):
@@ -1457,6 +1458,13 @@ def test_the_watcher_adopts_a_newer_snapshot(tmp_path):
 
         again, update, error = watch_ppo.reload_if_newer(model, tmp_path, 9)
         assert again is model and update == 9, "nothing newer, nothing loaded"
+        # "new" is the literal object the first call returned; CPython
+        # interns that string, so a regression that dropped the
+        # `after=current_update` filter (and reloaded anyway, returning
+        # another "new") would still satisfy `again is model`. Only the call
+        # count proves the second reload never happened.
+        assert loaded == [tmp_path / snapshot_name(9)], \
+            "a second load call must not have happened"
     finally:
         watch_ppo.PPO.load = real
 
