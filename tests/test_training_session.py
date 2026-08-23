@@ -285,6 +285,91 @@ def test_watch_launches_while_paused_without_waiting_for_resume(tmp_path, monkey
     assert not session.watch_pending
 
 
+def test_pause_does_not_republish_for_an_already_running_watcher(tmp_path, monkeypatch):
+    """The pause loop spins roughly every 50ms while the update counter is
+    frozen. Servicing an already-running watcher there (not just a pending
+    watch request) rewrote the same update-XXXXXXXX.zip on every spin, and
+    flooded the event queue with a SessionEvent every time the rename lost
+    its race with the watcher's own open handle. A live watcher with nothing
+    new to see does not need a fresh snapshot while nothing is training."""
+    from dodge.training import PPOTrainingSession
+
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+    session.model = object()
+    session.pause_event.set()
+    session.watchers = [_Alive()]
+
+    save_calls = []
+
+    class Stub:
+        completed_updates = 5
+        def save(self, path):
+            save_calls.append(path)
+            path = Path(path)
+            if path.suffix == "":
+                path = path.with_suffix(".zip")
+            path.write_bytes(b"checkpoint")
+
+    spins = []
+
+    def fake_sleep(seconds):
+        spins.append(1)
+        if len(spins) >= 5:
+            session.pause_event.clear()
+
+    monkeypatch.setattr(time, "sleep", fake_sleep)
+
+    session._should_stop(Stub())
+
+    assert len(spins) == 5, "the setup under test: several spins of the pause loop"
+    assert save_calls == [], \
+        "no watcher is waiting on a new snapshot while paused, so nothing should publish"
+
+
+def test_pause_still_services_a_pending_watch_exactly_once(tmp_path, monkeypatch):
+    """Finding 3 (Watch must launch while paused) must survive the fix above:
+    a genuinely pending watch -- one that has never had a snapshot -- still
+    gets exactly one publish and launch from the pause loop, even though a
+    merely-alive watcher is no longer serviced there."""
+    from dodge.training import PPOTrainingSession
+
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+    session.model = object()
+    session.pause_event.set()
+
+    commands = []
+    monkeypatch.setattr("dodge.training.subprocess.Popen",
+                        lambda command, cwd: commands.append(command) or _Alive())
+
+    assert session.watch_agent() is False, "nothing to open yet"
+    assert session.watch_pending
+
+    save_calls = []
+
+    class Stub:
+        completed_updates = 9
+        def save(self, path):
+            save_calls.append(path)
+            path = Path(path)
+            if path.suffix == "":
+                path = path.with_suffix(".zip")
+            path.write_bytes(b"checkpoint")
+
+    spins = []
+
+    def fake_sleep(seconds):
+        spins.append(1)
+        session.pause_event.clear()
+
+    monkeypatch.setattr(time, "sleep", fake_sleep)
+
+    session._should_stop(Stub())
+
+    assert len(save_calls) == 1, "exactly one publish for the pending watch"
+    assert commands, "the watcher launched"
+    assert not session.watch_pending
+
+
 def test_watch_uses_unique_update_snapshot_and_random_seed(tmp_path, monkeypatch):
     from dodge.training import snapshot_name
 
