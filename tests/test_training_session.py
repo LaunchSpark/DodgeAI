@@ -18,6 +18,12 @@ from watch_ppo import window_title
 pytestmark = pytest.mark.skipif(not Path("dodge.p8.png").exists(), reason="dodge.p8.png not present")
 
 
+class _Alive:
+    """A Popen stand-in that never exits."""
+    def poll(self):
+        return None
+
+
 @pytest.fixture(scope="module", autouse=True)
 def _quiet_luajit_seh():
     was_enabled = faulthandler.is_enabled()
@@ -192,41 +198,79 @@ def test_training_continues_after_autosave_boundary(tmp_path, monkeypatch):
     assert env.closed
 
 
+def test_watch_launches_immediately_from_an_existing_snapshot(tmp_path, monkeypatch):
+    from dodge.training import PPOTrainingSession, snapshot_name
+
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+    session.model = object()
+    session.live_watch_dir.mkdir(parents=True)
+    (session.live_watch_dir / snapshot_name(12)).write_bytes(b"checkpoint")
+
+    commands = []
+    monkeypatch.setattr("dodge.training.subprocess.Popen",
+                        lambda command, cwd: commands.append(command) or _Alive())
+
+    assert session.watch_agent() is True
+    assert not session.watch_pending
+    assert commands and commands[0][commands[0].index("--current-update") + 1] == "12"
+    assert commands[0][commands[0].index("--live-dir") + 1] == str(session.live_watch_dir)
+
+
+def test_watch_with_no_snapshot_waits_for_the_next_safe_point(tmp_path, monkeypatch):
+    from dodge.training import PPOTrainingSession
+
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+    session.model = object()
+    commands = []
+    monkeypatch.setattr("dodge.training.subprocess.Popen",
+                        lambda command, cwd: commands.append(command) or _Alive())
+
+    assert session.watch_agent() is False, "nothing to open yet"
+    assert session.watch_pending
+    assert commands == []
+
+    assert session.watch_agent() is False, "a second click does not queue twice"
+    assert session.save_requests.empty()
+
+    class Stub:
+        completed_updates = 3
+        def save(self, path):
+            path = Path(path)
+            if path.suffix == "":
+                path = path.with_suffix(".zip")
+            path.write_bytes(b"checkpoint")
+
+    session._on_post_update(Stub())
+    assert commands, "the pending watch launched at the safe point"
+    assert not session.watch_pending
+
+
 def test_watch_uses_unique_update_snapshot_and_random_seed(tmp_path, monkeypatch):
+    from dodge.training import snapshot_name
+
     session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
     session.env_kwargs.update(
         difficulty=3, patterns=True, powerups=False, action_repeat=7
     )
-    saved_paths = []
+    session.model = object()
+    session.live_watch_dir.mkdir(parents=True)
+    (session.live_watch_dir / snapshot_name(37)).write_bytes(b"checkpoint")
+
     commands = []
-
-    def fake_save(path, return_update=False):
-        saved_paths.append(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"snapshot")
-        return (path, 37) if return_update else path
-
-    monkeypatch.setattr(session, "_save_to_path", fake_save)
-    monkeypatch.setattr("dodge.training.secrets.randbelow", lambda upper: 1849201)
     monkeypatch.setattr("dodge.training.subprocess.Popen",
-                        lambda command, cwd: commands.append((command, cwd)))
+                        lambda command, cwd: commands.append(command) or _Alive())
 
-    assert session.watch_agent()
-    assert saved_paths[0].name == ".pending-seed-1849201.zip"
-    assert saved_paths[0].parent.name == "watch"
+    assert session.watch_agent() is True
     architecture = session.architecture
-    final = (tmp_path / "watch"
-             / f"{architecture}-update-000037-seed-1849201.zip")
-    assert final.exists()
-    command = commands[0][0]
-    assert command[command.index("--update") + 1] == "37"
-    assert command[command.index("--seed") + 1] == "1849201"
+    assert (session.live_watch_dir / snapshot_name(37)).exists()
+    command = commands[0]
+    assert command[command.index("--live-dir") + 1] == str(session.live_watch_dir)
+    assert command[command.index("--current-update") + 1] == "37"
     assert command[command.index("--model-name") + 1] == architecture
     assert command[command.index("--difficulty") + 1] == "hard"
     assert command[command.index("--action-repeat") + 1] == "7"
     assert "--patterns" in command
     assert "--no-powerups" in command
-    assert session.last_watch_label == f"{architecture} | Update 37 | Seed 1849201"
 
 
 def test_game_config_restarts_with_the_live_policy(tmp_path, monkeypatch):
@@ -601,6 +645,8 @@ def test_lives_are_configurable_but_never_reach_the_watch_window(tmp_path, monke
     three free hits is not the one being shipped, so the watch command is built
     without them however the trainer is configured.
     """
+    from dodge.training import snapshot_name
+
     session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
     assert session.game_config()["lives"] == 0, "off unless asked for"
 
@@ -608,16 +654,13 @@ def test_lives_are_configurable_but_never_reach_the_watch_window(tmp_path, monke
                                   action_repeat=4, lives=3)
     assert session.game_config()["lives"] == 3
 
-    commands = []
-    def fake_save(path, return_update=False):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"snapshot")
-        return (path, 1) if return_update else path
+    session.model = object()
+    session.live_watch_dir.mkdir(parents=True)
+    (session.live_watch_dir / snapshot_name(1)).write_bytes(b"checkpoint")
 
-    monkeypatch.setattr(session, "_save_to_path", fake_save)
-    monkeypatch.setattr("dodge.training.secrets.randbelow", lambda upper: 7)
+    commands = []
     monkeypatch.setattr("dodge.training.subprocess.Popen",
-                        lambda command, cwd: commands.append(command))
+                        lambda command, cwd: commands.append(command) or _Alive())
 
     assert session.watch_agent()
 

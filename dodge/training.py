@@ -526,6 +526,7 @@ class PPOTrainingSession:
         self.live_watch_dir = (self.model_dir / "watch"
                                / f"live-{os.getpid()}-{id(self):x}")
         self.watchers = []
+        self.watch_pending = False
         if autostart and architecture is not None:
             self.start()
 
@@ -713,10 +714,15 @@ class PPOTrainingSession:
         return bool(self.watchers)
 
     def _on_post_update(self, model):
-        """The safe point. Saves first, then a snapshot if anyone is watching."""
+        """The safe point. Saves first, then a snapshot if anyone needs one."""
         self._process_save_requests(model)
-        if self._watchers_alive():
+        if self.watch_pending or self._watchers_alive():
             self._publish_snapshot(model)
+        if self.watch_pending:
+            self.watch_pending = False
+            found = newest_snapshot(self.live_watch_dir)
+            if found:
+                self._launch_watcher(*found)
 
     def _publish_snapshot(self, model):
         """Write one immutable snapshot, then prune to the newest few.
@@ -958,44 +964,50 @@ class PPOTrainingSession:
         return True
 
     def watch_agent(self):
+        """Open a watcher without blocking the event loop.
+
+        Returns True if a window was launched now, False if one is waiting for
+        the next completed update. An older same-session snapshot is preferred
+        over waiting: the watcher reloads to the newest policy at its first
+        death anyway.
+        """
+        if self.model is None:
+            self._emit(SessionEvent("watch", False, "No model to watch yet"))
+            return False
+        existing = newest_snapshot(self.live_watch_dir)
+        if existing:
+            return self._launch_watcher(*existing)
+        self.watch_pending = True
+        return False
+
+    def _launch_watcher(self, path, update):
         with self.lock:
             model_name = self.active_model_name
-        seed = secrets.randbelow(2**31 - 1)
-        temporary = self.model_dir / "watch" / f".pending-seed-{seed}.zip"
-        try:
-            temporary, update = self._save_to_path(temporary, return_update=True)
-        except ValueError:
-            return False
-        safe_model_name = self._safe_name(model_name)
-        path = temporary.with_name(
-            f"{safe_model_name}-update-{update:06d}-seed-{seed}.zip"
-        )
-        temporary.replace(path)
-        with self.lock:
-            self.data.update = update
             game_config = dict(self.env_kwargs)
+            self.data.update = update
         project = Path(__file__).resolve().parents[1]
         difficulty = {1: "easy", 2: "normal", 3: "hard"}[game_config["difficulty"]]
         command = [
-            sys.executable,
-            str(project / "watch_ppo.py"),
-            str(path),
-            "--difficulty",
-            difficulty,
-            "--action-repeat",
-            str(game_config["action_repeat"]),
-            "--update",
-            str(update),
-            "--seed",
-            str(seed),
-            "--model-name",
-            model_name,
+            sys.executable, str(project / "watch_ppo.py"), str(path),
+            "--difficulty", difficulty,
+            "--action-repeat", str(game_config["action_repeat"]),
+            "--update", str(update),
+            "--current-update", str(update),
+            "--live-dir", str(self.live_watch_dir),
+            "--seed", str(secrets.randbelow(2**31 - 1)),
+            "--model-name", model_name,
         ]
         if game_config["patterns"]:
             command.append("--patterns")
         command.append("--powerups" if game_config["powerups"] else "--no-powerups")
-        subprocess.Popen(command, cwd=project)
-        self.last_watch_label = f"{model_name} | Update {update} | Seed {seed}"
+        try:
+            self.watchers.append(subprocess.Popen(command, cwd=project))
+        except OSError as error:
+            self._emit(SessionEvent("watch", False, f"Could not open window: {error}"))
+            return False
+        self.last_watch_label = f"{model_name} | Update {update}"
+        self._emit(SessionEvent("watch", True, f"Opening {self.last_watch_label}",
+                                path, update))
         return True
 
     def tick(self, dt):
