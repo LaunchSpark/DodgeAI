@@ -42,7 +42,13 @@ def test_watch_publishes_reloads_and_stops(tmp_path, monkeypatch):
     class Stub:
         completed_updates = 0
         def save(self, path):
-            Path(f"{path}.zip").write_bytes(b"checkpoint")
+            # SB3 only appends ".zip" when the given path has no suffix of
+            # its own; an unconditional append would hide a real bug where
+            # the caller hands SB3 a name that already looks like one.
+            path = Path(path)
+            if path.suffix == "":
+                path = path.with_suffix(".zip")
+            path.write_bytes(b"checkpoint")
 
     model = Stub()
 
