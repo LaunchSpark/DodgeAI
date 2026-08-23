@@ -1067,3 +1067,43 @@ def test_retention_survives_a_locked_file(tmp_path, monkeypatch):
         session._publish_snapshot(model)     # must not raise
 
     assert len(list(session.live_watch_dir.glob("update-*.zip"))) == 5
+
+
+def test_snapshots_are_published_only_while_a_watcher_is_alive(tmp_path):
+    from dodge.training import PPOTrainingSession
+
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+
+    class Stub:
+        completed_updates = 1
+        def save(self, path):
+            path = Path(path)
+            if path.suffix == "":
+                path = path.with_suffix(".zip")
+            path.write_bytes(b"checkpoint")
+
+    model = Stub()
+    session._on_post_update(model)
+    assert not list(session.live_watch_dir.glob("update-*.zip")) \
+        if session.live_watch_dir.exists() else True, "no watcher, no snapshot"
+
+    class Alive:
+        def poll(self):
+            return None
+
+    class Exited:
+        def poll(self):
+            return 0
+
+    session.watchers = [Alive()]
+    model.completed_updates = 2
+    session._on_post_update(model)
+    assert len(list(session.live_watch_dir.glob("update-*.zip"))) == 1
+
+    session.watchers = [Exited()]
+    assert session._watchers_alive() is False
+    assert session.watchers == [], "exited handles are pruned"
+    model.completed_updates = 3
+    session._on_post_update(model)
+    assert len(list(session.live_watch_dir.glob("update-*.zip"))) == 1, \
+        "publishing stops once the last watcher is gone"

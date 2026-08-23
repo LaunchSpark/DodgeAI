@@ -589,7 +589,7 @@ class PPOTrainingSession:
             device=self.device,
             policy_kwargs=policy_kwargs(architecture),
             learning_tracker=self._track_learning,
-            post_update=self._process_save_requests,
+            post_update=self._on_post_update,
         )
 
     def _load_model(self, path, env):
@@ -618,7 +618,7 @@ class PPOTrainingSession:
             custom_objects={"n_steps": self.rollout_steps},
         )
         model.set_learning_tracker(self._track_learning)
-        model.set_post_update(self._process_save_requests)
+        model.set_post_update(self._on_post_update)
         return model
 
     def _clear_snapshot(self, status="starting"):
@@ -701,6 +701,22 @@ class PPOTrainingSession:
                     str(request.error) if request.error else f"Saved {saved.name}",
                     saved, request.completed_update,
                 ))
+
+    def _watchers_alive(self):
+        """Prune exited Popen handles and report whether any remain.
+
+        A watcher's poll() returns None while still running and its exit code
+        (typically 0) once it has exited. Maintaining this list allows the
+        trainer to stop publishing snapshots once the last window closes.
+        """
+        self.watchers = [w for w in self.watchers if w.poll() is None]
+        return bool(self.watchers)
+
+    def _on_post_update(self, model):
+        """The safe point. Saves first, then a snapshot if anyone is watching."""
+        self._process_save_requests(model)
+        if self._watchers_alive():
+            self._publish_snapshot(model)
 
     def _publish_snapshot(self, model):
         """Write one immutable snapshot, then prune to the newest few.
