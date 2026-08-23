@@ -438,6 +438,8 @@ def test_system_readings_are_polled_about_once_a_second():
 
     renderer._system_read_at -= 2.0
     assert renderer._system_reading_cached() is not first, "refreshed after a second"
+
+
 def test_the_game_menu_offers_training_lives():
     """Lives are staged with the other game mechanics, and read as lives.
 
@@ -464,6 +466,65 @@ def test_the_dashboard_command_line_accepts_training_lives(tmp_path):
         "--lives", "2",
         "--screenshot", str(tmp_path / "lives.png"),
     ]) == 0
+
+
+def test_sample_snapshot_bands_survival_time_by_life():
+    """--screenshot draws from this, so the sample has to exercise the stack."""
+    from dodge.telemetry import LIFE_BANDS
+
+    data = sample_snapshot()
+    bands = [band.values for band in data.life_lengths]
+    assert len(bands) == LIFE_BANDS
+    assert all(len(b) == len(data.episode_length.values) for b in bands), \
+        "bands must compact in lockstep with the total, or the stack misaligns"
+    for column, whole in zip(zip(*bands), data.episode_length.values):
+        assert sum(column) == pytest.approx(whole), "the stack must equal the total"
+    assert sum(1 for b in bands if any(v > 0 for v in b)) >= 2, \
+        "a single-band sample would not show a stack at all"
+
+
+def test_the_survival_chart_draws_its_life_bands():
+    """Same totals, different split across lives, must draw differently.
+
+    Drawn through _draw_chart rather than a whole dashboard frame: the System
+    panel reports live CPU and memory, so comparing full renders would differ
+    every time whatever the bands did.
+    """
+    from dodge.series import RunSeries
+    from dodge.telemetry import LIFE_BANDS
+    from training_gui import DashboardRenderer, YELLOW
+
+    pygame.font.init()   # an earlier test's pygame.quit() tears this down
+    totals = [4.0, 6.0, 5.0, 9.0, 8.0, 12.0]
+
+    def series_of(values):
+        series = RunSeries()
+        for value in values:
+            series.append(value)
+        return series
+
+    def bands_from(split):
+        made = tuple(RunSeries() for _ in range(LIFE_BANDS))
+        for total in totals:
+            parts = split(total)
+            for index, band in enumerate(made):
+                band.append(parts[index] if index < len(parts) else 0.0)
+        return made
+
+    renderer = DashboardRenderer()
+    rect = pygame.Rect(0, 0, 320, 220)
+
+    def draw(bands):
+        surface = pygame.Surface(rect.size)
+        renderer._draw_chart(surface, rect, "Survival Time", series_of(totals),
+                             YELLOW, " s", bands=bands)
+        return pygame.image.tostring(surface, "RGB")
+
+    one_life = bands_from(lambda total: [total])
+    three_lives = bands_from(lambda total: [total / 2, total / 3, total / 6])
+
+    assert draw(three_lives) != draw(one_life), "the split is not being drawn"
+    assert draw(one_life) == draw(None),         "a single band must render exactly as an unbanded chart"
 
 
 def test_the_game_panel_sends_only_the_settings_it_owns(tmp_path):

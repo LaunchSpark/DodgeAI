@@ -168,7 +168,7 @@ class DashboardRenderer:
         surface.blit(self._background, (0, 0))
 
     def _draw_chart(self, surface, rect, title, series, color, suffix="",
-                    rising=True, elapsed=0.0):
+                    rising=True, elapsed=0.0, bands=None):
         """Draw one run-spanning metric: faint raw values under a bright trend.
 
         The y-axis is anchored to the whole run rather than to the visible
@@ -188,9 +188,19 @@ class DashboardRenderer:
             x = plot.x + i * plot.w // 4
             pygame.draw.line(surface, GRID, (x, plot.y), (x, plot.bottom), 1)
 
+        # Bands are only worth stacking once more than one of them is in use.
+        # With training lives off every run is a single band, and anchoring the
+        # axis to zero for it would flatten the curve the chart exists to show.
+        stack = [band for band in (bands or ()) if any(band.values)]
+        stack = stack if len(stack) > 1 and all(
+            len(band.values) == len(series.values) for band in stack) else None
+
         if len(series) >= 2:
             low, high = series.bounds()
-            span = high - low
+            if stack:
+                # A stack has to stand on zero, or its lowest band is clipped.
+                low = 0.0
+            span = max(high - low, 1e-9)
 
             def to_points(source):
                 return [(round(plot.x + i * plot.w / (len(source) - 1)),
@@ -204,10 +214,25 @@ class DashboardRenderer:
             # allocating and blitting a whole window per chart was most of the
             # render cost, and eleven of them were done every frame.
             overlay = pygame.Surface((plot.w, plot.h + 1), pygame.SRCALPHA)
-            local = [(x - plot.x, y - plot.y) for x, y in raw]
-            polygon = local + [(local[-1][0], plot.h), (local[0][0], plot.h)]
-            pygame.draw.polygon(overlay, (*color, 34), polygon)
-            pygame.draw.lines(overlay, (*color, 105), False, local, 1)
+            if stack:
+                def local_points(values):
+                    return [(x - plot.x, y - plot.y) for x, y in to_points(values)]
+
+                # Bottom band is the run's first life, so the stack reads
+                # upward in the order the lives were spent.
+                floor = [0.0] * len(series.values)
+                for index, band in enumerate(stack):
+                    ceiling = [f + v for f, v in zip(floor, band.values)]
+                    top = local_points(ceiling)
+                    pygame.draw.polygon(overlay, (*color, max(30, 116 - index * 17)),
+                                        top + local_points(floor)[::-1])
+                    pygame.draw.lines(overlay, (*color, 150), False, top, 1)
+                    floor = ceiling
+            else:
+                local = [(x - plot.x, y - plot.y) for x, y in raw]
+                polygon = local + [(local[-1][0], plot.h), (local[0][0], plot.h)]
+                pygame.draw.polygon(overlay, (*color, 34), polygon)
+                pygame.draw.lines(overlay, (*color, 105), False, local, 1)
             surface.blit(overlay, plot.topleft)
             pygame.draw.lines(surface, color, False, trend, 3)
 
@@ -739,7 +764,7 @@ class DashboardRenderer:
         self._draw_chart(surface, entropy, "Policy Entropy", data.entropy, RED,
                          rising=False, elapsed=elapsed)
         self._draw_chart(surface, length, "Survival Time", data.episode_length,
-                         YELLOW, " s", elapsed=elapsed)
+                         YELLOW, " s", elapsed=elapsed, bands=data.life_lengths)
         self._draw_chart(surface, enemies, "Enemies Killed", data.enemies_killed,
                          ORANGE, elapsed=elapsed)
         if toast:

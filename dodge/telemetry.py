@@ -54,6 +54,13 @@ class DashboardSnapshot:
     reward: RunSeries = field(default_factory=RunSeries)
     entropy: RunSeries = field(default_factory=RunSeries)
     episode_length: RunSeries = field(default_factory=RunSeries)
+    # Survival Time, split by life. Band i holds how long the run's (i+1)th
+    # life lasted, and zero for a life the run never spent, so the bands stack
+    # to exactly the run total drawn over them. Every band gets one append per
+    # run, which keeps them compacting in lockstep and readable positionally.
+    life_lengths: tuple = field(
+        default_factory=lambda: tuple(RunSeries() for _ in range(LIFE_BANDS))
+    )
     # One entry per finished episode, holding that episode's enemy kills.
     # info["training_events"] reports kills as a per-step delta, so the
     # trainer accumulates them across the episode.
@@ -75,6 +82,7 @@ class DashboardSnapshot:
             reward=self.reward.copy(),
             entropy=self.entropy.copy(),
             episode_length=self.episode_length.copy(),
+            life_lengths=tuple(band.copy() for band in self.life_lengths),
             enemies_killed=self.enemies_killed.copy(),
             events={
                 key: EventCount(count.rollout, count.total,
@@ -109,14 +117,24 @@ def sample_snapshot(seed=42, updates=180):
     and tested without launching a trainer; it is not a simulation of one.
     """
     rng = random.Random(seed)
-    data = DashboardSnapshot(status="training", seed=seed, update=updates,
+    data = DashboardSnapshot(status="training", model_name="velocity-flow",
+                             seed=seed, update=updates,
                              steps_per_second=4820.0, elapsed_seconds=2 * 3600 + 930,
                              rollout_progress=0.33)
     for i in range(updates):
         progress = i / max(1, updates - 1)
         data.reward.append(17 + progress * 34 + rng.uniform(-8, 8))
         data.entropy.append(2.2 - progress * 0.62 + rng.uniform(-0.03, 0.03))
-        data.episode_length.append(6.6 + progress * 12 + rng.uniform(-1.4, 1.4))
+        length = 6.6 + progress * 12 + rng.uniform(-1.4, 1.4)
+        data.episode_length.append(length)
+        # Split across a plausible number of lives so --screenshot and the
+        # renderer tests exercise the stacked form, not just a single band.
+        lives = rng.randint(1, 4)
+        weights = [rng.uniform(0.5, 1.5) for _ in range(lives)]
+        scale = length / sum(weights)
+        for band in range(LIFE_BANDS):
+            data.life_lengths[band].append(
+                weights[band] * scale if band < lives else 0.0)
         data.enemies_killed.append(max(0.0, 1.4 + progress * 7 + rng.uniform(-1.1, 1.1)))
     # best_score is the game's own score, not the reward, so it is not derived
     # from the reward series.

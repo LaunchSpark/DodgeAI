@@ -24,7 +24,8 @@ from .env import DodgeEnv
 from .policies import (ARCHITECTURES, COORDINATE_INPUTS, DEFAULT_ARCHITECTURE,
                        HYBRID_INPUT_CHANNELS, architecture_name,
                        dead_unit_fraction, policy_class, policy_kwargs)
-from .telemetry import DashboardSnapshot, EVENT_KEYS, ModelEntry
+from .telemetry import (DashboardSnapshot, EVENT_KEYS, LIFE_BANDS,
+                        ModelEntry)
 
 
 RATE_WINDOW_SECONDS = 0.5
@@ -170,6 +171,9 @@ class DashboardCallback(BaseCallback):
         # working whichever VecEnv wrappers are in play.
         self.episode_kills = {}
         self.episode_reward = {}
+        # Each env's finished-episode lengths for the run in progress, banked
+        # until the run ends and the whole split is known.
+        self.run_segments = {}
         self.last_step_time = time.monotonic()
         self.last_timesteps = 0
         # Throughput is measured over a window rather than per callback. A
@@ -250,8 +254,26 @@ class DashboardCallback(BaseCallback):
                         data.best_score = max(data.best_score,
                                               float(info.get("score", 0.0)))
                     data.reward.append(self.episode_reward.pop(index, 0.0))
-                    data.episode_length.append(float(info.get("frames", 0)) / 60.0)
                     data.enemies_killed.append(float(self.episode_kills.pop(index, 0)))
+                    # Survival time follows the cartridge run, not the episode.
+                    # With training lives an episode ends at every absorbed hit,
+                    # and charting those would quietly redefine the dashboard's
+                    # headline metric as time between hits, against curves
+                    # recorded when it meant time alive. Without lives the two
+                    # numbers are identical, so an ordinary run is unaffected.
+                    segments = self.run_segments.setdefault(index, [])
+                    segments.append(float(info.get("frames", 0)) / 60.0)
+                    if info.get("run_over", True):
+                        self.run_segments.pop(index, None)
+                        for band in range(LIFE_BANDS):
+                            # Anything past the last band is folded into it, so
+                            # the stack still totals the run however the lives
+                            # setting was changed mid-run.
+                            value = (sum(segments[band:]) if band == LIFE_BANDS - 1
+                                     else (segments[band] if band < len(segments) else 0.0))
+                            data.life_lengths[band].append(value)
+                        frames = info.get("run_frames", info.get("frames", 0))
+                        data.episode_length.append(float(frames) / 60.0)
 
         self.last_step_time = now
         self.last_timesteps = self.num_timesteps

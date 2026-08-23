@@ -591,6 +591,8 @@ def test_new_policy_tool_makes_an_architecture_selectable(tmp_path, architecture
         assert architecture_name(loaded) == architecture
     finally:
         env.close()
+
+
 def test_lives_are_configurable_but_never_reach_the_watch_window(tmp_path, monkeypatch):
     """Lives are a training device only.
 
@@ -628,6 +630,43 @@ def test_negative_lives_are_rejected_by_the_session(tmp_path):
                                action_repeat=4, lives=-1)
 
 
+def test_survival_time_measures_the_run_not_the_episode(tmp_path, monkeypatch):
+    """With lives on, an episode ends at every absorbed hit.
+
+    Charting those as survival time would silently redefine the dashboard's
+    headline metric as 'time between hits' and break comparability with every
+    curve recorded before lives existed.
+    """
+    from dodge.training import DashboardCallback
+
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+    monkeypatch.setattr(session, "_should_stop", lambda model: False)
+    callback = DashboardCallback(session)
+    callback.model = None
+    callback.num_timesteps = 1
+    callback.n_calls = 1
+
+    def finish_episode(frames, run_frames, run_over, deaths, lives_spent):
+        callback.locals = {
+            "infos": [{"frames": frames, "run_frames": run_frames,
+                       "run_over": run_over, "score": 0.0,
+                       "training_events": {"deaths": deaths,
+                                           "lives_spent": lives_spent}}],
+            "dones": [True],
+            "rewards": np.array([1.0]),
+        }
+        callback._on_step()
+
+    finish_episode(frames=120, run_frames=120, run_over=False, deaths=0, lives_spent=1)
+    assert len(session.data.episode_length) == 0, "an absorbed hit does not end the run"
+    assert len(session.data.reward) == 1, "but it does end an episode"
+
+    finish_episode(frames=60, run_frames=180, run_over=True, deaths=1, lives_spent=0)
+
+    assert session.data.episode_length.as_list() == [pytest.approx(3.0)], "180 run frames"
+    assert session.data.events["lives_spent"].total == 1
+
+
 def test_training_runs_without_a_frame_cap(tmp_path):
     """The cap capped difficulty, not just time.
 
@@ -651,5 +690,44 @@ def test_game_config_preserves_settings_it_does_not_manage(tmp_path):
     assert session.game_config()["max_episode_frames"] == 1200
     assert not session.configure_game(difficulty=2, patterns=False, powerups=True,
                                       action_repeat=4, lives=1), "no change, no restart"
+
+
+def test_survival_time_is_banded_by_life(tmp_path, monkeypatch):
+    """Each run contributes one value per band, so the chart can stack them.
+
+    The bands have to sum to the run total, or the stack would say something
+    different from the trend line drawn over it.
+    """
+    from dodge.training import DashboardCallback
+
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+    monkeypatch.setattr(session, "_should_stop", lambda model: False)
+    callback = DashboardCallback(session)
+    callback.model = None
+    callback.num_timesteps = 1
+    callback.n_calls = 1
+
+    def finish_episode(frames, run_frames, run_over):
+        callback.locals = {
+            "infos": [{"frames": frames, "run_frames": run_frames,
+                       "run_over": run_over, "score": 0.0,
+                       "training_events": {}}],
+            "dones": [True],
+            "rewards": np.array([1.0]),
+        }
+        callback._on_step()
+
+    finish_episode(frames=120, run_frames=120, run_over=False)    # first life, 2s
+    finish_episode(frames=60, run_frames=180, run_over=False)     # second life, 1s
+    finish_episode(frames=240, run_frames=420, run_over=True)     # last life, 4s
+
+    bands = [series.as_list() for series in session.data.life_lengths]
+    assert len(bands) == 6, "lives top out at 5, so a run has at most six"
+    assert bands[0] == [pytest.approx(2.0)]
+    assert bands[1] == [pytest.approx(1.0)]
+    assert bands[2] == [pytest.approx(4.0)]
+    assert bands[3] == [0.0], "a life never spent is a zero-height band"
+    assert sum(band[0] for band in bands) == pytest.approx(
+        session.data.episode_length.as_list()[0]), "the stack must equal the total"
 
 
