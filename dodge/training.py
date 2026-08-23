@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 import math
+import os
 from pathlib import Path
 import queue
 import re
@@ -103,6 +104,39 @@ def minibatch_size(buffer_samples, architecture=None):
     """Split a rollout buffer into a workable number of optimizer passes."""
     per_epoch = hyperparameters(architecture)["minibatches_per_epoch"]
     return min(max(MIN_MINIBATCH, buffer_samples // per_epoch), buffer_samples)
+
+
+# Watchers must never read the mutable *-latest.zip autosave, so snapshots go
+# to their own directory under names that never change once visible.
+SNAPSHOT_RETENTION = 3
+
+
+def snapshot_name(update):
+    """Zero-padded so lexicographic order is numeric order."""
+    return f"update-{int(update):08d}.zip"
+
+
+def newest_snapshot(directory, after=-1):
+    """The highest completed update in `directory` above `after`.
+
+    Dotfiles are skipped: a snapshot is written to a hidden temporary name and
+    only becomes visible on its atomic rename, so anything starting with a dot
+    is a partial write.
+    """
+    directory = Path(directory)
+    if not directory.is_dir():
+        return None
+    best = None
+    for path in directory.glob("update-*.zip"):
+        if path.name.startswith("."):
+            continue
+        try:
+            update = int(path.stem.removeprefix("update-"))
+        except ValueError:
+            continue
+        if update > after and (best is None or update > best[1]):
+            best = (path, update)
+    return best
 
 
 @dataclass
@@ -487,6 +521,11 @@ class PPOTrainingSession:
         self.last_error = None
         self.last_watch_label = None
         self.worker = None
+        # Private to this session: two dashboards must not publish into the
+        # same stream, and a watcher should only ever see this trainer's work.
+        self.live_watch_dir = (self.model_dir / "watch"
+                               / f"live-{os.getpid()}-{id(self):x}")
+        self.watchers = []
         if autostart and architecture is not None:
             self.start()
 
@@ -662,6 +701,37 @@ class PPOTrainingSession:
                     str(request.error) if request.error else f"Saved {saved.name}",
                     saved, request.completed_update,
                 ))
+
+    def _publish_snapshot(self, model):
+        """Write one immutable snapshot, then prune to the newest few.
+
+        Saved to a hidden temporary name and renamed, so a watcher scanning
+        the directory can never open a half-written zip.
+        """
+        update = self._completed_updates(model)
+        directory = self.live_watch_dir
+        directory.mkdir(parents=True, exist_ok=True)
+        stem = directory / f".{snapshot_name(update)}.{secrets.token_hex(4)}"
+        try:
+            model.save(stem)
+            temporary = stem.with_suffix(stem.suffix + ".zip")
+            temporary.replace(directory / snapshot_name(update))
+        except Exception as error:
+            self._emit(SessionEvent("watch", False,
+                                    f"Could not publish snapshot: {error}"))
+            return
+        self._prune_snapshots(directory)
+
+    @staticmethod
+    def _prune_snapshots(directory):
+        """Best-effort. A watcher holding an old snapshot open locks it on
+        Windows, and losing that race must not interrupt training."""
+        snapshots = sorted(directory.glob("update-*.zip"))
+        for path in snapshots[:-SNAPSHOT_RETENTION]:
+            try:
+                path.unlink()
+            except OSError:
+                pass
 
     def _track_learning(self, completed, total):
         with self.lock:

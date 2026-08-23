@@ -979,3 +979,77 @@ def test_request_save_after_close_emits_failure_event(tmp_path):
     assert len(events) == 1 and not events[0].ok and events[0].kind == "save"
     assert "closed" in events[0].message
     assert session.save_requests.qsize() == 0, "request must not be queued"
+
+
+def test_snapshot_names_sort_lexicographically_with_the_update(tmp_path):
+    from dodge.training import snapshot_name
+
+    assert snapshot_name(7) == "update-00000007.zip"
+    assert sorted([snapshot_name(9), snapshot_name(10)]) == [
+        snapshot_name(9), snapshot_name(10)]
+
+
+def test_newest_snapshot_ignores_partial_and_malformed_files(tmp_path):
+    from dodge.training import newest_snapshot, snapshot_name
+
+    (tmp_path / snapshot_name(3)).write_bytes(b"x")
+    (tmp_path / snapshot_name(11)).write_bytes(b"x")
+    (tmp_path / ".update-00000099.zip.tmp").write_bytes(b"partial")
+    (tmp_path / "velocity-flow-latest.zip").write_bytes(b"mutable")
+
+    assert newest_snapshot(tmp_path) == (tmp_path / snapshot_name(11), 11)
+    assert newest_snapshot(tmp_path, after=11) is None
+    assert newest_snapshot(tmp_path, after=3) == (tmp_path / snapshot_name(11), 11)
+    assert newest_snapshot(tmp_path / "missing") is None
+
+
+def test_publishing_renames_atomically_and_keeps_three(tmp_path):
+    from dodge.training import PPOTrainingSession, newest_snapshot
+
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+    live = session.live_watch_dir
+
+    class Stub:
+        completed_updates = 0
+        def save(self, path):
+            Path(f"{path}.zip").write_bytes(b"checkpoint")
+
+    model = Stub()
+    for update in range(1, 6):
+        model.completed_updates = update
+        session._publish_snapshot(model)
+
+    names = sorted(p.name for p in live.glob("update-*.zip"))
+    assert names == ["update-00000003.zip", "update-00000004.zip",
+                     "update-00000005.zip"], "newest three retained"
+    assert not list(live.glob(".*")), "no temporary files left behind"
+    assert newest_snapshot(live)[1] == 5
+
+
+def test_retention_survives_a_locked_file(tmp_path, monkeypatch):
+    """A watcher reading an old snapshot locks it on Windows. Failing to
+    delete it must not take training down."""
+    from dodge.training import PPOTrainingSession
+    import pathlib
+
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+
+    class Stub:
+        completed_updates = 0
+        def save(self, path):
+            Path(f"{path}.zip").write_bytes(b"checkpoint")
+
+    real_unlink = pathlib.Path.unlink
+
+    def locked(self, *a, **k):
+        if self.name.startswith("update-"):
+            raise PermissionError("file in use")
+        return real_unlink(self, *a, **k)
+
+    monkeypatch.setattr(pathlib.Path, "unlink", locked)
+    model = Stub()
+    for update in range(1, 6):
+        model.completed_updates = update
+        session._publish_snapshot(model)     # must not raise
+
+    assert len(list(session.live_watch_dir.glob("update-*.zip"))) == 5
