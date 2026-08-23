@@ -21,7 +21,7 @@ from stable_baselines3.common.save_util import load_from_zip_file
 from stable_baselines3.common.utils import get_device
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
-from .env import DodgeEnv
+from .env import DodgeEnv, validate_spawn_rate_percent
 from .policies import (ARCHITECTURES, COORDINATE_INPUTS, DEFAULT_ARCHITECTURE,
                        HYBRID_INPUT_CHANNELS, architecture_name,
                        dead_unit_fraction, policy_class, policy_kwargs)
@@ -457,6 +457,9 @@ class PPOTrainingSession:
         difficulty=1,
         patterns=False,
         powerups=True,
+        normal_enemies=True,
+        kamikaze_enemies=True,
+        spawn_rate_percent=100,
         action_repeat=4,
         lives=0,
         max_episode_frames=None,
@@ -474,6 +477,7 @@ class PPOTrainingSession:
         self.total_steps = total_steps
         if n_envs < 1:
             raise ValueError("n_envs must be at least 1")
+        spawn_rate_percent = validate_spawn_rate_percent(spawn_rate_percent)
         # PPO's buffer is n_envs * rollout_steps samples per update, held at
         # 2048 by the defaults.
         #
@@ -505,6 +509,9 @@ class PPOTrainingSession:
             "difficulty": difficulty,
             "patterns": patterns,
             "powerups": powerups,
+            "normal_enemies": bool(normal_enemies),
+            "kamikaze_enemies": bool(kamikaze_enemies),
+            "spawn_rate_percent": spawn_rate_percent,
             "action_repeat": action_repeat,
             "lives": lives,
             # No cap by default. It existed to keep episodes turning over,
@@ -1009,12 +1016,14 @@ class PPOTrainingSession:
         with self.lock:
             return dict(self.env_kwargs)
 
-    def configure_game(self, *, difficulty, patterns, powerups, action_repeat,
-                       lives=0):
+    def configure_game(self, *, difficulty, patterns, powerups,
+                       normal_enemies=True, kamikaze_enemies=True,
+                       spawn_rate_percent=100, action_repeat, lives=0):
         """Rebuild the games around the current policy with new mechanics."""
         difficulty = int(difficulty)
         action_repeat = int(action_repeat)
         lives = int(lives)
+        spawn_rate_percent = validate_spawn_rate_percent(spawn_rate_percent)
         if difficulty not in (1, 2, 3):
             raise ValueError("Difficulty must be easy, normal, or hard")
         if not 1 <= action_repeat <= 8:
@@ -1025,6 +1034,9 @@ class PPOTrainingSession:
             "difficulty": difficulty,
             "patterns": bool(patterns),
             "powerups": bool(powerups),
+            "normal_enemies": bool(normal_enemies),
+            "kamikaze_enemies": bool(kamikaze_enemies),
+            "spawn_rate_percent": spawn_rate_percent,
             "action_repeat": action_repeat,
             "lives": lives,
         }
@@ -1082,6 +1094,7 @@ class PPOTrainingSession:
             sys.executable, str(project / "watch_ppo.py"), str(path),
             "--difficulty", difficulty,
             "--action-repeat", str(game_config["action_repeat"]),
+            "--spawn-rate-percent", str(game_config["spawn_rate_percent"]),
             "--update", str(update),
             "--current-update", str(update),
             "--live-dir", str(self.live_watch_dir),
@@ -1091,6 +1104,10 @@ class PPOTrainingSession:
         if game_config["patterns"]:
             command.append("--patterns")
         command.append("--powerups" if game_config["powerups"] else "--no-powerups")
+        command.append("--normal-enemies" if game_config["normal_enemies"]
+                       else "--no-normal-enemies")
+        command.append("--kamikaze-enemies" if game_config["kamikaze_enemies"]
+                       else "--no-kamikaze-enemies")
         try:
             process = subprocess.Popen(command, cwd=project)
         except OSError as error:

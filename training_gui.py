@@ -64,6 +64,9 @@ GAME_DEFAULTS = {
     "difficulty": 1,
     "patterns": False,
     "powerups": True,
+    "normal_enemies": True,
+    "kamikaze_enemies": True,
+    "spawn_rate_percent": 100,
     "action_repeat": 4,
     "lives": 0,
 }
@@ -75,10 +78,12 @@ class GameSliderSpec:
     label: str
     minimum: int
     maximum: int
+    step: int = 1
 
 
 GAME_SLIDERS = (
     GameSliderSpec("difficulty", "Difficulty", 1, 3),
+    GameSliderSpec("spawn_rate_percent", "Spawn rate", 50, 150, 5),
     GameSliderSpec("action_repeat", "Decision interval", 1, 8),
     # Training only: the first N enemy collisions end the episode without
     # ending the cartridge run, so the next episode starts mid-game.
@@ -389,6 +394,8 @@ class DashboardRenderer:
             if value == 0:
                 return "Off"
             return f"{value} life" if value == 1 else f"{value} lives"
+        if spec.name == "spawn_rate_percent":
+            return f"{int(value)}%"
         return f"{int(value)} frames"
 
     def draw_game_menu(self, surface, config):
@@ -397,7 +404,7 @@ class DashboardRenderer:
         surface.blit(veil, (0, 0))
 
         width = min(560, surface.get_width() - 50)
-        height = min(430, surface.get_height() - 50)
+        height = min(600, surface.get_height() - 30)
         modal = pygame.Rect(0, 0, width, height)
         modal.center = surface.get_rect().center
         self._card(surface, modal)
@@ -411,7 +418,12 @@ class DashboardRenderer:
 
         toggles = {}
         y = modal.y + 78
-        for name, label in (("powerups", "Powerups"), ("patterns", "Patterns")):
+        for name, label in (
+            ("powerups", "Powerups"),
+            ("patterns", "Patterns"),
+            ("normal_enemies", "Normal enemies"),
+            ("kamikaze_enemies", "Kamikaze enemies"),
+        ):
             row = pygame.Rect(modal.x + 20, y, modal.w - 40, 42)
             self._text(surface, self.font_body, label, TEXT,
                        (row.x, row.centery), "midleft")
@@ -835,7 +847,8 @@ class TrainingDashboard:
         span = spec.maximum - spec.minimum
         fraction = (position[0] - track.x) / track.w if track.w else 0.0
         fraction = min(1.0, max(0.0, fraction))
-        value = round(spec.minimum + fraction * span)
+        raw = spec.minimum + fraction * span
+        value = spec.minimum + round((raw - spec.minimum) / spec.step) * spec.step
         self.game_config[spec.name] = min(spec.maximum, max(spec.minimum, value))
 
     def _apply_game_config(self):
@@ -1266,6 +1279,12 @@ def main(argv=None):
     parser.add_argument("--patterns", action="store_true")
     parser.add_argument("--powerups", action=argparse.BooleanOptionalAction,
                         default=True)
+    parser.add_argument("--normal-enemies", action=argparse.BooleanOptionalAction,
+                        default=True)
+    parser.add_argument("--kamikaze-enemies", action=argparse.BooleanOptionalAction,
+                        default=True)
+    parser.add_argument("--spawn-rate-percent", type=int, default=100,
+                        help="enemy and pattern cadence, from 50 to 150 percent")
     parser.add_argument("--lives", type=int, default=0,
                         help="training only: enemy collisions that end the "
                              "episode without ending the cartridge run, so the "
@@ -1296,6 +1315,9 @@ def main(argv=None):
         difficulty={"easy": 1, "normal": 2, "hard": 3}[args.difficulty],
         patterns=args.patterns,
         powerups=args.powerups,
+        normal_enemies=args.normal_enemies,
+        kamikaze_enemies=args.kamikaze_enemies,
+        spawn_rate_percent=args.spawn_rate_percent,
         lives=args.lives,
         architecture=args.architecture,
         device=args.device,

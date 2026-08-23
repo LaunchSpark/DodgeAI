@@ -45,7 +45,8 @@ Start PPO training in the Dodge dashboard:
 
 Training runs on a background thread so the window stays responsive. Pause/Resume controls
 rollout collection, Rewards opens the reward weights, and Game Config stages difficulty,
-powerups, patterns, and decision-interval changes. Applying game settings checkpoints the
+powerups, patterns, normal/kamikaze enemy switches, spawn rate, and decision-interval
+changes. Applying game settings checkpoints the
 live policy, rebuilds its environments, and resumes the same model. Models saves or loads real
 Stable-Baselines3 `.zip` checkpoints, and Watch Agent opens the current policy in a second
 rendered game window with the active game configuration. Each watch launch saves an immutable snapshot, chooses a new random
@@ -547,10 +548,12 @@ Install the optional training stack and start the beginner curriculum:
     pip install -r requirements-train.txt
     python train_ppo.py --steps 250000
 
-This defaults to easy difficulty with powerups enabled and patterns disabled. Add patterns
-with `--patterns`, increase difficulty with `--difficulty normal`, or use `--no-powerups`
-for a stripped-down comparison. Models are written to `artifacts/models/` and appear in
-the dashboard's Models selector.
+This defaults to easy difficulty with powerups and both lethal enemy types enabled, patterns
+disabled, and enemy/pattern cadence at 100%. Add patterns with `--patterns`, increase
+difficulty with `--difficulty normal`, isolate enemy types with `--no-normal-enemies` or
+`--no-kamikaze-enemies`, adjust cadence with `--spawn-rate-percent 50..150`, or use
+`--no-powerups` for a stripped-down comparison. Models are written to `artifacts/models/`
+and appear in the dashboard's Models selector.
 
 ## Layout
 

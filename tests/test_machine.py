@@ -106,6 +106,92 @@ def test_first_enemy_spawns_on_first_gameplay_frame():
     assert m.globals.ed == 1
 
 
+@pytest.mark.parametrize("spawn_rate,expected", [
+    (50, [1, 170, 339]),
+    (100, [1, 86, 171]),
+    (150, [1, 58, 115]),
+])
+def test_spawn_rate_scales_enemy_cadence(spawn_rate, expected):
+    m = machine.boot(backend=NullBackend(), seed=5)
+    m.start_game(difficulty=1, patterns=False, powerups=False,
+                 spawn_rate_percent=spawn_rate)
+    g = m.globals
+    # Isolate the ordinary timer from collisions and the separate 50-frame
+    # anti-camping wave.
+    g.shouldcollide = False
+    g.eshouldcollide = False
+    g.fy = False
+    frames = []
+    previous = 0
+    for frame in range(1, 400):
+        m.step()
+        count = len(g.enemies)
+        if count > previous:
+            frames.append(frame)
+            previous = count
+        if len(frames) == len(expected):
+            break
+    assert frames == expected
+
+
+@pytest.mark.parametrize("spawn_rate,expected", [
+    (50, 840),
+    (100, 420),
+    (150, 280),
+])
+def test_spawn_rate_scales_pattern_cadence(spawn_rate, expected):
+    m = machine.boot(backend=NullBackend(), seed=5)
+    m.start_game(difficulty=1, patterns=True, powerups=False,
+                 normal_enemies=False, kamikaze_enemies=False,
+                 spawn_rate_percent=spawn_rate)
+    for frame in range(1, 900):
+        m.step()
+        if m.globals.cp is not None:
+            break
+    assert frame == expected
+
+
+def test_enemy_toggles_filter_the_weighted_spawn_table():
+    normal = machine.boot(backend=NullBackend(), seed=8)
+    normal.start_game(patterns=False, powerups=False,
+                      normal_enemies=True, kamikaze_enemies=False)
+    normal.step()
+    assert normal.globals.enemies[1].p == 0
+
+    kamikaze = machine.boot(backend=NullBackend(), seed=8)
+    kamikaze.start_game(patterns=False, powerups=False,
+                        normal_enemies=False, kamikaze_enemies=True)
+    kamikaze.step()
+    assert kamikaze.globals.enemies[1].p == 1
+
+
+def test_enemy_toggles_apply_to_forced_and_derived_enemies():
+    m = machine.boot(backend=NullBackend(), seed=8)
+    m.start_game(patterns=False, powerups=False,
+                 normal_enemies=False, kamikaze_enemies=False)
+    g = m.globals
+    m.step()
+    g.fyou()
+    g.addenemy(10, 10, False, 1, 4, 1)
+    g.addenemy(10, 10, False, 1, 30, -1)
+    assert len(g.enemies) == 0
+
+
+def test_powerups_can_spawn_without_lethal_enemies():
+    m = machine.boot(backend=NullBackend(), seed=8)
+    m.start_game(patterns=False, powerups=True,
+                 normal_enemies=False, kamikaze_enemies=False)
+    m.step()
+    assert m.globals.enemies[1].p in (2, 3, 4)
+
+
+@pytest.mark.parametrize("spawn_rate", [49, 100.5, 151])
+def test_spawn_rate_rejects_out_of_range_values(spawn_rate):
+    m = machine.boot(backend=NullBackend(), seed=8)
+    with pytest.raises(ValueError, match="spawn rate must be"):
+        m.start_game(spawn_rate_percent=spawn_rate)
+
+
 def test_same_seed_gives_the_same_trajectory():
     # px/py cannot distinguish seeds here: an idle mouse-mode player is pinned
     # to the (fixed) cursor position, and player movement never consumes rnd().

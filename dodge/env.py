@@ -9,7 +9,7 @@ import numpy as np
 
 from pico8 import cart
 from pico8.backends import NullBackend, PygameBackend
-from pico8.machine import Machine
+from pico8.machine import Machine, validate_spawn_rate_percent
 
 from . import rewards
 from .actions import ACTION_MASKS, action_mask
@@ -55,6 +55,9 @@ class DodgeEnv(gym.Env):
         difficulty=1,
         patterns=False,
         powerups=False,
+        normal_enemies=True,
+        kamikaze_enemies=True,
+        spawn_rate_percent=100,
         action_repeat=4,
         lives=0,
         max_episode_frames=3600,
@@ -70,6 +73,9 @@ class DodgeEnv(gym.Env):
         self.difficulty = difficulty
         self.patterns = patterns
         self.powerups = powerups
+        self.normal_enemies = bool(normal_enemies)
+        self.kamikaze_enemies = bool(kamikaze_enemies)
+        self.spawn_rate_percent = validate_spawn_rate_percent(spawn_rate_percent)
         self.action_repeat = action_repeat
         # Training-only. Each life turns one enemy collision into the end of an
         # RL episode that the cartridge run survives, so the next episode starts
@@ -148,6 +154,9 @@ class DodgeEnv(gym.Env):
             difficulty=self.difficulty,
             patterns=self.patterns,
             powerups=self.powerups,
+            normal_enemies=self.normal_enemies,
+            kamikaze_enemies=self.kamikaze_enemies,
+            spawn_rate_percent=self.spawn_rate_percent,
         )
         self.machine.install_training_hooks(lives=self.lives)
         self.episode_seed = episode_seed

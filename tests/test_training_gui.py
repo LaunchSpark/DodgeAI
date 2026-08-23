@@ -107,6 +107,9 @@ class _StubSession:
             "difficulty": 1,
             "patterns": False,
             "powerups": True,
+            "normal_enemies": True,
+            "kamikaze_enemies": True,
+            "spawn_rate_percent": 100,
             "action_repeat": 4,
             "lives": 0,
             "max_episode_frames": None,
@@ -145,8 +148,9 @@ class _StubSession:
     def game_config(self):
         return dict(self.env_kwargs)
 
-    def configure_game(self, *, difficulty, patterns, powerups, action_repeat,
-                       lives=0):
+    def configure_game(self, *, difficulty, patterns, powerups,
+                       normal_enemies=True, kamikaze_enemies=True,
+                       spawn_rate_percent=100, action_repeat, lives=0):
         """Deliberately the real signature, not **config.
 
         A stub that swallows any keyword cannot catch the panel sending a key
@@ -154,7 +158,11 @@ class _StubSession:
         past this suite once already.
         """
         config = {"difficulty": difficulty, "patterns": patterns,
-                  "powerups": powerups, "action_repeat": action_repeat,
+                  "powerups": powerups,
+                  "normal_enemies": normal_enemies,
+                  "kamikaze_enemies": kamikaze_enemies,
+                  "spawn_rate_percent": spawn_rate_percent,
+                  "action_repeat": action_repeat,
                   "lives": lives}
         self.env_kwargs = {**self.env_kwargs, **config}
         self.configured.append(dict(config))
@@ -197,6 +205,8 @@ def test_game_config_applies_toggles_and_discrete_sliders(tmp_path):
 
     dashboard._click(dashboard.game_regions["toggles"]["powerups"].center)
     dashboard._click(dashboard.game_regions["toggles"]["patterns"].center)
+    dashboard._click(dashboard.game_regions["toggles"]["normal_enemies"].center)
+    dashboard._click(dashboard.game_regions["toggles"]["kamikaze_enemies"].center)
     for spec, track in dashboard.game_regions["tracks"]:
         dashboard._click((track.right - 1, track.centery))
     dashboard._click(dashboard.game_regions["apply"].center)
@@ -205,11 +215,49 @@ def test_game_config_applies_toggles_and_discrete_sliders(tmp_path):
         "difficulty": 3,
         "patterns": True,
         "powerups": False,
+        "normal_enemies": False,
+        "kamikaze_enemies": False,
+        "spawn_rate_percent": 150,
         "action_repeat": 8,
         "lives": 5,
     }]
     assert not dashboard.game_menu_open
     pygame.quit()
+
+
+def test_game_config_spawn_rate_snaps_to_five_percent(tmp_path):
+    from training_gui import TrainingDashboard
+
+    dashboard = TrainingDashboard(
+        _StubSession(tmp_path / "rewards.json"), hidden=True)
+    dashboard._open_game_config()
+    dashboard.draw()
+    spec, track = next(
+        (spec, track) for spec, track in dashboard.game_regions["tracks"]
+        if spec.name == "spawn_rate_percent"
+    )
+
+    # 73% of the 50..150 range is 123; the five-point knob snaps to 125.
+    dashboard._click((track.x + round(track.w * 0.73), track.centery))
+    assert dashboard.game_config["spawn_rate_percent"] == 125
+    assert DashboardRenderer._game_value(spec, 125) == "125%"
+    pygame.quit()
+
+
+def test_expanded_game_config_fits_the_minimum_window():
+    from training_gui import GAME_DEFAULTS
+
+    pygame.font.init()
+    renderer = DashboardRenderer()
+    surface = pygame.Surface(MIN_WINDOW_SIZE)
+    regions = renderer.draw_game_menu(surface, dict(GAME_DEFAULTS))
+
+    assert regions["modal"].top >= 0
+    assert regions["modal"].bottom <= surface.get_height()
+    assert set(regions["toggles"]) == {
+        "powerups", "patterns", "normal_enemies", "kamikaze_enemies"
+    }
+    assert regions["apply"].top > max(track.bottom for _, track in regions["tracks"])
 
 
 def test_reward_panel_offers_a_slider_for_every_weight(tmp_path):
@@ -358,9 +406,16 @@ def test_gui_command_line_has_no_default_architecture(tmp_path, monkeypatch):
     monkeypatch.setattr(training_gui, "TrainingDashboard", DashboardStub)
     models = tmp_path / "my-models"
 
-    assert training_gui.main(["--models-dir", str(models)]) == 0
+    assert training_gui.main([
+        "--models-dir", str(models),
+        "--no-normal-enemies", "--no-kamikaze-enemies",
+        "--spawn-rate-percent", "125",
+    ]) == 0
     assert captured["kwargs"]["architecture"] is None
     assert captured["kwargs"]["model_dir"] == models
+    assert captured["kwargs"]["normal_enemies"] is False
+    assert captured["kwargs"]["kamikaze_enemies"] is False
+    assert captured["kwargs"]["spawn_rate_percent"] == 125
     assert captured["ran"]
 
 

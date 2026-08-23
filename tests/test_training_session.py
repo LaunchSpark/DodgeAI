@@ -60,6 +60,9 @@ def test_model_list_only_contains_ppo_checkpoints(tmp_path):
 def test_training_enables_powerups_by_default(tmp_path):
     session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
     assert session.env_kwargs["powerups"] is True
+    assert session.env_kwargs["normal_enemies"] is True
+    assert session.env_kwargs["kamikaze_enemies"] is True
+    assert session.env_kwargs["spawn_rate_percent"] == 100
 
 
 def test_session_can_wait_for_an_explicit_model_selection(tmp_path, monkeypatch):
@@ -375,7 +378,9 @@ def test_watch_uses_unique_update_snapshot_and_random_seed(tmp_path, monkeypatch
 
     session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
     session.env_kwargs.update(
-        difficulty=3, patterns=True, powerups=False, action_repeat=7
+        difficulty=3, patterns=True, powerups=False, action_repeat=7,
+        normal_enemies=False, kamikaze_enemies=False,
+        spawn_rate_percent=135,
     )
     session.model = object()
     session.live_watch_dir.mkdir(parents=True)
@@ -396,6 +401,9 @@ def test_watch_uses_unique_update_snapshot_and_random_seed(tmp_path, monkeypatch
     assert command[command.index("--action-repeat") + 1] == "7"
     assert "--patterns" in command
     assert "--no-powerups" in command
+    assert "--no-normal-enemies" in command
+    assert "--no-kamikaze-enemies" in command
+    assert command[command.index("--spawn-rate-percent") + 1] == "135"
     assert "--seed" in command, "nothing else covers seed plumbing into the watch command"
 
 
@@ -429,6 +437,9 @@ def test_game_config_restarts_with_the_live_policy(tmp_path):
         "difficulty": 3,
         "patterns": True,
         "powerups": False,
+        "normal_enemies": True,
+        "kamikaze_enemies": True,
+        "spawn_rate_percent": 100,
         "action_repeat": 7,
         "lives": 0,
         "max_episode_frames": None,
@@ -564,7 +575,8 @@ def test_parallel_envs_use_separate_processes(tmp_path, monkeypatch, n_envs, exp
     monkeypatch.setattr(training, "make_vec_env", fake_make_vec_env)
     session = training.PPOTrainingSession(
         model_dir=tmp_path, logs_dir=tmp_path, n_envs=n_envs, autostart=False,
-        device="cpu",
+        device="cpu", normal_enemies=False, kamikaze_enemies=False,
+        spawn_rate_percent=125,
     )
     # make_vec_env is called before the loop's try block, so the sentinel
     # exception escapes _run instead of being recorded as a session error.
@@ -572,6 +584,9 @@ def test_parallel_envs_use_separate_processes(tmp_path, monkeypatch, n_envs, exp
         session._run()
     assert captured["n_envs"] == n_envs
     assert captured["vec_env_cls"].__name__ == expected
+    assert captured["env_kwargs"]["normal_enemies"] is False
+    assert captured["env_kwargs"]["kamikaze_enemies"] is False
+    assert captured["env_kwargs"]["spawn_rate_percent"] == 125
 
 
 def _matching_vec_env(n_envs):
@@ -701,11 +716,16 @@ def test_watch_runs_episodes_without_a_frame_cap(tmp_path, monkeypatch):
     monkeypatch.setattr(watch_ppo.pygame.event, "get", lambda: [])
     monkeypatch.setattr(watch_ppo.pygame.display, "set_caption", lambda title: None)
     monkeypatch.setattr(sys, "argv",
-                        ["watch_ppo.py", str(model_path), "--frames", "4"])
+                        ["watch_ppo.py", str(model_path), "--frames", "4",
+                         "--no-normal-enemies", "--no-kamikaze-enemies",
+                         "--spawn-rate-percent", "125"])
 
     assert watch_ppo.main() == 0
     assert "max_episode_frames" in built
     assert built["max_episode_frames"] is None
+    assert built["normal_enemies"] is False
+    assert built["kamikaze_enemies"] is False
+    assert built["spawn_rate_percent"] == 125
 
 
 def test_watch_window_title_identifies_policy_and_run():
@@ -916,6 +936,51 @@ def test_negative_lives_are_rejected_by_the_session(tmp_path):
     with pytest.raises(ValueError):
         session.configure_game(difficulty=1, patterns=False, powerups=True,
                                action_repeat=4, lives=-1)
+
+
+@pytest.mark.parametrize("spawn_rate", [49, 151])
+def test_out_of_range_spawn_rates_are_rejected_by_the_session(tmp_path, spawn_rate):
+    with pytest.raises(ValueError, match="between 50% and 150%"):
+        PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu",
+                           spawn_rate_percent=spawn_rate)
+
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+    with pytest.raises(ValueError, match="between 50% and 150%"):
+        session.configure_game(
+            difficulty=1, patterns=True, powerups=True,
+            normal_enemies=True, kamikaze_enemies=True,
+            spawn_rate_percent=spawn_rate, action_repeat=4,
+        )
+
+
+def test_enemy_controls_are_staged_with_the_async_game_config(tmp_path):
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+    session.model = object()
+    before = session.game_config()
+
+    assert session.configure_game(
+        difficulty=1, patterns=True, powerups=True,
+        normal_enemies=False, kamikaze_enemies=False,
+        spawn_rate_percent=125, action_repeat=4,
+    ) == "pending"
+    assert session.game_config() == before
+
+    class Stub:
+        completed_updates = 4
+
+        @staticmethod
+        def save(path):
+            path = Path(path)
+            if path.suffix == "":
+                path = path.with_suffix(".zip")
+            path.write_bytes(b"checkpoint")
+
+    session._process_save_requests(Stub())
+    session.drain_events()
+
+    assert session.game_config()["normal_enemies"] is False
+    assert session.game_config()["kamikaze_enemies"] is False
+    assert session.game_config()["spawn_rate_percent"] == 125
 
 
 def test_survival_time_measures_the_run_not_the_episode(tmp_path, monkeypatch):

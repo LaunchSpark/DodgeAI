@@ -77,6 +77,21 @@ def test_non_positive_frame_cap_is_rejected():
         DodgeEnv(max_episode_frames=0)
 
 
+def test_enemy_controls_reach_the_cartridge_runtime():
+    env = DodgeEnv(
+        normal_enemies=False,
+        kamikaze_enemies=False,
+        spawn_rate_percent=125,
+        max_episode_frames=20,
+    )
+    env.reset(seed=11)
+    g = env.machine.globals
+    assert g.training_normal_enemies is False
+    assert g.training_kamikaze_enemies is False
+    assert g.training_spawn_rate == pytest.approx(1.25)
+    env.close()
+
+
 def test_environment_step_returns_expected_contract():
     env = DodgeEnv(action_repeat=2, max_episode_frames=20)
     observation, info = env.reset(seed=11)

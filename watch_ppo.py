@@ -49,6 +49,11 @@ def main():
     parser.add_argument("--patterns", action="store_true")
     parser.add_argument("--powerups", action=argparse.BooleanOptionalAction,
                         default=True)
+    parser.add_argument("--normal-enemies", action=argparse.BooleanOptionalAction,
+                        default=True)
+    parser.add_argument("--kamikaze-enemies", action=argparse.BooleanOptionalAction,
+                        default=True)
+    parser.add_argument("--spawn-rate-percent", type=int, default=100)
     parser.add_argument("--action-repeat", type=int, default=4)
     parser.add_argument("--sample", action="store_true",
                         help="sample actions instead of choosing the most likely action")
@@ -77,6 +82,9 @@ def main():
         difficulty={"easy": 1, "normal": 2, "hard": 3}[args.difficulty],
         patterns=args.patterns,
         powerups=args.powerups,
+        normal_enemies=args.normal_enemies,
+        kamikaze_enemies=args.kamikaze_enemies,
+        spawn_rate_percent=args.spawn_rate_percent,
         action_repeat=args.action_repeat,
         # Watching is not training: an episode runs until the agent dies rather
         # than being cut short to keep episodes turning over.

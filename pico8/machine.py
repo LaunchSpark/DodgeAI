@@ -11,6 +11,20 @@ from .preprocess import preprocess
 PRELUDE = Path(__file__).with_name("prelude.lua")
 
 
+def validate_spawn_rate_percent(value):
+    """Return an integer spawn percentage in the supported curriculum range."""
+    try:
+        numeric = float(value)
+        integer = int(numeric)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("spawn rate must be an integer percentage") from None
+    if numeric != integer:
+        raise ValueError("spawn rate must be an integer percentage")
+    if not 50 <= integer <= 150:
+        raise ValueError("spawn rate must be between 50% and 150%")
+    return integer
+
+
 class Machine:
     def __init__(self, rom, code, backend, seed=0):
         self.rom = rom
@@ -71,21 +85,32 @@ class Machine:
         self.globals._draw()
         self.backend.flip()
 
-    def start_game(self, difficulty=2, patterns=True, powerups=True):
+    def start_game(self, difficulty=2, patterns=True, powerups=True,
+                   normal_enemies=True, kamikaze_enemies=True,
+                   spawn_rate_percent=100):
         """Skip the menus and begin a round immediately.
 
         ``difficulty`` uses the cart's native values: 1 easy, 2 normal, 3 hard.
+        ``spawn_rate_percent`` scales both the ordinary enemy timer and the
+        between-pattern timer. Enemy switches apply to every creation path,
+        including the cart's forced anti-camping wave.
         A freshly constructed Machine gives training a fully independent round;
         the cart's own reset intentionally carries some state across restarts.
         """
         if difficulty not in (1, 2, 3):
             raise ValueError("difficulty must be 1 (easy), 2 (normal), or 3 (hard)")
+        spawn_rate_percent = validate_spawn_rate_percent(spawn_rate_percent)
         g = self.globals
         g.smallsettings[2] = difficulty
         g.smallsettings[3] = bool(patterns)
         g.smallsettings[4] = bool(powerups)
         g._upd, g._drw = g.updategame, g.drawgame
         g.reset()
+        self._install_spawn_controls(
+            normal_enemies=bool(normal_enemies),
+            kamikaze_enemies=bool(kamikaze_enemies),
+            spawn_rate=spawn_rate_percent / 100.0,
+        )
         # Make the native spawn check succeed on the first gameplay frame.
         # spawnenemies() resets ed to zero, preserving its usual cadence after that.
         g.ed = g.est * 60 * (2 - g.frz)
@@ -93,6 +118,73 @@ class Machine:
         # real keyboard movement model with velocity and friction.
         g.input = 1
         g.prevxpos, g.prevypos = self.mouse_x, self.mouse_y
+
+    def _install_spawn_controls(self, *, normal_enemies, kamikaze_enemies,
+                                spawn_rate):
+        """Layer training controls over the unmodified cartridge functions."""
+        self.lua.execute("""
+            training_normal_enemies = true
+            training_kamikaze_enemies = true
+            training_spawn_rate = 1
+
+            local cartridge_addenemy = addenemy
+            function addenemy(x, y, isdying, size, max_size, personality)
+                if personality == nil then
+                    return
+                end
+                if personality == 0 and not training_normal_enemies then
+                    return
+                end
+                if (personality == 1 or personality == -1)
+                        and not training_kamikaze_enemies then
+                    return
+                end
+                return cartridge_addenemy(
+                    x, y, isdying, size, max_size, personality)
+            end
+
+            local cartridge_spawnenemies = spawnenemies
+            function spawnenemies()
+                -- The cartridge adds one inside spawnenemies. Supplying the
+                -- remainder here changes cadence without touching its dynamic
+                -- `est`, freeze, or special-pattern multipliers.
+                ed = ed + training_spawn_rate - 1
+                if not training_normal_enemies then
+                    enemiestats[1] = 0
+                end
+                if not training_kamikaze_enemies then
+                    enemiestats[2] = 0
+                end
+
+                local total = 0
+                for i = 1, #enemiestats do
+                    total = total + enemiestats[i]
+                end
+                if total > 0 then
+                    return cartridge_spawnenemies()
+                end
+
+                -- Preserve the timer's effective increment when there is
+                -- nothing eligible to spawn, without asking rnd(0) for an
+                -- absent personality.
+                ed = ed + 1
+            end
+
+            local cartridge_updatepatterns = updatepatterns
+            function updatepatterns()
+                -- updatepatterns adds one only while this same countdown is
+                -- active. Applying the remainder under the same conditions
+                -- keeps freeze and active-pattern behavior byte-for-byte.
+                if dopatterns and cp == nil and not freeze then
+                    cpt = cpt + training_spawn_rate - 1
+                end
+                return cartridge_updatepatterns()
+            end
+        """)
+        g = self.lua.globals()
+        g.training_normal_enemies = normal_enemies
+        g.training_kamikaze_enemies = kamikaze_enemies
+        g.training_spawn_rate = float(spawn_rate)
 
     def install_training_hooks(self, lives=0):
         """Count game events without modifying the generated cart source.
