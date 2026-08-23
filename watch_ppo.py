@@ -10,10 +10,30 @@ import torch
 from stable_baselines3 import PPO
 
 from dodge.env import DodgeEnv
+from dodge.training import newest_snapshot
 
 
 def window_title(model_name, update, seed, episode=1):
     return f"{model_name} | Update {update} | Episode {episode} | Seed {seed}"
+
+
+def reload_if_newer(model, live_dir, current_update):
+    """Adopt the newest published snapshot above `current_update`.
+
+    Called only between episodes. A snapshot that will not load leaves the
+    running policy untouched and the update number unchanged, so the next
+    death tries again rather than the window dying with the file.
+    """
+    if live_dir is None:
+        return model, current_update, None
+    found = newest_snapshot(live_dir, after=current_update)
+    if not found:
+        return model, current_update, None
+    path, update = found
+    try:
+        return PPO.load(path, device="cpu"), update, None
+    except Exception as error:
+        return model, current_update, str(error)
 
 
 def main():
@@ -38,15 +58,22 @@ def main():
                              "background (ignored by other architectures)")
     parser.add_argument("--frames", type=int,
                         help="exit after this many rendered game frames")
+    parser.add_argument("--live-dir", type=Path, default=None,
+                        help="directory of published update-XXXXXXXX.zip "
+                             "snapshots to reload from between episodes")
+    parser.add_argument("--current-update", type=int, default=-1,
+                        help="the update already loaded, so only newer "
+                             "snapshots are adopted")
     args = parser.parse_args()
 
     model = PPO.load(args.model, device="cpu")
     model_name = args.model_name or args.model.stem
     seed = args.seed
+    current_update = args.current_update if args.current_update >= 0 else args.update
     env = DodgeEnv(
         render_mode="human",
         scale=args.scale,
-        caption=window_title(model_name, args.update, seed),
+        caption=window_title(model_name, current_update, seed),
         difficulty={"easy": 1, "normal": 2, "hard": 3}[args.difficulty],
         patterns=args.patterns,
         powerups=args.powerups,
@@ -88,10 +115,21 @@ def main():
             running = False
         if terminated or truncated:
             episode += 1
+            model, new_update, error = reload_if_newer(
+                model, args.live_dir, current_update)
+            if error:
+                print(f"Keeping update {current_update}: {error}")
+            elif new_update != current_update:
+                current_update = new_update
+                # The extractor belongs to the old policy object.
+                extractor = getattr(getattr(model, "policy", None),
+                                    "features_extractor", None)
+                field_source = (extractor if args.field
+                                and hasattr(extractor, "field") else None)
             seed = secrets.randbelow(2**31 - 1)
             observation, _ = env.reset(seed=seed)
             pygame.display.set_caption(
-                window_title(model_name, args.update, seed, episode + 1)
+                window_title(model_name, current_update, seed, episode + 1)
             )
     env.close()
     return 0

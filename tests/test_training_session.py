@@ -1107,3 +1107,60 @@ def test_snapshots_are_published_only_while_a_watcher_is_alive(tmp_path):
     session._on_post_update(model)
     assert len(list(session.live_watch_dir.glob("update-*.zip"))) == 1, \
         "publishing stops once the last watcher is gone"
+
+
+def test_the_watcher_adopts_a_newer_snapshot(tmp_path):
+    import watch_ppo
+    from dodge.training import snapshot_name
+
+    class Old:
+        pass
+
+    loaded = []
+    real = watch_ppo.PPO.load
+    watch_ppo.PPO.load = staticmethod(lambda path, device: loaded.append(path) or "new")
+    try:
+        (tmp_path / snapshot_name(9)).write_bytes(b"checkpoint")
+        model, update, error = watch_ppo.reload_if_newer(Old(), tmp_path, 4)
+        assert model == "new" and update == 9 and error is None
+        assert loaded == [tmp_path / snapshot_name(9)]
+
+        again, update, error = watch_ppo.reload_if_newer(model, tmp_path, 9)
+        assert again is model and update == 9, "nothing newer, nothing loaded"
+    finally:
+        watch_ppo.PPO.load = real
+
+
+def test_a_broken_snapshot_leaves_the_watcher_on_its_model(tmp_path):
+    import watch_ppo
+    from dodge.training import snapshot_name
+
+    class Old:
+        pass
+
+    old = Old()
+    real = watch_ppo.PPO.load
+
+    def explode(path, device):
+        raise ValueError("bad zip")
+
+    watch_ppo.PPO.load = staticmethod(explode)
+    try:
+        (tmp_path / snapshot_name(9)).write_bytes(b"garbage")
+        model, update, error = watch_ppo.reload_if_newer(old, tmp_path, 4)
+        assert model is old, "the in-memory policy has to survive"
+        assert update == 4, "and stay on its own update, so it retries later"
+        assert "bad zip" in error
+    finally:
+        watch_ppo.PPO.load = real
+
+
+def test_no_live_directory_is_not_an_error(tmp_path):
+    import watch_ppo
+
+    class Old:
+        pass
+
+    old = Old()
+    model, update, error = watch_ppo.reload_if_newer(old, None, 3)
+    assert model is old and update == 3 and error is None
