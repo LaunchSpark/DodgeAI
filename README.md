@@ -193,6 +193,54 @@ else. Two findings came out of it:
   from a pursuer, because the predicted enemy carries on toward the spot the
   player has left. Against a chaser the escape is lateral.
 
+### Training lives
+
+    python training_gui.py --lives 3
+
+Also a slider in **Game Config**, and off by default. It exists to widen the
+range of states training sees, cheaply, without implementing random
+initialisation.
+
+With lives set, the first N enemy collisions delete the enemy as usual but
+leave the player standing. The agent's episode still ends at each one, charged
+the full `death_penalty` — the cartridge run is what survives, so the next
+episode opens on a mid-game arena instead of the spawn point. Measured over 40
+episodes at `--lives 3`, 30 of them started somewhere between frame 145 and
+frame 553 of a run already in progress; at the default they all start at frame
+zero.
+
+Ending the episode is the part that matters. If the episode continued, the
+value function could see that a hit buys about 100 frames of survival income
+against a penalty of 1.0, and the agent would learn to spend hits to escape
+tight corners. Cutting the episode makes that arithmetic unreachable: SB3
+bootstraps `V = 0` at a terminal, so nothing after the collision is ever
+credited to the actions that led into it. For the same reason the step is
+reported as `terminated`, never `truncated` — a truncation bootstraps `V(s')`
+and would leak back exactly the value being hidden.
+
+Two consequences worth knowing about:
+
+* **Survival time still measures the run.** An episode now ends at every
+  absorbed hit, so charting episodes would quietly redefine the dashboard's
+  headline metric as time between hits, against curves recorded when it meant
+  time alive. The chart follows `run_frames` and is appended only when the
+  cartridge run really ends. Episode reward and enemies killed remain
+  per episode. At `--lives 0` the two are the same number.
+* **The variety is biased, and correlated.** Every state still lies on one
+  trajectory, so this is weaker than real random initialisation. Restarts also
+  cluster on post-collision states — crowded, and at whatever difficulty the
+  score has ramped to — which is an implicit curriculum toward danger, but it
+  does mean the critic is fit on a start distribution the real game never has.
+
+A pattern crush is always fatal, however many lives remain. Patterns call
+`die()` straight from `collisioncheck()` with the player still inside the
+rectangle, so absorbing one would burn every life in consecutive frames without
+the player ever getting clear; the hook only spends a life on deaths reached
+through `collide()`.
+
+Watch Agent never inherits the setting. A policy that gets three free hits is
+not the one being shipped, so the watch window always shows real deaths.
+
 ### Reward weights
 
 The **Rewards** button opens sliders over the reward function. They write

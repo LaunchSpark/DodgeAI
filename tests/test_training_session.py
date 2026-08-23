@@ -222,6 +222,8 @@ def test_game_config_restarts_with_the_live_policy(tmp_path, monkeypatch):
         "patterns": True,
         "powerups": False,
         "action_repeat": 7,
+        "lives": 0,
+        "max_episode_frames": None,
     }
     assert session.data.status == "reconfiguring"
     assert session.restart_event.is_set()
@@ -561,3 +563,65 @@ def test_new_policy_tool_makes_an_architecture_selectable(tmp_path, architecture
         assert architecture_name(loaded) == architecture
     finally:
         env.close()
+def test_lives_are_configurable_but_never_reach_the_watch_window(tmp_path, monkeypatch):
+    """Lives are a training device only.
+
+    Watching has to show what the policy actually does, and a policy that gets
+    three free hits is not the one being shipped, so the watch command is built
+    without them however the trainer is configured.
+    """
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+    assert session.game_config()["lives"] == 0, "off unless asked for"
+
+    assert session.configure_game(difficulty=1, patterns=False, powerups=True,
+                                  action_repeat=4, lives=3)
+    assert session.game_config()["lives"] == 3
+
+    commands = []
+    def fake_save(path, return_update=False):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"snapshot")
+        return (path, 1) if return_update else path
+
+    monkeypatch.setattr(session, "_save_to_path", fake_save)
+    monkeypatch.setattr("dodge.training.secrets.randbelow", lambda upper: 7)
+    monkeypatch.setattr("dodge.training.subprocess.Popen",
+                        lambda command, cwd: commands.append(command))
+
+    assert session.watch_agent()
+
+    assert "--lives" not in commands[0]
+
+
+def test_negative_lives_are_rejected_by_the_session(tmp_path):
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+    with pytest.raises(ValueError):
+        session.configure_game(difficulty=1, patterns=False, powerups=True,
+                               action_repeat=4, lives=-1)
+
+
+def test_training_runs_without_a_frame_cap(tmp_path):
+    """The cap capped difficulty, not just time.
+
+    Difficulty ramps with score, so an agent that reliably reached 60 seconds
+    never saw a harder game than 60 seconds reaches. Episode turnover, which is
+    what the cap was for, now comes from training lives instead.
+    """
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+    assert session.env_kwargs["max_episode_frames"] is None
+
+
+def test_game_config_preserves_settings_it_does_not_manage(tmp_path):
+    """configure_game compares its dict against env_kwargs to decide whether to
+    restart, so a key it does not set must still survive the comparison."""
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False,
+                                 max_episode_frames=1200, device="cpu")
+
+    assert session.configure_game(difficulty=2, patterns=False, powerups=True,
+                                  action_repeat=4, lives=1)
+
+    assert session.game_config()["max_episode_frames"] == 1200
+    assert not session.configure_game(difficulty=2, patterns=False, powerups=True,
+                                      action_repeat=4, lives=1), "no change, no restart"
+
+

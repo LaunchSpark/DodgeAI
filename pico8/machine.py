@@ -94,15 +94,30 @@ class Machine:
         g.input = 1
         g.prevxpos, g.prevypos = self.mouse_x, self.mouse_y
 
-    def install_training_hooks(self):
-        """Count game events without modifying the generated cart source."""
+    def install_training_hooks(self, lives=0):
+        """Count game events without modifying the generated cart source.
+
+        `lives` is a training-only device. With it set, the first `lives` enemy
+        collisions delete the enemy as usual but leave the player alive, so one
+        cartridge run supplies several RL episodes starting from mid-game
+        states. The environment still ends the episode at each one; this only
+        keeps the cart running underneath it.
+        """
+        if lives < 0:
+            raise ValueError("lives cannot be negative")
         self.lua.execute("""
             training_events = {
                 enemies_destroyed = 0,
                 explosion_pickups = 0,
                 freeze_pickups = 0,
-                shrink_pickups = 0
+                shrink_pickups = 0,
+                lives_spent = 0
             }
+
+            -- Set from Python below; a life is spent rather than a death taken
+            -- while this is positive.
+            training_lives = 0
+            local in_enemy_collide = false
 
             local original_collide = collide
             function collide(enemy)
@@ -113,7 +128,28 @@ class Machine:
                 elseif enemy.p == 4 then
                     training_events.shrink_pickups = training_events.shrink_pickups + 1
                 end
-                return original_collide(enemy)
+                in_enemy_collide = true
+                local result = original_collide(enemy)
+                in_enemy_collide = false
+                return result
+            end
+
+            local original_die = die
+            function die()
+                -- Only an enemy collision spends a life. A pattern crush calls
+                -- die() straight from collisioncheck() with the player still
+                -- inside the rectangle, so absorbing one would burn every life
+                -- in consecutive frames without the player ever getting away.
+                --
+                -- Returning early also skips checkhs(), which would otherwise
+                -- write a highscore into cartdata for a death that did not
+                -- happen, and the death music.
+                if in_enemy_collide and training_lives > 0 then
+                    training_lives = training_lives - 1
+                    training_events.lives_spent = training_events.lives_spent + 1
+                    return
+                end
+                return original_die()
             end
 
             local original_difficultycurve = difficultycurve
@@ -124,6 +160,7 @@ class Machine:
                 return original_difficultycurve(half)
             end
         """)
+        self.lua.globals().training_lives = int(lives)
 
 
 def boot(js_path=Path("dodge.p8.png"), backend=None, seed=0):

@@ -56,6 +56,7 @@ EVENT_SPECS = (
     ("shrink_pickups", "Shrink pickups", (177, 130, 224)),
     ("patterns_survived", "Patterns survived", GREEN),
     ("deaths", "Deaths", RED),
+    ("lives_spent", "Lives spent", (177, 130, 224)),
 )
 
 GAME_DEFAULTS = {
@@ -63,6 +64,7 @@ GAME_DEFAULTS = {
     "patterns": False,
     "powerups": True,
     "action_repeat": 4,
+    "lives": 0,
 }
 
 
@@ -77,6 +79,9 @@ class GameSliderSpec:
 GAME_SLIDERS = (
     GameSliderSpec("difficulty", "Difficulty", 1, 3),
     GameSliderSpec("action_repeat", "Decision interval", 1, 8),
+    # Training only: the first N enemy collisions end the episode without
+    # ending the cartridge run, so the next episode starts mid-game.
+    GameSliderSpec("lives", "Training lives", 0, 5),
 )
 
 
@@ -353,6 +358,11 @@ class DashboardRenderer:
     def _game_value(spec, value):
         if spec.name == "difficulty":
             return {1: "Easy", 2: "Normal", 3: "Hard"}[int(value)]
+        if spec.name == "lives":
+            value = int(value)
+            if value == 0:
+                return "Off"
+            return f"{value} life" if value == 1 else f"{value} lives"
         return f"{int(value)} frames"
 
     def draw_game_menu(self, surface, config):
@@ -780,7 +790,12 @@ class TrainingDashboard:
     def _open_game_config(self):
         getter = getattr(self.session, "game_config", None)
         current = getter() if getter else getattr(self.session, "env_kwargs", {})
-        self.game_config = {**GAME_DEFAULTS, **current}
+        # Only the settings this panel owns. The session's env kwargs carry
+        # others -- the frame cap, for one -- and _apply_game_config splats
+        # this dict straight into configure_game, which does not take them.
+        self.game_config = {**GAME_DEFAULTS,
+                            **{key: value for key, value in current.items()
+                               if key in GAME_DEFAULTS}}
         self.game_menu_open = True
 
     def _set_game_from_position(self, spec, track, position):
@@ -1120,11 +1135,21 @@ def main(argv=None):
                         help="steps per env per PPO update; the buffer holds "
                              "envs * rollout-steps samples (default 8 * 256)")
     parser.add_argument("--architecture", choices=ARCHITECTURES,
-                        default=DEFAULT_ARCHITECTURE)
+                        default=None,
+                        help="start a new model with this architecture; when "
+                             "omitted, wait for a checkpoint selection")
+    parser.add_argument("--models-dir", type=Path,
+                        default=Path("artifacts/models"),
+                        help="directory watched for PPO checkpoints")
     parser.add_argument("--difficulty", choices=("easy", "normal", "hard"), default="easy")
     parser.add_argument("--patterns", action="store_true")
     parser.add_argument("--powerups", action=argparse.BooleanOptionalAction,
                         default=True)
+    parser.add_argument("--lives", type=int, default=0,
+                        help="training only: enemy collisions that end the "
+                             "episode without ending the cartridge run, so the "
+                             "next episode starts from a mid-game state "
+                             "(default 0)")
     parser.add_argument("--screenshot", type=Path,
                         help="render one dashboard frame to this PNG and exit")
     args = parser.parse_args(argv)
@@ -1146,9 +1171,11 @@ def main(argv=None):
         total_steps=args.steps,
         n_envs=args.envs,
         rollout_steps=args.rollout_steps,
+        model_dir=args.models_dir,
         difficulty={"easy": 1, "normal": 2, "hard": 3}[args.difficulty],
         patterns=args.patterns,
         powerups=args.powerups,
+        lives=args.lives,
         architecture=args.architecture,
         device=args.device,
     )

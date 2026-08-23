@@ -314,11 +314,13 @@ class PPOTrainingSession:
         patterns=False,
         powerups=True,
         action_repeat=4,
+        lives=0,
+        max_episode_frames=None,
         architecture=DEFAULT_ARCHITECTURE,
         device="auto",
         autostart=True,
     ):
-        if architecture not in ARCHITECTURES:
+        if architecture is not None and architecture not in ARCHITECTURES:
             raise ValueError(f"architecture must be one of {ARCHITECTURES}")
         self.seed = seed
         self.model_dir = Path(model_dir)
@@ -342,9 +344,14 @@ class PPOTrainingSession:
         # longer rollout cuts gradient noise by drawing each update from four
         # times as much fresh experience, and cuts how much of each advantage
         # rests on the bootstrap at the rollout boundary from 5.5% to 1.4%.
-        # Both matter here because the critic is the weak part. At roughly 100
-        # decisions an episode it also means every env's rollout spans a full
-        # episode, so most terminals in the buffer are real deaths.
+        # Both matter here because the critic is the weak part.
+        #
+        # It used to also mean a rollout spanned a whole episode, back when an
+        # episode was about 100 decisions. It no longer does: episodes run far
+        # longer than that and there is no frame cap, so a rollout is a slice
+        # of one and most buffers hold no terminal at all. GAE bootstraps at
+        # the rollout boundary, so this is sound -- just not the reason to
+        # pick 256.
         self.n_envs = n_envs
         self.rollout_steps = rollout_steps
         self.architecture = architecture
@@ -355,25 +362,40 @@ class PPOTrainingSession:
             "patterns": patterns,
             "powerups": powerups,
             "action_repeat": action_repeat,
+            "lives": lives,
+            # No cap by default. It existed to keep episodes turning over,
+            # which training lives now do, and it was costing more than it
+            # bought: difficulty ramps with score, so a cap the agent reliably
+            # reached was a ceiling on how hard a game it ever saw. The trade
+            # is that a run only ends on a real death, so an agent that stops
+            # being hit can hold one game seed for a long time.
+            "max_episode_frames": max_episode_frames,
         }
         self.lock = threading.RLock()
-        self.data = DashboardSnapshot(seed=seed)
+        self.data = DashboardSnapshot(
+            status="idle" if architecture is None else "starting",
+            model_name=architecture or "",
+            seed=seed,
+        )
         self.pause_event = threading.Event()
         self.restart_event = threading.Event()
         self.shutdown_event = threading.Event()
         self.save_requests = queue.Queue()
         self.pending_load = None
         self.model = None
-        self.active_model_name = architecture
+        self.active_model_name = architecture or ""
         self.last_error = None
         self.last_watch_label = None
         self.worker = None
-        if autostart:
+        if autostart and architecture is not None:
             self.start()
 
     def start(self):
         if self.worker and self.worker.is_alive():
             return
+        with self.lock:
+            if self.architecture is None and self.pending_load is None:
+                return
         self.model_dir.mkdir(parents=True, exist_ok=True)
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.worker = threading.Thread(target=self._run, name="dodge-ppo", daemon=True)
@@ -632,27 +654,37 @@ class PPOTrainingSession:
             self.data.status = "loading"
             self.data.model_name = entry.name
         self.restart_event.set()
+        self.start()
         return entry.path
 
     def game_config(self):
         with self.lock:
             return dict(self.env_kwargs)
 
-    def configure_game(self, *, difficulty, patterns, powerups, action_repeat):
+    def configure_game(self, *, difficulty, patterns, powerups, action_repeat,
+                       lives=0):
         """Rebuild the games around the current policy with new mechanics."""
         difficulty = int(difficulty)
         action_repeat = int(action_repeat)
+        lives = int(lives)
         if difficulty not in (1, 2, 3):
             raise ValueError("Difficulty must be easy, normal, or hard")
         if not 1 <= action_repeat <= 8:
             raise ValueError("Decision interval must be between 1 and 8 frames")
-        config = {
+        if not 0 <= lives <= 5:
+            raise ValueError("Training lives must be between 0 and 5")
+        changes = {
             "difficulty": difficulty,
             "patterns": bool(patterns),
             "powerups": bool(powerups),
             "action_repeat": action_repeat,
+            "lives": lives,
         }
         with self.lock:
+            # Merged rather than rebuilt, so a setting this panel does not own
+            # survives the comparison below instead of reading as a change and
+            # restarting training on every apply.
+            config = {**self.env_kwargs, **changes}
             if config == self.env_kwargs:
                 return False
 

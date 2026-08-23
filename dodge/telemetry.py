@@ -16,7 +16,11 @@ EVENT_KEYS = (
     "shrink_pickups",
     "patterns_survived",
     "deaths",
+    "lives_spent",
 )
+
+# Training lives top out at 5, so a cartridge run holds at most six episodes.
+LIFE_BANDS = 6
 
 
 @dataclass

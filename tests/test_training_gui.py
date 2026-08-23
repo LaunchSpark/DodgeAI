@@ -93,11 +93,15 @@ class _StubSession:
     def __init__(self, reward_config_path):
         self.data = sample_snapshot()
         self.reward_config_path = reward_config_path
+        # Mirrors PPOTrainingSession.env_kwargs, including the settings the
+        # Game Config panel does not own -- the panel must not hand those back.
         self.env_kwargs = {
             "difficulty": 1,
             "patterns": False,
             "powerups": True,
             "action_repeat": 4,
+            "lives": 0,
+            "max_episode_frames": None,
         }
         self.configured = []
 
@@ -113,8 +117,18 @@ class _StubSession:
     def game_config(self):
         return dict(self.env_kwargs)
 
-    def configure_game(self, **config):
-        self.env_kwargs = dict(config)
+    def configure_game(self, *, difficulty, patterns, powerups, action_repeat,
+                       lives=0):
+        """Deliberately the real signature, not **config.
+
+        A stub that swallows any keyword cannot catch the panel sending a key
+        the session does not take, which is exactly how a crash on Apply got
+        past this suite once already.
+        """
+        config = {"difficulty": difficulty, "patterns": patterns,
+                  "powerups": powerups, "action_repeat": action_repeat,
+                  "lives": lives}
+        self.env_kwargs = {**self.env_kwargs, **config}
         self.configured.append(dict(config))
         return True
 
@@ -164,6 +178,7 @@ def test_game_config_applies_toggles_and_discrete_sliders(tmp_path):
         "patterns": True,
         "powerups": False,
         "action_repeat": 8,
+        "lives": 5,
     }]
     assert not dashboard.game_menu_open
     pygame.quit()
@@ -349,3 +364,51 @@ def test_system_readings_are_polled_about_once_a_second():
 
     renderer._system_read_at -= 2.0
     assert renderer._system_reading_cached() is not first, "refreshed after a second"
+def test_the_game_menu_offers_training_lives():
+    """Lives are staged with the other game mechanics, and read as lives.
+
+    Every other slider in that panel is measured in frames, so the shared
+    formatter would otherwise label three lives "3 frames".
+    """
+    from training_gui import GAME_DEFAULTS, GAME_SLIDERS
+
+    assert GAME_DEFAULTS["lives"] == 0, "off unless asked for"
+    spec = next((s for s in GAME_SLIDERS if s.name == "lives"), None)
+    assert spec is not None, "the panel has no lives slider"
+    assert DashboardRenderer._game_value(spec, 0) == "Off"
+    assert DashboardRenderer._game_value(spec, 1) == "1 life"
+    assert DashboardRenderer._game_value(spec, 3) == "3 lives"
+
+
+def test_the_dashboard_command_line_accepts_training_lives(tmp_path):
+    import os
+
+    import training_gui
+
+    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    assert training_gui.main([
+        "--lives", "2",
+        "--screenshot", str(tmp_path / "lives.png"),
+    ]) == 0
+
+
+def test_the_game_panel_sends_only_the_settings_it_owns(tmp_path):
+    """The session carries env settings this panel does not control.
+
+    The frame cap is one. _apply_game_config splats its dict straight into
+    configure_game, so anything extra picked up when the panel opened crashes
+    Apply -- which is exactly what happened once the cap moved into env_kwargs.
+    """
+    from training_gui import GAME_DEFAULTS, TrainingDashboard
+
+    session = _StubSession(tmp_path / "rewards.json")
+    assert "max_episode_frames" in session.game_config(), "the setup under test"
+    dashboard = TrainingDashboard(session, hidden=True)
+    dashboard._open_game_config()
+    dashboard.draw()
+
+    dashboard._click(dashboard.game_regions["apply"].center)
+
+    assert session.configured, "Apply never reached the session"
+    assert set(session.configured[0]) == set(GAME_DEFAULTS)
+    pygame.quit()

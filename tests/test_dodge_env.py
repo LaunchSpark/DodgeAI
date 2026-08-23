@@ -336,3 +336,190 @@ def test_human_render_backend_is_reused_across_episode_resets(monkeypatch):
     assert env.machine.backend.window is window
     assert pygame.display.get_caption()[0] == "Persistent watcher"
     env.close()
+
+
+def test_an_absorbed_hit_ends_the_episode_but_leaves_the_game_running():
+    """The agent's episode stops at the hit; the cart does not.
+
+    Ending the episode is what stops the agent learning to spend lives: a
+    terminal bootstraps V=0, so nothing after the hit is ever credited to the
+    actions before it. Leaving the cart running is what buys the state variety.
+    """
+    env = DodgeEnv(action_repeat=4, lives=1)
+    env.reset(seed=31)
+    env.machine.lua.execute("enemies={{x=62,y=62,s=4,p=0}}")
+
+    _, reward, terminated, truncated, info = env.step(0)
+
+    assert terminated, "the RL episode ends at the hit"
+    assert not truncated, "terminated, not truncated: truncation would bootstrap V(s')"
+    assert reward == pytest.approx(-RewardConfig().death_penalty)
+    assert not bool(env.machine.globals.isdead), "the cart is still alive"
+    env.close()
+
+
+def test_reset_after_an_absorbed_hit_continues_the_same_game():
+    """The next episode starts mid-game, which is the point of the device.
+
+    Rebuilding the cartridge here would put the agent back at the spawn point
+    and throw away the very state variety the life was spent reaching. No frame
+    is advanced either, so the new episode opens on the state the old one ended
+    on.
+    """
+    env = DodgeEnv(action_repeat=4, lives=1, max_episode_frames=None)
+    env.reset(seed=31)
+    env.machine.lua.execute("enemies={{x=62,y=62,s=4,p=0}}")
+    final, _, terminated, _, _ = env.step(0)
+    assert terminated
+    machine = env.machine
+
+    observation, info = env.reset()
+
+    assert env.machine is machine, "the cartridge run must not be rebuilt"
+    np.testing.assert_array_equal(observation, final)
+    env.close()
+
+
+def test_the_cartridge_is_rebuilt_once_the_lives_are_gone():
+    """Resuming a finished run would hand the agent a corpse to play."""
+    env = DodgeEnv(action_repeat=4, lives=1, max_episode_frames=None)
+    env.reset(seed=31)
+    env.machine.lua.execute("enemies={{x=62,y=62,s=4,p=0}}")
+    env.step(0)                                   # spends the only life
+    env.reset()
+    dead_run = env.machine
+    env.machine.lua.execute("enemies={{x=62,y=62,s=4,p=0}}")
+    _, _, terminated, _, info = env.step(0)
+    assert terminated and bool(env.machine.globals.isdead), "no lives left, so a real death"
+    assert info["training_events"]["deaths"] == 1
+
+    env.reset()
+
+    assert env.machine is not dead_run, "a real death starts a new run"
+    assert not bool(env.machine.globals.isdead)
+    env.close()
+
+
+def test_run_frames_accumulate_across_episodes_while_frames_restart():
+    """Two clocks: one the agent's episode owns, one the cartridge run owns."""
+    env = DodgeEnv(action_repeat=2, lives=2, max_episode_frames=None)
+    env.reset(seed=31)
+    env.step(0)                                   # frames 1-2
+    env.machine.lua.execute("enemies={{x=62,y=62,s=4,p=0}}")
+    _, _, terminated, _, info = env.step(0)       # frame 3 collides
+    assert terminated
+    assert info["frames"] == 3 and info["run_frames"] == 3
+
+    env.reset()
+    _, _, _, _, info = env.step(0)                # frames 4-5
+
+    assert info["frames"] == 2, "the episode's own clock restarts"
+    assert info["run_frames"] == 5, "the run's clock does not"
+    env.close()
+
+
+def test_the_frame_cap_bounds_the_run_not_the_episode():
+    """A run that keeps absorbing hits would otherwise never turn over, holding
+    one seed and one difficulty ramp in the buffer indefinitely."""
+    env = DodgeEnv(action_repeat=2, lives=3, max_episode_frames=6)
+    env.reset(seed=31)
+    env.step(0)                                   # frames 1-2
+    env.machine.lua.execute("enemies={{x=62,y=62,s=4,p=0}}")
+    _, _, terminated, truncated, info = env.step(0)
+    assert terminated and not truncated and info["run_frames"] == 3
+
+    env.reset()
+    _, _, _, truncated, _ = env.step(0)           # run 5, episode 2
+    assert not truncated
+    _, _, _, truncated, info = env.step(0)        # run 7, episode 4
+
+    assert truncated, "the run passed its cap"
+    assert info["frames"] == 4, "this episode is well short of the cap on its own"
+    assert info["run_frames"] == 7
+    env.close()
+
+
+def test_a_pattern_crush_kills_outright_however_many_lives_remain():
+    """Patterns call die() straight from collisioncheck(), not through collide().
+
+    That distinction is the whole reason the hook tracks which path it is on:
+    the player stays inside a pattern rectangle after it is hit, so absorbing
+    one would burn every life in consecutive frames without ever getting clear.
+    Calling die() directly reproduces exactly that entry -- outside collide(),
+    with lives in hand.
+    """
+    env = DodgeEnv(action_repeat=1, lives=3)
+    env.reset(seed=31)
+    env.machine.lua.execute("die()")
+
+    _, reward, terminated, _, info = env.step(0)
+
+    assert terminated and bool(env.machine.globals.isdead)
+    assert info["training_events"]["lives_spent"] == 0
+    assert info["training_events"]["deaths"] == 1
+    env.close()
+
+
+def test_lives_are_off_by_default_and_a_hit_ends_the_run():
+    """The default path through the conditional reset must be the old one."""
+    env = DodgeEnv(action_repeat=4)
+    env.reset(seed=31)
+    env.machine.lua.execute("enemies={{x=62,y=62,s=4,p=0}}")
+    _, _, terminated, _, info = env.step(0)
+    assert terminated and bool(env.machine.globals.isdead)
+    assert info["training_events"]["lives_spent"] == 0
+    machine = env.machine
+
+    env.reset()
+
+    assert env.machine is not machine
+    env.close()
+
+
+def test_negative_lives_are_rejected():
+    with pytest.raises(ValueError):
+        DodgeEnv(lives=-1)
+
+
+def test_a_real_pattern_crush_ends_the_run_with_lives_in_hand():
+    """The integration the flag exists for, driven through the cart itself.
+
+    test_a_pattern_crush_kills_outright_however_many_lives_remain calls die()
+    directly, which pins the hook's logic but not the path a pattern actually
+    takes. Here the cart grows its own pattern to sh == 2 -- its "this kills
+    now" state -- and the player is stood in it. Enemies are cleared each frame
+    only so the idle player survives the ~500 frames a pattern needs to mature.
+    """
+    env = DodgeEnv(action_repeat=1, lives=3, patterns=True, max_episode_frames=None)
+    env.reset(seed=5)
+    g = env.machine.globals
+
+    lethal = None
+    for _ in range(4000):
+        env.machine.lua.execute("enemies={}")
+        env.step(0)
+        if g.cp is not None:
+            for i in range(1, len(g.cp.rects) + 1):
+                r = g.cp.rects[i]
+                if float(r.sh) >= 2 and float(r.w) > 8 and float(r.h) > 8:
+                    lethal = (float(r.x), float(r.y), float(r.w), float(r.h))
+                    break
+        if lethal or bool(g.isdead):
+            break
+    assert lethal is not None and not bool(g.isdead), "no pattern turned lethal"
+
+    x, y, w, h = lethal
+    env.machine.lua.execute(f"px={x + w / 2} py={y + h / 2}")
+    _, reward, terminated, _, info = env.step(0)
+
+    assert terminated and bool(g.isdead), "a pattern is fatal, lives or not"
+    assert int(g.training_lives) == 3, "and it does not spend one"
+    assert info["training_events"]["lives_spent"] == 0
+    assert reward == pytest.approx(-RewardConfig().death_penalty), "charged once"
+    assert info["run_over"] is True
+
+    machine = env.machine
+    env.reset()
+    assert env.machine is not machine, "the run restarts rather than dying again"
+    assert (float(env.machine.globals.px), float(env.machine.globals.py)) == (64.0, 64.0)
+    env.close()
