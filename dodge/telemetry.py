@@ -35,9 +35,8 @@ class EventCount:
 @dataclass
 class DashboardSnapshot:
     status: str = "starting"
-    # Placeholder only: the session overwrites this from the running
-    # policy name. Kept a literal so this module stays free of torch.
-    model_name: str = "velocity-flow"
+    # Empty until a session explicitly starts or loads a model.
+    model_name: str = ""
     update: int = 0
     seed: int = 42
     steps_per_second: float = 0.0

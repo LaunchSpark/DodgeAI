@@ -38,13 +38,41 @@ def _wait_for(predicate, timeout=30):
 def test_model_list_only_contains_ppo_checkpoints(tmp_path):
     (tmp_path / "one.zip").write_bytes(b"placeholder")
     (tmp_path / "old.demo.json").write_text("{}", encoding="utf-8")
+    library = tmp_path / "experiments" / "v2"
+    library.mkdir(parents=True)
+    (library / "vector-flow-v2.zip").write_bytes(b"placeholder")
+    internal = tmp_path / "watch"
+    internal.mkdir()
+    (internal / "temporary.zip").write_bytes(b"placeholder")
     session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
-    assert session.available_models() == [ModelEntry("one", tmp_path / "one.zip", "PPO")]
+    assert {entry.name for entry in session.available_models()} == {
+        "one", "vector-flow-v2"
+    }
 
 
 def test_training_enables_powerups_by_default(tmp_path):
     session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
     assert session.env_kwargs["powerups"] is True
+
+
+def test_session_can_wait_for_an_explicit_model_selection(tmp_path, monkeypatch):
+    session = PPOTrainingSession(model_dir=tmp_path, architecture=None,
+                                 autostart=True, device="cpu")
+    assert session.worker is None
+    assert session.model is None
+    assert session.data.status == "idle"
+    assert session.data.model_name == ""
+
+    checkpoint = tmp_path / "vector-flow-v2.zip"
+    checkpoint.write_bytes(b"checkpoint")
+    started = []
+    monkeypatch.setattr(session, "start", lambda: started.append(True))
+
+    session.load_model(ModelEntry("vector-flow-v2", checkpoint, "PPO"))
+
+    assert started == [True]
+    assert session.pending_load == checkpoint
+    assert session.data.model_name == "vector-flow-v2"
 
 
 def test_dashboard_ppo_reports_each_learning_minibatch():

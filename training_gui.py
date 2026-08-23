@@ -16,7 +16,7 @@ import pygame
 
 from dodge import rewards
 from dodge.rewards import SLIDERS as REWARD_SLIDERS
-from dodge.policies import ARCHITECTURES, DEFAULT_ARCHITECTURE
+from dodge.policies import ARCHITECTURES
 from dodge.telemetry import PROGRESS_ROWS, sample_snapshot
 
 try:
@@ -29,6 +29,7 @@ except ImportError:  # The GUI remains usable before requirements are refreshed.
 # 60Hz redraw spent a whole core to show the same numbers three times over.
 DASHBOARD_FPS = 20
 SYSTEM_POLL_SECONDS = 1.0
+MODEL_DISCOVERY_SECONDS = 1.0
 
 WINDOW_SIZE = (1328, 760)
 MIN_WINDOW_SIZE = (1000, 650)
@@ -513,7 +514,7 @@ class DashboardRenderer:
 
         load_rect = pygame.Rect(modal.right - 130, modal.bottom - 52, 110, 36)
         cancel_rect = pygame.Rect(load_rect.x - 100, load_rect.y, 88, 36)
-        can_load = bool(entries) and 0 <= selected_index < len(entries)
+        can_load = selected_index is not None and 0 <= selected_index < len(entries)
         pygame.draw.rect(surface, GREEN if can_load else GRID, load_rect, border_radius=5)
         self._text(surface, self.font_body_bold, "Load", (26, 40, 25) if can_load else MUTED,
                    load_rect.center, "center")
@@ -547,7 +548,7 @@ class DashboardRenderer:
         self._card(surface, rect, "Learning Statistics")
         self._text(surface, self.font_title, "Learning Statistics", TEXT,
                    (rect.centerx, rect.y + 11), "midtop")
-        model_name = data.model_name
+        model_name = data.model_name or "None"
         if len(model_name) > 18:
             model_name = model_name[:15] + "..."
         rows = (
@@ -631,7 +632,8 @@ class DashboardRenderer:
 
     def _draw_events(self, surface, rect, data):
         self._card(surface, rect, "Achievements")
-        title = f"{data.model_name}'s Achievements"
+        title = (f"{data.model_name}'s Achievements"
+                 if data.model_name else "Achievements")
         title = self._fit_text(self.font_title, title, rect.w - 30)
         self._text(surface, self.font_title, title, TEXT,
                    (rect.centerx, rect.y + 11), "midtop")
@@ -764,10 +766,13 @@ class TrainingDashboard:
         self.toast = None
         self.toast_until = 0.0
         self.model_menu_open = False
-        self.model_name = DEFAULT_ARCHITECTURE
+        # A checkpoint name is an explicit user choice.  In particular, do not
+        # make the current architecture look like a selected/default model.
+        self.model_name = ""
         self.model_entries = []
-        self.selected_model = 0
+        self.selected_model = None
         self.model_offset = 0
+        self.model_discovery_at = 0.0
         self.model_regions = {}
         self.model_name_focused = False
         self.model_name_cursor = len(self.model_name)
@@ -781,6 +786,8 @@ class TrainingDashboard:
         self.game_regions = {}
         self.game_config = dict(GAME_DEFAULTS)
         self.dragging_slider = None
+        if getattr(self.session.data, "status", None) == "idle":
+            self._open_models()
 
     def _open_rewards(self):
         # Re-read on open so a hand-edited file is what the sliders show.
@@ -836,11 +843,43 @@ class TrainingDashboard:
         self.toast_until = time.monotonic() + 2.5
 
     def _open_models(self):
-        self.model_entries = self.session.available_models()
-        self.selected_model = 0
+        self.selected_model = None
         self.model_offset = 0
+        self._discover_models(force=True)
         self.model_menu_open = True
         self._focus_model_name(select_all=True)
+
+    def _discover_models(self, force=False):
+        """Refresh checkpoints without inventing a selection.
+
+        Checkpoints can be produced by another trainer or copied into the
+        models directory while this process is running. Keep an explicit
+        selection by path when possible, but never promote the first/newest
+        discovered file to a default selection.
+        """
+        now = time.monotonic()
+        if not force and now < self.model_discovery_at:
+            return
+        self.model_discovery_at = now + MODEL_DISCOVERY_SECONDS
+
+        selected_path = None
+        if self.selected_model is not None \
+                and 0 <= self.selected_model < len(self.model_entries):
+            selected_path = self.model_entries[self.selected_model].path
+
+        self.model_entries = self.session.available_models()
+        self.selected_model = next(
+            (index for index, entry in enumerate(self.model_entries)
+             if entry.path == selected_path),
+            None,
+        )
+        max_offset = max(0, len(self.model_entries) - 5)
+        self.model_offset = min(self.model_offset, max_offset)
+        if self.selected_model is not None:
+            self.model_offset = min(
+                max(self.model_offset, self.selected_model - 4),
+                self.selected_model,
+            )
 
     def _focus_model_name(self, select_all=False):
         self.model_name_focused = True
@@ -881,13 +920,17 @@ class TrainingDashboard:
             return
         self.model_entries = self.session.available_models()
         self.selected_model = next(
-            (index for index, entry in enumerate(self.model_entries) if entry.path == path), 0
+            (index for index, entry in enumerate(self.model_entries) if entry.path == path),
+            None,
         )
-        self.model_offset = max(0, self.selected_model - 4)
+        if self.selected_model is not None:
+            self.model_offset = max(0, self.selected_model - 4)
+        self.model_discovery_at = time.monotonic() + MODEL_DISCOVERY_SECONDS
         self._show_toast(f"Saved {path.name}")
 
     def _load_model(self):
-        if not self.model_entries or self.selected_model >= len(self.model_entries):
+        if self.selected_model is None \
+                or not 0 <= self.selected_model < len(self.model_entries):
             return
         entry = self.model_entries[self.selected_model]
         try:
@@ -1021,11 +1064,18 @@ class TrainingDashboard:
                 self.model_name_cursor = len(self.model_name)
         elif event.key == pygame.K_UP and self.model_entries:
             self._blur_model_name()
-            self.selected_model = max(0, self.selected_model - 1)
+            if self.selected_model is None:
+                self.selected_model = len(self.model_entries) - 1
+            else:
+                self.selected_model = max(0, self.selected_model - 1)
             self.model_offset = min(self.model_offset, self.selected_model)
         elif event.key == pygame.K_DOWN and self.model_entries:
             self._blur_model_name()
-            self.selected_model = min(len(self.model_entries) - 1, self.selected_model + 1)
+            if self.selected_model is None:
+                self.selected_model = 0
+            else:
+                self.selected_model = min(len(self.model_entries) - 1,
+                                          self.selected_model + 1)
             self.model_offset = max(self.model_offset, self.selected_model - 4)
 
     def draw(self):
@@ -1052,6 +1102,7 @@ class TrainingDashboard:
             if toast:
                 self.renderer._draw_toast(self.surface, toast)
         if self.model_menu_open:
+            self._discover_models()
             self.model_regions = self.renderer.draw_model_menu(
                 self.surface, self.model_name, self.model_entries,
                 self.selected_model, self.model_offset,
@@ -1101,10 +1152,11 @@ class TrainingDashboard:
                         max_offset = max(0, len(self.model_entries) - 5)
                         self.model_offset = max(0, min(max_offset,
                                                       self.model_offset - event.y))
-                        self.selected_model = max(
-                            self.model_offset,
-                            min(self.selected_model, self.model_offset + 4),
-                        )
+                        if self.selected_model is not None:
+                            self.selected_model = max(
+                                self.model_offset,
+                                min(self.selected_model, self.model_offset + 4),
+                            )
                     elif event.type == pygame.VIDEORESIZE:
                         size = (max(event.w, MIN_WINDOW_SIZE[0]),
                                 max(event.h, MIN_WINDOW_SIZE[1]))

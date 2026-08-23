@@ -109,10 +109,15 @@ rather than one where it starts high.
 
 ### VelocityFlow
 
-The default policy shape. `--architecture hybrid-cnn` or `mlp` selects the
-others:
+The GUI starts without a model and opens its Models panel. Load a discovered
+checkpoint, or explicitly ask it to create a new policy with `--architecture`:
 
     python training_gui.py --architecture hybrid-cnn
+
+The panel watches `artifacts/models` (including user-created subdirectories)
+for `.zip` checkpoints. Point it at a different model library when needed:
+
+    python training_gui.py --models-dir path/to/models
 
 Its checkpoints save, list and load through the dashboard's Models panel
 exactly like `hybrid-cnn`'s. Stable-Baselines3 records the policy class in the

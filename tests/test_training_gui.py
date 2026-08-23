@@ -55,6 +55,10 @@ def test_dashboard_renders_before_any_data_arrives():
     DashboardRenderer().render(surface, DashboardSnapshot())
 
 
+def test_empty_snapshot_has_no_default_model():
+    assert DashboardSnapshot().model_name == ""
+
+
 def test_training_bar_switches_to_blue_learning_progress():
     data = DashboardSnapshot(
         progress_phase="learning",
@@ -251,7 +255,7 @@ def test_closing_the_panel(tmp_path):
     pygame.quit()
 
 
-def test_model_name_field_is_focused_and_replaced_by_typing(tmp_path):
+def test_model_menu_starts_without_a_default_name_or_selection(tmp_path):
     from training_gui import TrainingDashboard
 
     dashboard = TrainingDashboard(_StubSession(tmp_path / "rewards.json"), hidden=True)
@@ -259,11 +263,81 @@ def test_model_name_field_is_focused_and_replaced_by_typing(tmp_path):
     dashboard.draw()
 
     assert dashboard.model_name_focused
-    assert dashboard.model_name_selected
+    assert dashboard.model_name == ""
+    assert not dashboard.model_name_selected
+    assert dashboard.selected_model is None
     dashboard._insert_model_text("patient-dodger")
     assert dashboard.model_name == "patient-dodger"
     assert dashboard.model_name_cursor == len("patient-dodger")
     pygame.quit()
+
+
+def test_model_menu_discovers_checkpoints_added_while_it_is_open(tmp_path):
+    from dodge.telemetry import ModelEntry
+    from training_gui import TrainingDashboard
+
+    class DiscoveringSession(_StubSession):
+        def __init__(self, reward_config_path):
+            super().__init__(reward_config_path)
+            self.entries = []
+
+        def available_models(self):
+            return list(self.entries)
+
+    session = DiscoveringSession(tmp_path / "rewards.json")
+    dashboard = TrainingDashboard(session, hidden=True)
+    dashboard._open_models()
+    assert dashboard.model_entries == []
+
+    path = tmp_path / "vector-flow-v2.zip"
+    session.entries.append(ModelEntry("vector-flow-v2", path, "PPO"))
+    dashboard.model_discovery_at = 0.0
+    dashboard.draw()
+
+    assert [entry.name for entry in dashboard.model_entries] == ["vector-flow-v2"]
+    assert dashboard.selected_model is None, "discovery must not choose a default"
+    pygame.quit()
+
+
+def test_idle_dashboard_opens_the_model_picker(tmp_path):
+    from training_gui import TrainingDashboard
+
+    session = _StubSession(tmp_path / "rewards.json")
+    session.data.status = "idle"
+    session.data.model_name = ""
+
+    dashboard = TrainingDashboard(session, hidden=True)
+
+    assert dashboard.model_menu_open
+    assert dashboard.selected_model is None
+    pygame.quit()
+
+
+def test_gui_command_line_has_no_default_architecture(tmp_path, monkeypatch):
+    import dodge.training
+    import training_gui
+
+    captured = {}
+
+    class DashboardStub:
+        def __init__(self, session):
+            captured["session"] = session
+
+        def run(self):
+            captured["ran"] = True
+
+    def session_stub(**kwargs):
+        captured["kwargs"] = kwargs
+        return object()
+
+    monkeypatch.setattr(dodge.training, "PPOTrainingSession", session_stub)
+    monkeypatch.setattr(training_gui, "TrainingDashboard", DashboardStub)
+    models = tmp_path / "my-models"
+
+    assert training_gui.main(["--models-dir", str(models)]) == 0
+    assert captured["kwargs"]["architecture"] is None
+    assert captured["kwargs"]["model_dir"] == models
+    assert captured["ran"]
 
 
 def test_model_name_field_supports_caret_editing_and_click_focus(tmp_path):

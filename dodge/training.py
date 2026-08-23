@@ -580,6 +580,8 @@ class PPOTrainingSession:
         return self.shutdown_event.is_set() or self.restart_event.is_set()
 
     def toggle_pause(self):
+        if self.model is None and not (self.worker and self.worker.is_alive()):
+            return
         if self.pause_event.is_set():
             self.pause_event.clear()
             with self.lock:
@@ -591,6 +593,8 @@ class PPOTrainingSession:
                 self.data.steps_per_second = 0.0
 
     def reset(self):
+        if self.architecture is None:
+            return
         self.pause_event.clear()
         with self.lock:
             self.pending_load = None
@@ -602,7 +606,15 @@ class PPOTrainingSession:
     def available_models(self):
         if not self.model_dir.exists():
             return []
-        entries = [ModelEntry(path.stem, path, "PPO") for path in self.model_dir.glob("*.zip")]
+        # User-organised subdirectories are valid model libraries. Runtime and
+        # Watch hold ephemeral implementation checkpoints and would otherwise
+        # flood the picker with internal snapshots.
+        internal = {"runtime", "watch", "recovery"}
+        paths = (
+            path for path in self.model_dir.rglob("*.zip")
+            if path.relative_to(self.model_dir).parts[0].lower() not in internal
+        )
+        entries = [ModelEntry(path.stem, path, "PPO") for path in paths]
         return sorted(entries, key=lambda entry: entry.path.stat().st_mtime, reverse=True)
 
     @staticmethod
@@ -631,7 +643,10 @@ class PPOTrainingSession:
             if self.data.status == "error":
                 raise ValueError(f"Training failed: {self.last_error}")
         if self.model is None:
-            raise ValueError("The PPO model is still starting")
+            message = ("No model selected" if self.architecture is None
+                       and self.pending_load is None
+                       else "The PPO model is still starting")
+            raise ValueError(message)
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         request = _SaveRequest(path=path.with_suffix(""), finished=threading.Event())
@@ -700,8 +715,10 @@ class PPOTrainingSession:
         with self.lock:
             self.env_kwargs = config
             self.pending_load = checkpoint
-            self.data.status = "reconfiguring"
-        self.restart_event.set()
+            idle = self.architecture is None and self.model is None
+            self.data.status = "idle" if idle else "reconfiguring"
+        if not idle:
+            self.restart_event.set()
         return True
 
     def watch_agent(self):
