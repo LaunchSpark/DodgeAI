@@ -488,6 +488,22 @@ the gap to two decisions helped but could not fix the shape of the problem,
 since differencing conflates everything in a region and two enemies crossing
 cannot keep separate velocities.
 
+**Incoming pattern telegraphs.** Patterns come in two shapes and only one of
+them used to be visible to the agent. A `tpe==0` pattern grows in place at the
+coordinates it will occupy, so its warning outline lands in the grid from the
+first frame. A `tpe==1` pattern slides in from outside the arena — and the cart
+grows `sh` from 0 to 2 before a rect moves at all, so it spends that whole
+telegraph parked off-screen where the grid cannot reach it. Measured: the player
+saw a warning line at the edge for 105 frames, 26 decisions, while the
+observation held an empty arena.
+
+The cart already computes what to draw. `r.warnings` is two segments just inside
+the edge that grow outward as `sh` rises, carrying both where the bar will enter
+and roughly how soon. Those segments are now painted as `HAZARD_WARNING`, with
+the rect's own velocity on the cells, for exactly as long as the cart draws them
+(`cp.timer < 125`) — the agent gets the cue the player gets, and not a frame
+more. The blind window is 105 frames down to one.
+
 A velocity raster has neither failure. It is exact, it is per entity, and it
 costs about 120us a step. Measured against what a frame difference can recover,
 in cells of error when extrapolated forward:

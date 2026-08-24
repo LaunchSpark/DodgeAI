@@ -138,3 +138,97 @@ def test_overlapping_cells_report_the_dangerous_entity(lua, expected):
     value = int(cell_grid(env.machine.globals)[16, 16])
     env.close()
     assert value == expected
+
+
+def test_an_incoming_pattern_telegraph_reaches_the_observation(game):
+    """A side-entering bar sits off-screen for its whole telegraph.
+
+    The cart grows `sh` from 0 to 2 before a rect starts moving, and a tpe==1
+    rect spawns outside the arena -- so _paint clamps it away and the agent saw
+    an empty arena for the 105 frames the warning was on screen. The warning
+    lines are drawn inside the arena edge, which is what has to be encoded.
+    """
+    from dodge.observe import HAZARD_WARNING
+
+    game.lua.execute("""
+        enemies={}
+        cp={tpe=1,timer=1,rects={{
+            x=32,y=131,w=64,h=24,sh=0.5,spd=0.7,dx=0,dy=-1,
+            warnings={{40,125,40,125},{88,125,88,125}}
+        }}}
+    """)
+
+    grid = cell_grid(game.globals)
+    warned = np.argwhere(grid == HAZARD_WARNING)
+
+    assert len(warned) > 0, "the telegraph is invisible to the agent"
+    assert {int(row) for row, _ in warned} == {31}, "125 // 4 -- the bottom row"
+    assert {int(col) for _, col in warned} == {10, 22}, "40 // 4 and 88 // 4"
+    assert not (grid == HAZARD_LETHAL).any(), "nothing lethal is on screen yet"
+
+
+def test_a_telegraph_carries_the_direction_it_will_arrive_from(game):
+    """Where is half the cue; which way it is coming is the other half."""
+    from dodge.observe import HAZARD_WARNING
+
+    game.lua.execute("""
+        enemies={}
+        spd=1 frz=1
+        cp={tpe=1,timer=1,rects={{
+            x=32,y=131,w=64,h=24,sh=0.5,spd=0.7,dx=0,dy=-1,
+            warnings={{40,125,88,125}}
+        }}}
+    """)
+
+    grid, vx, vy = cell_grid(game.globals, with_velocity=True)
+    cells = grid == HAZARD_WARNING
+
+    assert cells.any()
+    assert np.all(vy[cells] == pytest.approx(-0.7)), "sweeping upward"
+    assert np.all(vx[cells] == 0.0)
+
+
+def test_the_telegraph_stops_being_encoded_when_the_cart_stops_drawing_it(game):
+    """The cart draws warnings only while cp.timer < 125. The agent is given
+    what is on screen, for as long as it is on screen -- no more."""
+    from dodge.observe import HAZARD_WARNING
+
+    game.lua.execute("""
+        enemies={}
+        cp={tpe=1,timer=125,rects={{
+            x=32,y=131,w=64,h=24,sh=0.5,spd=0.7,dx=0,dy=-1,
+            warnings={{40,125,88,125}}
+        }}}
+    """)
+
+    grid = cell_grid(game.globals)
+
+    assert not (grid == HAZARD_WARNING).any()
+
+
+def test_a_real_side_entering_pattern_is_no_longer_a_blind_window(game):
+    """The regression, driven through the cart rather than a synthetic table.
+
+    Enemies are cleared each frame only so the idle player survives the ~420
+    frames it takes a pattern to appear.
+    """
+    from dodge.observe import HAZARD_WARNING
+
+    for _ in range(4000):
+        game.lua.execute("enemies={}")
+        game.step()
+        pattern = game.globals.cp
+        if pattern is None or int(pattern.tpe) != 1:
+            continue
+        rect = pattern.rects[1]
+        if float(rect.sh) >= 2 or float(pattern.timer) >= 125:
+            continue
+        warnings = getattr(rect, "warnings", None)
+        if warnings is None or len(warnings) == 0:
+            continue
+        assert not (0 <= float(rect.x) < 128 and 0 <= float(rect.y) < 128), \
+            "the setup under test: the rect itself is still off-screen"
+        assert (cell_grid(game.globals) == HAZARD_WARNING).any(), \
+            "a telegraph the player can see must reach the observation"
+        return
+    pytest.fail("no side-entering pattern reached its telegraph in 4000 frames")
