@@ -354,13 +354,28 @@ reports which device is actually in use, including that case:
 
     pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cu126
 
-Measured on a GTX 1070, four envs, `hybrid-cnn`, 512 samples per update:
+Measured on a GTX 1070 with the real training configuration — eight envs, 256
+rollout steps, 2,048 samples an update, `velocity-flow-v2`, timed at
+Stable-Baselines3's own rollout boundaries:
 
-| | Policy update | Full cycle (collect + learn) |
-| --- | --- | --- |
-| CPU | 7.20s | 7.06s |
-| GPU | 1.40s | **1.90s** |
-| | **5.1x** | **3.7x** |
+| | Collect | Learn | Full cycle | |
+| --- | --- | --- | --- | --- |
+| CPU | 2.85s | 18.28s | 21.12s | 97 steps/s |
+| GPU | 2.01s | 2.47s | **4.48s** | **457 steps/s** |
+| | 1.4x | **7.4x** | **4.7x** | |
+
+The collect column is the one worth reading twice. Collection is dominated by
+the PICO-8 simulation, which is a serial CPU interpreter and cannot move — but
+each step also runs one forward pass, and `velocity-flow-v2` is fully
+convolutional at 32x32, so that pass is expensive enough on a CPU that the GPU
+wins collection too despite paying a per-step transfer. The obvious worry, that
+shipping 8x3,076 floats across the bus each step would make collection slower
+on a GPU, is measurably wrong.
+
+An older table here reported 7.06s against 1.90s for `hybrid-cnn` at 512
+samples an update. Those numbers are superseded: different architecture,
+different buffer, and `velocity-flow-v2` cut its own update further with
+`n_epochs=4` and `target_kl`.
 
 `auto` only reaches for a GPU where it measurably helps. The MLP update is
 unchanged on a GPU (0.686s against 0.693s) because its layers are too small to
