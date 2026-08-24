@@ -454,15 +454,8 @@ def test_the_frame_cap_bounds_the_run_not_the_episode():
     env.close()
 
 
-def test_a_pattern_crush_kills_outright_however_many_lives_remain():
-    """Patterns call die() straight from collisioncheck(), not through collide().
-
-    That distinction is the whole reason the hook tracks which path it is on:
-    the player stays inside a pattern rectangle after it is hit, so absorbing
-    one would burn every life in consecutive frames without ever getting clear.
-    Calling die() directly reproduces exactly that entry -- outside collide(),
-    with lives in hand.
-    """
+def test_a_direct_death_outside_collision_remains_a_real_death():
+    """Training lives only absorb classified enemy and pattern collisions."""
     env = DodgeEnv(action_repeat=1, lives=3)
     env.reset(seed=31)
     env.machine.lua.execute("die()")
@@ -496,24 +489,32 @@ def test_negative_lives_are_rejected():
         DodgeEnv(lives=-1)
 
 
-def test_a_real_pattern_crush_ends_the_run_with_lives_in_hand():
-    """The integration the flag exists for, driven through the cart itself.
+def test_a_real_pattern_crush_spends_a_life_and_restarts_the_same_pattern():
+    """A pattern retry is an episode boundary inside the same cartridge run.
 
-    test_a_pattern_crush_kills_outright_however_many_lives_remain calls die()
-    directly, which pins the hook's logic but not the path a pattern actually
-    takes. Here the cart grows its own pattern to sh == 2 -- its "this kills
-    now" state -- and the player is stood in it. Enemies are cleared each frame
-    only so the idle player survives the ~500 frames a pattern needs to mature.
+    The cart grows its own pattern to sh == 2 and the player is stood in it.
+    Enemies are cleared each frame only so the idle player survives the ~500
+    frames a pattern needs to mature.
     """
     env = DodgeEnv(action_repeat=1, lives=3, patterns=True, max_episode_frames=None)
     env.reset(seed=5)
     g = env.machine.globals
 
     lethal = None
+    pattern_index = None
     for _ in range(4000):
         env.machine.lua.execute("enemies={}")
         env.step(0)
         if g.cp is not None:
+            if pattern_index is None:
+                get_pattern_index = env.machine.lua.eval("""
+                    function()
+                        for i, pattern in ipairs(patterns) do
+                            if pattern == cp then return i end
+                        end
+                    end
+                """)
+                pattern_index = int(get_pattern_index())
             for i in range(1, len(g.cp.rects) + 1):
                 r = g.cp.rects[i]
                 if float(r.sh) >= 2 and float(r.w) > 8 and float(r.h) > 8:
@@ -527,14 +528,20 @@ def test_a_real_pattern_crush_ends_the_run_with_lives_in_hand():
     env.machine.lua.execute(f"px={x + w / 2} py={y + h / 2}")
     _, reward, terminated, _, info = env.step(0)
 
-    assert terminated and bool(g.isdead), "a pattern is fatal, lives or not"
-    assert int(g.training_lives) == 3, "and it does not spend one"
-    assert info["training_events"]["lives_spent"] == 0
+    assert terminated and not bool(g.isdead)
+    assert int(g.training_lives) == 2
+    assert info["training_events"]["lives_spent"] == 1
     assert reward == pytest.approx(-RewardConfig().death_penalty), "charged once"
-    assert info["run_over"] is True
+    assert info["run_over"] is False
+    assert int(get_pattern_index()) == pattern_index, "the selected pattern changed"
+    assert float(g.cp.timer) <= 1.0, "the pattern did not restart from frame zero"
+    assert all(float(g.cp.rects[i].sh) < 2
+               for i in range(1, len(g.cp.rects) + 1)), \
+        "the old lethal pattern geometry survived the restart"
 
     machine = env.machine
-    env.reset()
-    assert env.machine is not machine, "the run restarts rather than dying again"
-    assert (float(env.machine.globals.px), float(env.machine.globals.py)) == (64.0, 64.0)
+    _, reset_info = env.reset()
+    assert env.machine is machine
+    assert reset_info["frames"] == 0
+    assert env.machine.globals.cp is not None
     env.close()

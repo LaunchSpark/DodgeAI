@@ -260,13 +260,14 @@ Also a slider in **Game Config**, and off by default. It exists to widen the
 range of states training sees, cheaply, without implementing random
 initialisation.
 
-With lives set, the first N enemy collisions delete the enemy as usual but
-leave the player standing. The agent's episode still ends at each one, charged
-the full `death_penalty` — the cartridge run is what survives, so the next
-episode opens on a mid-game arena instead of the spawn point. Measured over 40
-episodes at `--lives 3`, 30 of them started somewhere between frame 145 and
-frame 553 of a run already in progress; at the default they all start at frame
-zero.
+With lives set, the first N lethal enemy or pattern collisions leave the player
+standing. Enemies are deleted as usual; a lethal pattern is restored to the
+state it had when selected so the same pattern begins again. The agent's episode
+still ends at each hit, charged the full `death_penalty` — the cartridge run is
+what survives, so the next episode opens on a mid-game arena instead of the
+spawn point. Measured over 40 episodes at `--lives 3`, 30 of them started
+somewhere between frame 145 and frame 553 of a run already in progress; at the
+default they all start at frame zero.
 
 Ending the episode is the part that matters. If the episode continued, the
 value function could see that a hit buys about 100 frames of survival income
@@ -291,11 +292,12 @@ Two consequences worth knowing about:
   score has ramped to — which is an implicit curriculum toward danger, but it
   does mean the critic is fit on a start distribution the real game never has.
 
-A pattern crush is always fatal, however many lives remain. Patterns call
-`die()` straight from `collisioncheck()` with the player still inside the
-rectangle, so absorbing one would burn every life in consecutive frames without
-the player ever getting clear; the hook only spends a life on deaths reached
-through `collide()`.
+A pattern crush spends a training life just like an enemy collision and ends the
+current RL episode without ending the cartridge run. Before the next episode
+resumes, the active pattern is restored to the exact state it had when selected,
+including randomized geometry and pattern-controlled spawn points. This removes
+the lethal shape immediately and retries the same pattern without advancing the
+cartridge RNG.
 
 Watch Agent never inherits the setting. A policy that gets three free hits is
 not the one being shipped, so the watch window always shows real deaths.

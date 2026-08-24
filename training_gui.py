@@ -85,8 +85,8 @@ GAME_SLIDERS = (
     GameSliderSpec("difficulty", "Difficulty", 1, 3),
     GameSliderSpec("spawn_rate_percent", "Spawn rate", 50, 150, 5),
     GameSliderSpec("action_repeat", "Decision interval", 1, 8),
-    # Training only: the first N enemy collisions end the episode without
-    # ending the cartridge run, so the next episode starts mid-game.
+    # Training only: the first N lethal collisions end the episode without
+    # ending the cartridge run; active patterns restart from their beginning.
     GameSliderSpec("lives", "Training lives", 0, 5),
 )
 
@@ -1286,9 +1286,9 @@ def main(argv=None):
     parser.add_argument("--spawn-rate-percent", type=int, default=100,
                         help="enemy and pattern cadence, from 50 to 150 percent")
     parser.add_argument("--lives", type=int, default=0,
-                        help="training only: enemy collisions that end the "
-                             "episode without ending the cartridge run, so the "
-                             "next episode starts from a mid-game state "
+                        help="training only: lethal collisions that end the "
+                             "episode without ending the cartridge run; "
+                             "patterns restart from their beginning "
                              "(default 0)")
     parser.add_argument("--screenshot", type=Path,
                         help="render one dashboard frame to this PNG and exit")

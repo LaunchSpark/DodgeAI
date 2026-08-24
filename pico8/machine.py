@@ -189,11 +189,12 @@ class Machine:
     def install_training_hooks(self, lives=0):
         """Count game events without modifying the generated cart source.
 
-        `lives` is a training-only device. With it set, the first `lives` enemy
-        collisions delete the enemy as usual but leave the player alive, so one
-        cartridge run supplies several RL episodes starting from mid-game
-        states. The environment still ends the episode at each one; this only
-        keeps the cart running underneath it.
+        `lives` is a training-only device. With it set, the first `lives` lethal
+        collisions leave the player alive, so one cartridge run supplies
+        several RL episodes starting from mid-game states. Enemy collisions
+        delete the enemy as usual; pattern collisions restart the same pattern
+        from its activation state. The environment still ends the episode at
+        each one; this only keeps the cart running underneath it.
         """
         if lives < 0:
             raise ValueError("lives cannot be negative")
@@ -211,6 +212,72 @@ class Machine:
             training_lives = 0
             local in_enemy_collide = false
 
+            -- Pattern definitions include functions and, for some patterns,
+            -- randomly generated geometry. Snapshot the selected definition
+            -- instead of calling initpatterns() on a retry: that restarts the
+            -- exact same pattern without advancing the cartridge RNG.
+            local function training_copy(value, seen)
+                if type(value) ~= "table" then
+                    return value
+                end
+                seen = seen or {}
+                if seen[value] ~= nil then
+                    return seen[value]
+                end
+                local copy = {}
+                seen[value] = copy
+                for key, item in pairs(value) do
+                    copy[training_copy(key, seen)] = training_copy(item, seen)
+                end
+                return copy
+            end
+
+            local active_pattern_index = nil
+            local active_pattern_template = nil
+            local active_pattern_spawns = nil
+            local active_pattern_fy = true
+
+            local function capture_active_pattern()
+                active_pattern_index = nil
+                for index = 1, #patterns do
+                    if patterns[index] == cp then
+                        active_pattern_index = index
+                        break
+                    end
+                end
+                active_pattern_template = training_copy(cp)
+                active_pattern_spawns = training_copy(spawns)
+                active_pattern_fy = fy
+            end
+
+            local cartridge_training_updatepatterns = updatepatterns
+            function updatepatterns()
+                local previous_pattern = cp
+                local result = cartridge_training_updatepatterns()
+                if previous_pattern == nil and cp ~= nil then
+                    capture_active_pattern()
+                elseif previous_pattern ~= nil and cp == nil then
+                    active_pattern_index = nil
+                    active_pattern_template = nil
+                    active_pattern_spawns = nil
+                end
+                return result
+            end
+
+            local function restart_active_pattern()
+                if cp == nil or active_pattern_template == nil then
+                    return false
+                end
+                local restarted = training_copy(active_pattern_template)
+                if active_pattern_index ~= nil then
+                    patterns[active_pattern_index] = restarted
+                end
+                cp = restarted
+                spawns = training_copy(active_pattern_spawns)
+                fy = active_pattern_fy
+                return true
+            end
+
             local original_collide = collide
             function collide(enemy)
                 if enemy.p == 2 then
@@ -226,19 +293,38 @@ class Machine:
                 return result
             end
 
+            -- A large rectangle can overlap the player more than once while
+            -- collisioncheck() finishes iterating its old table. Once its
+            -- pattern has restarted, ignore those remaining stale hits.
+            local in_collisioncheck = false
+            local pattern_restarted_this_check = false
+            local original_collisioncheck = collisioncheck
+            function collisioncheck()
+                in_collisioncheck = true
+                pattern_restarted_this_check = false
+                local result = original_collisioncheck()
+                in_collisioncheck = false
+                return result
+            end
+
             local original_die = die
             function die()
-                -- Only an enemy collision spends a life. A pattern crush calls
-                -- die() straight from collisioncheck() with the player still
-                -- inside the rectangle, so absorbing one would burn every life
-                -- in consecutive frames without the player ever getting away.
-                --
                 -- Returning early also skips checkhs(), which would otherwise
                 -- write a highscore into cartdata for a death that did not
                 -- happen, and the death music.
                 if in_enemy_collide and training_lives > 0 then
                     training_lives = training_lives - 1
                     training_events.lives_spent = training_events.lives_spent + 1
+                    return
+                end
+                if pattern_restarted_this_check then
+                    return
+                end
+                if in_collisioncheck and cp ~= nil and training_lives > 0
+                        and restart_active_pattern() then
+                    training_lives = training_lives - 1
+                    training_events.lives_spent = training_events.lives_spent + 1
+                    pattern_restarted_this_check = true
                     return
                 end
                 return original_die()
