@@ -51,6 +51,11 @@ PICKUP_SHRINK = 6
 HAZARD_WARNING = 7
 HAZARD_LETHAL = 8
 
+# How long the cart draws a side-entering pattern's warning lines
+# (dodge.lua:1240). The observation mirrors that window exactly: the agent is
+# given the cue for as long as it is on screen and no longer.
+WARNING_FRAMES = 125
+
 # Which entity survives when two want the same cell, ranked by how much it
 # matters to staying alive. Kept separate from the IDs above so the channel a
 # category occupies never moves: reordering the IDs would silently repoint every
@@ -112,6 +117,30 @@ def _paint(grid, ranks, x, y, width, height, value, velocity=None,
         planes[1][top:bottom + 1, left:right + 1][replace] = velocity[1]
 
 
+def _paint_warnings(grid, ranks, rect, velocity, planes):
+    """Paint the warning segments the cart draws for a rect still off-screen.
+
+    A side-entering rect spends its whole telegraph parked outside the arena --
+    the cart grows `sh` from 0 to 2 before a rect moves at all, and tpe==1
+    rects spawn beyond the edge -- so _paint clamps it away and the agent saw
+    an empty arena for the ~105 frames the player spent looking at a warning.
+    The segments sit just inside the edge and grow outward as `sh` rises, so
+    they carry where the bar will enter and roughly how soon.
+    """
+    warnings = getattr(rect, "warnings", None)
+    if warnings is None:
+        return
+    for index in range(1, len(warnings) + 1):
+        line = warnings[index]
+        x1, y1 = float(line[1]), float(line[2])
+        x2, y2 = float(line[3]), float(line[4])
+        # Axis-aligned, and zero-length at the start: a fresh telegraph is one
+        # dot that stretches toward the width of what is coming.
+        _paint(grid, ranks, min(x1, x2), min(y1, y2),
+               max(abs(x2 - x1), 1.0), max(abs(y2 - y1), 1.0),
+               HAZARD_WARNING, velocity, planes)
+
+
 def cell_grid(globals_, with_velocity=False):
     """The 32x32 categorical map, optionally with a velocity plane per axis.
 
@@ -147,6 +176,7 @@ def cell_grid(globals_, with_velocity=False):
     pattern = globals_.cp
     if pattern is not None:
         lethal_pattern = int(pattern.tpe) == 1
+        telegraphed = float(pattern.timer or 0) < WARNING_FRAMES
         rects = pattern.rects
         for index in range(1, len(rects) + 1):
             rect = rects[index]
@@ -160,6 +190,8 @@ def cell_grid(globals_, with_velocity=False):
                             float(rect.dy or 0) * rate * float(globals_.frz))
             _paint(grid, ranks, float(rect.x), float(rect.y),
                    float(rect.w), float(rect.h), value, velocity, planes)
+            if telegraphed:
+                _paint_warnings(grid, ranks, rect, velocity, planes)
     if with_velocity:
         return grid, planes[0], planes[1]
     return grid
