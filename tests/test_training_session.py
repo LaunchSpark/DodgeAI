@@ -712,7 +712,9 @@ def test_watch_runs_episodes_without_a_frame_cap(tmp_path, monkeypatch):
     model_path = tmp_path / "policy.zip"
     model_path.write_bytes(b"placeholder")
     monkeypatch.setattr(watch_ppo, "DodgeEnv", StubEnv)
-    monkeypatch.setattr(watch_ppo.PPO, "load", staticmethod(lambda *a, **k: StubModel()))
+    monkeypatch.setattr(
+        watch_ppo, "PPO",
+        type("FakePPO", (), {"load": staticmethod(lambda *a, **k: StubModel())}))
     monkeypatch.setattr(watch_ppo.pygame.event, "get", lambda: [])
     monkeypatch.setattr(watch_ppo.pygame.display, "set_caption", lambda title: None)
     monkeypatch.setattr(sys, "argv",
@@ -1598,8 +1600,15 @@ def test_the_watcher_adopts_a_newer_snapshot(tmp_path):
         pass
 
     loaded = []
-    real = watch_ppo.PPO.load
-    watch_ppo.PPO.load = staticmethod(lambda path, device: loaded.append(path) or "new")
+
+    class FakePPO:
+        @staticmethod
+        def load(path, device):
+            loaded.append(path)
+            return "new"
+
+    real = watch_ppo.PPO
+    watch_ppo.PPO = FakePPO
     try:
         (tmp_path / snapshot_name(9)).write_bytes(b"checkpoint")
         model, update, error = watch_ppo.reload_if_newer(Old(), tmp_path, 4)
@@ -1627,12 +1636,14 @@ def test_a_broken_snapshot_leaves_the_watcher_on_its_model(tmp_path):
         pass
 
     old = Old()
-    real = watch_ppo.PPO.load
 
-    def explode(path, device):
-        raise ValueError("bad zip")
+    class FakePPO:
+        @staticmethod
+        def load(path, device):
+            raise ValueError("bad zip")
 
-    watch_ppo.PPO.load = staticmethod(explode)
+    real = watch_ppo.PPO
+    watch_ppo.PPO = FakePPO
     try:
         (tmp_path / snapshot_name(9)).write_bytes(b"garbage")
         model, update, error = watch_ppo.reload_if_newer(old, tmp_path, 4)
@@ -1640,7 +1651,7 @@ def test_a_broken_snapshot_leaves_the_watcher_on_its_model(tmp_path):
         assert update == 4, "and stay on its own update, so it retries later"
         assert "bad zip" in error
     finally:
-        watch_ppo.PPO.load = real
+        watch_ppo.PPO = real
 
 
 def test_no_live_directory_is_not_an_error(tmp_path):
@@ -1652,3 +1663,113 @@ def test_no_live_directory_is_not_an_error(tmp_path):
     old = Old()
     model, update, error = watch_ppo.reload_if_newer(old, None, 3)
     assert model is old and update == 3 and error is None
+
+
+def test_loading_applies_the_architectures_hyperparameters(tmp_path):
+    """The table only ever reached _new_model, and the Models panel is the only
+    way to pick an architecture -- so every real v2 run loaded a checkpoint and
+    silently kept whatever schedule it was seeded with. A live v2 run was found
+    at 10 epochs and batch 64: 320 optimizer steps an update against v2's 32.
+    """
+    from stable_baselines3.common.env_util import make_vec_env
+    from dodge.env import DodgeEnv
+    from dodge.training import hyperparameters, minibatch_size
+
+    stale = tmp_path / "stale-v2.zip"
+    env = make_vec_env(DodgeEnv, n_envs=1, env_kwargs={"max_episode_frames": 20})
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu",
+                                 architecture="velocity-flow-v2", n_envs=1,
+                                 rollout_steps=64)
+    seeded = session._new_model(env)
+    # Exactly the shape found on disk: v2's network, v1's schedule and worse.
+    seeded.n_epochs, seeded.batch_size = 10, 64
+    seeded.target_kl, seeded.vf_coef, seeded.ent_coef = None, 0.5, 0.0
+    seeded.save(stale)
+
+    loaded = session._load_model(stale, env)
+    env.close()
+
+    want = hyperparameters("velocity-flow-v2")
+    assert loaded.n_epochs == want["n_epochs"] == 4
+    assert loaded.target_kl == want["target_kl"] == 0.02
+    assert loaded.vf_coef == want["vf_coef"] == 1.0
+    assert loaded.batch_size == minibatch_size(1 * 64, "velocity-flow-v2")
+    assert loaded.ent_coef == want["ent_coef"]
+    assert loaded.gamma == want["gamma"]
+
+
+def test_a_loaded_checkpoint_logs_to_tensorboard(tmp_path):
+    """The v2 seed carried tensorboard_log=None, so 1,856 updates of real
+    training produced no log at all and every diagnosis had to guess."""
+    from stable_baselines3.common.env_util import make_vec_env
+    from dodge.env import DodgeEnv
+
+    path = tmp_path / "seed.zip"
+    env = make_vec_env(DodgeEnv, n_envs=1, env_kwargs={"max_episode_frames": 20})
+    session = PPOTrainingSession(model_dir=tmp_path, logs_dir=tmp_path / "tb",
+                                 autostart=False, device="cpu",
+                                 architecture="velocity-flow-v2", n_envs=1,
+                                 rollout_steps=64)
+    seeded = session._new_model(env)
+    seeded.tensorboard_log = None
+    seeded.save(path)
+
+    loaded = session._load_model(path, env)
+    env.close()
+
+    assert loaded.tensorboard_log == str(tmp_path / "tb")
+
+
+def test_a_seeded_checkpoint_is_born_with_its_architectures_schedule(tmp_path):
+    """new_policy wrote n_steps=64, batch_size=64 and no tensorboard log, and
+    those values then rode into every run that loaded the seed."""
+    from stable_baselines3.common.save_util import load_from_zip_file
+    from dodge.training import hyperparameters
+    from tools.new_policy import main
+
+    assert main(["velocity-flow-v2", "--models-dir", str(tmp_path)]) == 0
+    data, _, _ = load_from_zip_file(tmp_path / "velocity-flow-v2.zip", device="cpu")
+
+    want = hyperparameters("velocity-flow-v2")
+    assert data["n_epochs"] == want["n_epochs"]
+    assert data["gamma"] == want["gamma"]
+    assert data["target_kl"] == want["target_kl"]
+    assert data["vf_coef"] == want["vf_coef"]
+    assert data["ent_coef"] == want["ent_coef"]
+
+
+def test_the_cli_trainer_uses_the_architecture_table(tmp_path, monkeypatch):
+    """train_ppo.py hardcoded n_epochs=10, gamma=0.995 and called
+    minibatch_size without the architecture -- so --architecture
+    velocity-flow-v2 there gave v2's network on v1's schedule."""
+    import train_ppo
+    from dodge.training import hyperparameters, minibatch_size
+
+    captured = {}
+
+    class FakePPO:
+        def __init__(self, policy, env, **kwargs):
+            captured.update(kwargs)
+
+        def learn(self, *a, **k):
+            return self
+
+        def save(self, path):
+            pass
+
+    monkeypatch.setattr(train_ppo, "PPO", FakePPO)
+    monkeypatch.setattr(train_ppo, "make_vec_env",
+                        lambda *a, **k: type("E", (), {"close": lambda self: None})())
+
+    train_ppo.main([
+        "--architecture", "velocity-flow-v2", "--steps", "1", "--envs", "8",
+        "--rollout-steps", "256", "--models-dir", str(tmp_path),
+        "--logs-dir", str(tmp_path / "tb"),
+    ])
+
+    want = hyperparameters("velocity-flow-v2")
+    assert captured["n_epochs"] == want["n_epochs"] == 4
+    assert captured["gamma"] == want["gamma"] == 0.99
+    assert captured["target_kl"] == want["target_kl"] == 0.02
+    assert captured["vf_coef"] == want["vf_coef"] == 1.0
+    assert captured["batch_size"] == minibatch_size(8 * 256, "velocity-flow-v2") == 256

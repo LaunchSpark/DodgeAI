@@ -13,10 +13,10 @@ from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 from dodge.env import DodgeEnv
 from dodge.policies import (ARCHITECTURES, DEFAULT_ARCHITECTURE,
                             policy_class, policy_kwargs)
-from dodge.training import minibatch_size
+from dodge.training import hyperparameters, minibatch_size
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--steps", type=int, default=250_000)
     parser.add_argument("--device", default="auto",
@@ -41,7 +41,7 @@ def main():
     parser.add_argument("--models-dir", type=Path, default=Path("artifacts/models"))
     parser.add_argument("--logs-dir", type=Path, default=Path("artifacts/tensorboard"))
     parser.add_argument("--check-env", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     model_name = args.name or args.architecture
 
     difficulty = {"easy": 1, "normal": 2, "hard": 3}[args.difficulty]
@@ -69,17 +69,24 @@ def main():
         save_path=str(args.models_dir),
         name_prefix=model_name,
     )
+    settings = hyperparameters(args.architecture)
     model = PPO(
         policy_class(args.architecture),
         env,
         learning_rate=3e-4,
         n_steps=args.rollout_steps,
-        batch_size=minibatch_size(args.envs * args.rollout_steps),
-        n_epochs=10,
-        gamma=0.995,
+        # From the architecture's table, not hardcoded. These were fixed at
+        # v1's schedule, so --architecture velocity-flow-v2 here built v2's
+        # network and then trained it on ten epochs at half the minibatch.
+        batch_size=minibatch_size(args.envs * args.rollout_steps,
+                                  args.architecture),
+        n_epochs=settings["n_epochs"],
+        gamma=settings["gamma"],
+        vf_coef=settings["vf_coef"],
+        target_kl=settings["target_kl"],
         gae_lambda=0.95,
         clip_range=0.2,
-        ent_coef=0.01,
+        ent_coef=settings["ent_coef"],
         verbose=1,
         tensorboard_log=str(args.logs_dir),
         seed=args.seed,

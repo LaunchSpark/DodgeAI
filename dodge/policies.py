@@ -33,6 +33,14 @@ from .observe import (
 # window, carries a sixth of hybrid-cnn parameters, has no dense layer to die
 # in, and its internal state is a picture you can watch.
 ARCHITECTURES = ("velocity-flow", "velocity-flow-v2", "hybrid-cnn", "mlp")
+
+# Exact class names, not isinstance: v2 subclasses v1, so isinstance would
+# report every v2 checkpoint as a v1 one.
+EXTRACTOR_ARCHITECTURE = {
+    "VelocityFlowV2Extractor": "velocity-flow-v2",
+    "VelocityFlowExtractor": "velocity-flow",
+    "DodgeHybridExtractor": "hybrid-cnn",
+}
 DEFAULT_ARCHITECTURE = ARCHITECTURES[0]
 HYBRID_FEATURES_DIM = 160
 
@@ -294,13 +302,15 @@ def dead_unit_fraction(policy, observations):
 
 
 def architecture_name(model):
-    extractor = model.policy.features_extractor
-    # Exact names, not isinstance: v2 subclasses v1, so isinstance would report
-    # every v2 checkpoint as a v1 one.
-    if type(extractor).__name__ == "VelocityFlowV2Extractor":
-        return "velocity-flow-v2"
-    if type(extractor).__name__ == "VelocityFlowExtractor":
-        return "velocity-flow"
-    if isinstance(extractor, DodgeHybridExtractor):
-        return "hybrid-cnn"
-    return "mlp"
+    return EXTRACTOR_ARCHITECTURE.get(
+        type(model.policy.features_extractor).__name__, "mlp")
+
+
+def architecture_from_kwargs(policy_kwargs):
+    """The architecture a saved checkpoint describes, before it is built.
+
+    Loading needs this to decide which hyperparameters to impose, and it cannot
+    ask the model -- the model does not exist yet.
+    """
+    extractor = (policy_kwargs or {}).get("features_extractor_class")
+    return EXTRACTOR_ARCHITECTURE.get(getattr(extractor, "__name__", ""), "mlp")

@@ -23,6 +23,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
 from .env import DodgeEnv, validate_spawn_rate_percent
 from .policies import (ARCHITECTURES, COORDINATE_INPUTS, DEFAULT_ARCHITECTURE,
+                       architecture_from_kwargs,
                        HYBRID_INPUT_CHANNELS, architecture_name,
                        dead_unit_fraction, policy_class, policy_kwargs)
 from .telemetry import (DashboardSnapshot, EVENT_KEYS, LIFE_BANDS,
@@ -67,6 +68,7 @@ DEFAULT_HYPERPARAMETERS = {
     "n_epochs": 10,
     "vf_coef": 0.5,
     "target_kl": None,
+    "ent_coef": 0.01,
     "minibatches_per_epoch": MINIBATCHES_PER_EPOCH,
 }
 
@@ -605,7 +607,7 @@ class PPOTrainingSession:
             target_kl=settings["target_kl"],
             gae_lambda=0.95,
             clip_range=0.2,
-            ent_coef=0.01,
+            ent_coef=settings["ent_coef"],
             verbose=0,
             tensorboard_log=str(self.logs_dir),
             seed=self.seed,
@@ -620,7 +622,7 @@ class PPOTrainingSession:
         # channels or the derived senses has narrower first layers, and building
         # the policy around it raises a shape error rather than something
         # recoverable.
-        _, params, _ = load_from_zip_file(path, device=self.device)
+        data, params, _ = load_from_zip_file(path, device=self.device)
         if needs_input_migration(params):
             model = self._new_model(env, architecture="hybrid-cnn")
             return migrate_widened_inputs(params["policy"], model, path,
@@ -636,9 +638,28 @@ class PPOTrainingSession:
         # value multiplies it by the env count -- a model saved at 512 would
         # collect 2048 samples per update across four envs, quadrupling the
         # wait between learning steps.
+        # Every hyperparameter comes from the architecture's table, not from
+        # the checkpoint. The table used to reach only _new_model -- and the
+        # Models panel is the only way to select an architecture, so every real
+        # run loaded a checkpoint and silently kept whatever schedule it was
+        # seeded with. A live velocity-flow-v2 run was found at ten epochs and
+        # batch 64: 320 optimizer steps an update where the table says 32, with
+        # no entropy bonus and no tensorboard log.
+        architecture = architecture_from_kwargs(data.get("policy_kwargs"))
+        settings = hyperparameters(architecture)
         model = DashboardPPO.load(
             path, env=env, device=self.device,
-            custom_objects={"n_steps": self.rollout_steps},
+            custom_objects={
+                "n_steps": self.rollout_steps,
+                "batch_size": minibatch_size(self.n_envs * self.rollout_steps,
+                                             architecture),
+                "n_epochs": settings["n_epochs"],
+                "gamma": settings["gamma"],
+                "vf_coef": settings["vf_coef"],
+                "target_kl": settings["target_kl"],
+                "ent_coef": settings["ent_coef"],
+                "tensorboard_log": str(self.logs_dir),
+            },
         )
         model.set_learning_tracker(self._track_learning)
         model.set_post_update(self._on_post_update)

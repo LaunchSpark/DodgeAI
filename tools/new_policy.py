@@ -21,6 +21,7 @@ from stable_baselines3 import PPO
 
 from dodge.env import DodgeEnv
 from dodge.policies import ARCHITECTURES, architecture_name, policy_class, policy_kwargs
+from dodge.training import hyperparameters, minibatch_size
 
 
 def main(argv=None):
@@ -35,9 +36,19 @@ def main(argv=None):
     # A throwaway environment: only its observation and action spaces are
     # recorded, and the session rebinds the real ones when it loads this.
     env = DodgeEnv(max_episode_frames=20)
+    # Seeded with the architecture's own schedule. These used to be bare
+    # defaults, and because loading inherited whatever the checkpoint carried,
+    # a seed's throwaway numbers became the schedule of every run started from
+    # it. Loading now imposes the table too, but a checkpoint should not lie
+    # about what it is.
+    settings = hyperparameters(args.architecture)
     model = PPO(
         policy_class(args.architecture), env,
-        n_steps=64, batch_size=64, seed=args.seed, device="cpu",
+        n_steps=64, batch_size=minibatch_size(64, args.architecture),
+        n_epochs=settings["n_epochs"], gamma=settings["gamma"],
+        vf_coef=settings["vf_coef"], target_kl=settings["target_kl"],
+        ent_coef=settings["ent_coef"],
+        seed=args.seed, device="cpu",
         policy_kwargs=policy_kwargs(args.architecture),
     )
     env.close()
