@@ -34,9 +34,31 @@ need a game skip themselves.
 Arrows or WASD to move, X/V or Z/C to start another game after a death, Escape
 to quit.
 
+## Web dashboard
+
+Build the page once, then train from the browser:
+
+    cd web && pnpm install && pnpm run build && cd ..
+    python dashboard.py --architecture velocity-flow-v2 --envs 32
+
+It opens <http://127.0.0.1:8765>, with the same controls as the window below
+(pause, watch, game settings, reward weights, save and load), and three views:
+
+* **Training**: the run's metrics, and the worst quarter, mean and best quarter
+  of recent games at every update.
+* **Evaluation**: the paper's figures (survival curve, what ended each game by
+  window, deaths with and without a pattern, the deadliest patterns), from
+  recent training games, or from **Evaluate**, which freezes the live policy
+  and plays it on fixed seeds from 1,000,000 while training carries on.
+* **Death paths**: on request, records the last 120 frames of every game that
+  ends inside a pattern, for every pattern, and lets you replay each one.
+
+Every chart has a table view. For frontend work, run `pnpm run dev` in `web/`
+alongside `dashboard.py`; it proxies `/api` to the server.
+
 ## Training dashboard
 
-Start PPO training in the Dodge dashboard:
+Start PPO training in the Dodge dashboard window:
 
     python training_gui.py
 
