@@ -78,6 +78,79 @@ def upsample(features, size):
     return F.interpolate(features, size=size, mode="bilinear", align_corners=False)
 
 
+# avg_pool2d's CUDA kernels are written for arbitrary windows and strides, and
+# a 2x2 non-overlapping window is the case they are worst at: 5.2ms forward and
+# backward for the v2 stem at minibatch 512 on a GTX 1070. Viewing each 2x2
+# block as two trailing axes and averaging them is the same mean -- the four
+# values are summed and divided by four either way, in a different order --
+# and runs as a plain reduction, 3.1ms. On the CPU it is the other way round:
+# oneDNN's pooling is several times faster than the reduction, channels-last
+# especially, so the CPU keeps avg_pool2d.
+CUDA_VIEW_POOL = True
+
+
+def halve(features):
+    """2x2 average pooling, stride 2, as F.avg_pool2d(features, 2)."""
+    if CUDA_VIEW_POOL and features.is_cuda:
+        return block_mean(features)
+    return F.avg_pool2d(features, 2)
+
+
+def block_mean(features):
+    """F.avg_pool2d(features, 2) as a reduction over each 2x2 block."""
+    n, c, h, w = features.shape
+    return features.view(n, c, h // 2, 2, w // 2, 2).mean((3, 5))
+
+
+# A 3x3 convolution with dilation 2 and padding 2 only ever combines pixels of
+# the same parity: output (2i+p, 2j+q) reads inputs (2i+p+2a, 2j+q+2b). So it
+# is exactly four independent undilated 3x3 convolutions, padding 1, one per
+# parity sub-grid x[..., p::2, q::2], with the same weight and bias -- and the
+# zero padding matches too, since a sub-grid's out-of-range neighbour is the
+# full grid's out-of-range neighbour. Stacked into the batch they are one
+# ordinary convolution, which cuDNN has far better kernels for than dilated
+# ones: 10.9 -> 7.5ms forward and backward at minibatch 512 on a GTX 1070,
+# shuffles included. Each output sums the same nine products per channel, so
+# only the accumulation order changes. On the CPU oneDNN's dilated kernel is
+# the faster of the two, and the CPU keeps it.
+#
+# One consequence of handing cuDNN an ordinary convolution: it may autotune to
+# a Winograd-style kernel, which no dilated convolution can have, and those
+# return ~1e-9 noise where the exact answer is 0. That is rounding like any
+# other, except on LeakyReLU's kink: a freshly initialised policy has zero
+# biases and so exact-zero pre-activations wherever the arena is empty, and
+# which side of the kink they land on moves its first gradient by percent.
+# The old route's undilated layers were always exposed to the same thing;
+# tests/test_velocity_trunk.py explains how its gradient tests allow for it.
+#
+# Under DODGE_DETERMINISTIC_CUDNN=1 it is not a matter of luck: without
+# autotuning, cuDNN's heuristics give the split exactly such a kernel every
+# time, and the fresh policy's first gradient then misses the recorded one in
+# tests/test_policy_parity.py by ~6%. Whoever sets that variable is asking for
+# Stable-Baselines3's own behaviour, so it keeps the dilated convolution.
+CUDA_PARITY_DILATED_CONV = not DETERMINISTIC_CUDNN
+
+
+def dilated_conv(conv, features):
+    """conv(features), for a 3x3 nn.Conv2d with dilation 2 and padding 2."""
+    if CUDA_PARITY_DILATED_CONV and features.is_cuda:
+        return parity_conv(conv, features)
+    return F.conv2d(features, conv.weight, conv.bias, padding=2, dilation=2)
+
+
+def parity_conv(conv, features):
+    """The same convolution, as one undilated one over the parity sub-grids.
+
+    Needs an even height and width, so the four sub-grids are the same size.
+    """
+    n, c, h, w = features.shape
+    planes = (features.view(n, c, h // 2, 2, w // 2, 2)
+              .permute(0, 3, 5, 1, 2, 4).reshape(n * 4, c, h // 2, w // 2))
+    out = F.conv2d(planes, conv.weight, conv.bias, padding=1)
+    return (out.view(n, 2, 2, -1, h // 2, w // 2)
+            .permute(0, 3, 4, 1, 5, 2).reshape(n, -1, h, w))
+
+
 # At rollout batch sizes a CUDA forward is ~150 kernel launches whose launch
 # overhead, not the GPU, is nearly all of its cost: 4.8ms for a batch of 8,
 # with under 1ms of that on the GPU. Captured as a CUDA graph it is one launch.

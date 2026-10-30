@@ -235,6 +235,22 @@ class VelocityFlowExtractor(BaseFeaturesExtractor):
         return torch.cat((-danger, value), dim=1)
 
 
+class _DilatedConv2d(nn.Conv2d):
+    """nn.Conv2d(..., 3, padding=2, dilation=2), run by speed.dilated_conv.
+
+    A subclass rather than a wrapper so the parameters keep their place and
+    their names -- field_net.body.2.weight, as every checkpoint stores them --
+    and so the constructor draws its initialisation from the RNG exactly as
+    the plain nn.Conv2d did, which a seeded fresh policy depends on.
+    """
+
+    def __init__(self, in_channels, out_channels):
+        super().__init__(in_channels, out_channels, 3, padding=2, dilation=2)
+
+    def forward(self, features):
+        return speed.dilated_conv(self, features)
+
+
 class _HalfResolutionTrunk(nn.Module):
     """The v1 trunk with its three heavy convolutions at half resolution.
 
@@ -256,16 +272,18 @@ class _HalfResolutionTrunk(nn.Module):
             activation(),
             # Still dilated, and at half resolution its reach in arena terms
             # doubles: 11 cells of 8px rather than of 4px.
-            nn.Conv2d(64, 64, 3, padding=2, dilation=2),
+            _DilatedConv2d(64, 64),
             activation(),
             nn.Conv2d(64, TRUNK_CHANNELS, 3, padding=1),
             activation(),
         )
 
+    def half(self, grids):
+        """The trunk before it is interpolated back: (batch, 32, 16, 16)."""
+        return self.body(speed.halve(self.stem(grids)))
+
     def forward(self, grids):
-        stem = self.stem(grids)
-        body = self.body(F.avg_pool2d(stem, 2))
-        return speed.upsample(body, stem.shape[-2:])
+        return speed.upsample(self.half(grids), grids.shape[-2:])
 
 
 class VelocityFlowV2Extractor(VelocityFlowExtractor):
