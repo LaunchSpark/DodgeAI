@@ -199,11 +199,11 @@ class VelocityFlowExtractor(BaseFeaturesExtractor):
         _, grids = DodgeHybridExtractor.policy_inputs(observations)
         return self._field_from_trunk(self.field_net(speed.trunk_layout(grids)))
 
-    def forward(self, observations):
-        coordinates, grids = DodgeHybridExtractor.policy_inputs(observations)
-        trunk = self.field_net(speed.trunk_layout(grids))
-        field = self._field_from_trunk(trunk)
+    def _read_points(self, coordinates):
+        """Where each action's path is read, in pixels.
 
+        (batch, actions, samples, 2), in (x, y) order.
+        """
         # Player position, in pixels. The leading pair, not the trailing one:
         # the coordinate block is (px, py, dpx, dpy), and it used to be (px, py)
         # for each of two stacked frames, where the tail was the current
@@ -211,9 +211,16 @@ class VelocityFlowExtractor(BaseFeaturesExtractor):
         # velocity, which is nowhere near the player.
         position = coordinates[:, :2] * (ARENA_SIZE - 1)
         # (batch, actions, samples, 2)
-        points = position[:, None, None, :] + self.offsets[None]
+        return position[:, None, None, :] + self.offsets[None]
+
+    def forward(self, observations):
+        coordinates, grids = DodgeHybridExtractor.policy_inputs(observations)
+        trunk = self.field_net(speed.trunk_layout(grids))
+        field = self._field_from_trunk(trunk)
+
         # grid_sample wants normalised coordinates, and (x, y) order.
-        normalised = points / (GRID_SIZE * CELL_SIZE / 2.0) - 1.0
+        normalised = (self._read_points(coordinates)
+                      / (GRID_SIZE * CELL_SIZE / 2.0) - 1.0)
         batch = observations.shape[0]
         # Samples every slice at every point: (batch, slices, actions, samples).
         sampled = F.grid_sample(
@@ -259,6 +266,11 @@ class _HalfResolutionTrunk(nn.Module):
     field itself is unchanged in shape. Bilinear rather than nearest for the
     same reason the context branch is: a step at a block edge is not a fact
     about danger, and the controller samples across those edges.
+
+    That interpolation is what forward() returns, for field() and the watch
+    overlay. The extractor's own forward pass never builds it: everything it
+    reads from the 32x32 trunk is a fixed linear map of half(), and it applies
+    those maps to the 16x16 body directly (see VelocityFlowV2Extractor).
     """
 
     def __init__(self):
@@ -304,6 +316,7 @@ class VelocityFlowV2Extractor(VelocityFlowExtractor):
         self.half_resolution = half_resolution
         if half_resolution:
             self.field_net = _HalfResolutionTrunk()
+            self._register_trunk_maps()
         # 1x1, so the summary is a channel projection of each cell rather than
         # another receptive field -- the trunk has already done that work.
         self.value_pool = nn.Conv2d(TRUNK_CHANNELS, VALUE_SUMMARY_CHANNELS, 1)
@@ -325,6 +338,156 @@ class VelocityFlowV2Extractor(VelocityFlowExtractor):
         return self.value_net(
             torch.cat((pooled, self.value_summary(trunk), coordinates, senses),
                       dim=1))
+
+    # --- the half-resolution forward pass, without the 32x32 trunk --------
+    #
+    # With half_resolution the trunk is bilinear_upsample(body), body 16x16,
+    # and building it was most of what an update spent outside the
+    # convolutions: the upsample itself, both 32x32 1x1 heads, the adaptive
+    # pool and the grid_sample, forward and backward -- about half of a 56ms
+    # minibatch on a GTX 1070. Yet the forward pass reads that trunk in only
+    # four ways, and every one of them is linear in it:
+    #
+    # * its 4x4 adaptive average, for the context branch;
+    # * its mean, and value_pool's 4x4 average, for the critic;
+    # * the field head's 1x1 projection of it, at 54 points per sample.
+    #
+    # Upsampling, pooling and bilinear reading all act on each axis of each
+    # channel separately, so each of these is a small matrix per axis applied
+    # to the 16x16 body, and the 1x1 projections commute with all of them --
+    # every one of these maps has rows that sum to 1, so a bias passes through
+    # unchanged. The results are the same numbers, summed in a different
+    # order. tests/test_velocity_trunk.py holds them to a frozen copy of the
+    # route that built the trunk.
+    #
+    # field() still builds the 32x32 field. It is what the overlay draws, and
+    # it is not on the training path.
+
+    def _register_trunk_maps(self):
+        assert CONTEXT_GRID == VALUE_SUMMARY_GRID, \
+            "the context and the critic's summary share one pooled trunk"
+        half, full = GRID_SIZE // 2, GRID_SIZE
+        # Per axis: bilinear 16 -> 32 (as speed.upsample does it, so built
+        # from F.interpolate itself rather than from a formula that could
+        # disagree with it at the edges), 4 -> 32 likewise for the context,
+        # and adaptive average pooling 32 -> 4.
+        trunk_up = _axis_map(lambda x: F.interpolate(
+            x[..., None], size=(full, 1), mode="bilinear",
+            align_corners=False)[..., 0], half)
+        context_up = _axis_map(lambda x: F.interpolate(
+            x[..., None], size=(full, 1), mode="bilinear",
+            align_corners=False)[..., 0], CONTEXT_GRID)
+        pool = _axis_map(lambda x: F.adaptive_avg_pool1d(x, CONTEXT_GRID), full)
+        # The buffers below are not persistent: derived constants, so
+        # checkpoints neither carry nor expect them, and one saved before they
+        # existed loads as is.
+        #
+        # (16 -> 4): adaptive_avg_pool2d(upsample(body), 4) per axis. Not a
+        # plain 4x4 pool of the body: each 8-cell bin of the upsampled trunk
+        # reaches a quarter of a cell into its neighbour's half of the body.
+        # Stored as the 2-D map on the flattened 16x16, (16, 256), the
+        # Kronecker product of the per-axis one: four times the arithmetic of
+        # applying it an axis at a time, but one plain GEMM with no transposes
+        # either way through autograd -- 0.5ms forward and backward at
+        # minibatch 512 on a GTX 1070, against 1.6ms for the separable einsum.
+        axis_pool = pool @ trunk_up
+        self.register_buffer("trunk_pool", torch.kron(axis_pool, axis_pool).float(),
+                             persistent=False)
+        # (32 -> 16 + 4): a point's bilinear weights over the 32 cells of one
+        # axis, carried back to the body's 16 and the context's 4.
+        self.register_buffer("read_basis",
+                             torch.cat((trunk_up, context_up), dim=1).float(),
+                             persistent=False)
+        self.register_buffer("cell_index", torch.arange(full, dtype=torch.float32),
+                             persistent=False)
+
+    def _cell_weights(self, cells):
+        """grid_sample's bilinear weights, per axis, over the 32 cells.
+
+        (..., 2) points in cell units -> (..., 2, 32). A point in cell units is
+        where grid_sample puts a normalised coordinate g, for align_corners=
+        False: ((g + 1) * 32 - 1) / 2, which for the controller's pixel points
+        is simply pixels / CELL_SIZE - 0.5 -- cell i's centre is at i.
+
+        grid_sample, with border padding, clamps that into [0, 31] and weights
+        the cell below it by 1 - f and the one above by f. That is the hat
+        function max(0, 1 - |u - i|) over the cell indices i: 1 - f at the cell
+        below, f at the one above, zero at every other. At the far edge the
+        clamp puts the point on cell 31 with f = 0, so the cell above, which
+        does not exist, would carry no weight -- exactly grid_sample's
+        zero-weighted out-of-range corner. Written as arithmetic rather than
+        as floor and two index comparisons because the comparisons were the
+        slower: 240 -> 60us at batch 8 on the CPU.
+        """
+        cells = cells.clamp(0, GRID_SIZE - 1)
+        return (1 - (cells[..., None] - self.cell_index).abs()).clamp_min(0)
+
+    def _path_danger(self, body, context, coordinates):
+        """forward()'s danger, read without the field: (batch, actions).
+
+        Slice k is only ever read at the points sample k lands on, so the
+        field head is applied per slice at those points and nowhere else.
+        """
+        # Slice-major, (batch, samples, actions, 2): sample k's nine points
+        # are all read from slice k, so they batch against it. In cell units
+        # directly -- the same number as normalising them for grid_sample and
+        # having it unnormalise them, without the four kernels that round trip
+        # costs an eager forward.
+        cells = self._read_points(coordinates).transpose(1, 2) / CELL_SIZE - 0.5
+        # (batch, samples, actions, axis, 16 + 4); axis 0 is x, the column.
+        weights = self._cell_weights(cells) @ self.read_basis
+        half = GRID_SIZE // 2
+        body_x, body_y = weights[..., 0, :half], weights[..., 1, :half]
+        context_x, context_y = weights[..., 0, half:], weights[..., 1, half:]
+
+        # The field head is one 1x1 conv over cat(trunk, context): its trunk
+        # half projects the body before upsampling, and its context half the
+        # 4x4 context before upsampling, since both commute with a per-channel
+        # interpolation. Slice k is then read at sample k's points only -- the
+        # diagonal forward() takes from grid_sample's every-slice-every-point.
+        head = self.field_head.weight
+        body_field = F.conv2d(body, head[:, :TRUNK_CHANNELS])
+        context_field = F.conv2d(context, head[:, TRUNK_CHANNELS:])
+
+        def read(field, rows, columns):
+            # (b, k, a, h) @ (b, k, h, w): each point's weighted row, then its
+            # weighted column. A batched matmul, measured faster here than the
+            # equivalent three-operand einsum.
+            return ((rows @ field) * columns).sum(dim=-1)
+
+        # (batch, samples, actions)
+        paired = (read(body_field, body_y, body_x)
+                  + read(context_field, context_y, context_x)
+                  + self.field_head.bias[:, None])
+        return (paired * self.sample_weights[:, None]).sum(dim=1)
+
+    def forward(self, observations):
+        if not self.half_resolution:
+            return super().forward(observations)
+        coordinates, grids = DodgeHybridExtractor.policy_inputs(observations)
+        body = self.field_net.half(speed.trunk_layout(grids))
+        # adaptive_avg_pool2d(trunk, 4), for the context and the critic alike.
+        pooled = F.linear(body.flatten(2), self.trunk_pool).unflatten(
+            2, (CONTEXT_GRID, CONTEXT_GRID))
+        context = self.context_net(pooled)
+        danger = self._path_danger(body, context, coordinates)
+
+        senses = _sense_features(coordinates, grids)
+        # The trunk's mean is the mean of its sixteen equal 8x8 bins, and
+        # value_pool, being 1x1, commutes with pooling them.
+        value = self.value_net(torch.cat(
+            (pooled.mean(dim=(2, 3)), self.value_pool(pooled).flatten(1),
+             coordinates, senses), dim=1))
+        return torch.cat((-danger, value), dim=1)
+
+
+def _axis_map(operation, size):
+    """The matrix of a linear map along one axis, (out, size), in float64.
+
+    operation takes (1, channels, size) and returns (1, channels, out); fed
+    the identity, channel c comes back as the image of the c-th unit vector.
+    """
+    return operation(torch.eye(size, dtype=torch.float64)[None])[0].T
 
 
 class _FieldLogits(nn.Module):
