@@ -65,6 +65,74 @@ export interface DeathPathsState {
   label: string
 }
 
+/** One rectangle: x, y, width, height, lethal (0 or 1), in game pixels. */
+export type Rect = [number, number, number, number, number]
+
+export interface PatternSummary {
+  pid: number
+  type: "static" | "moving" | null
+  encounters: number
+  deaths: number
+  rate: number | null
+}
+
+export interface DeathPathsSummary {
+  run_id: string
+  games: number
+  patterns: PatternSummary[]
+}
+
+export interface DeathPathsResponse extends DeathPathsState {
+  data: DeathPathsSummary | null
+}
+
+export interface Appearance {
+  id: number
+  seed: number
+  pid: number
+  type: "static" | "moving" | null
+  start: number
+  end: number
+  outcome: "survived" | "died" | "unfinished"
+  cause: "rect" | "enemy" | null
+  kind: string | null
+  x: number[]
+  y: number[]
+  rects: Rect[]
+  death: null | {
+    frame: number
+    score: number
+    since: number | null
+    alive: number[]
+    killer: null | { personality: number; size: number; age: number | null; fyou_spawned: boolean | null }
+  }
+}
+
+export interface PatternView {
+  run_id: string
+  pid: number
+  layout: Rect[] | null
+  appearances: Appearance[]
+}
+
+export interface ReplaySample {
+  frame: number
+  st: 0 | 1 | 2
+  enemies: number
+  enemy_gap: number | null
+  rect_gap: number | null
+}
+
+export interface ReplayResponse {
+  fps: number
+  count: number
+  frames: string
+  samples: ReplaySample[]
+  matched: boolean
+  reason: string | null
+  appearance: Appearance
+}
+
 export interface TrainingStatus {
   learning_rate?: number
   gamma?: number
@@ -122,7 +190,10 @@ export async function post<T = unknown>(path: string, body: unknown = {}): Promi
 
 export async function get<T>(path: string): Promise<T> {
   const response = await fetch(`/api/${path}`)
-  if (!response.ok) throw new Error(response.statusText)
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}))
+    throw new Error(payload.detail ?? response.statusText)
+  }
   return (await response.json()) as T
 }
 
