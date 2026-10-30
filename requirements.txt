@@ -1,4 +1,3 @@
-lupa>=2.8
 pygame>=2.5
 Pillow>=10.0
 psutil>=5.9

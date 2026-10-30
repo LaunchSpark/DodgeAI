@@ -101,6 +101,9 @@ class _StubSession:
         # Mirrors PPOTrainingSession.model_dir: the checkpoint directory sits
         # beside the reward config in the same tmp_path fixture.
         self.model_dir = Path(reward_config_path).parent
+        # Mirrors PPOTrainingSession.game_config_path, so a test never writes
+        # the developer's own game-config.json.
+        self.game_config_path = self.model_dir / "game-config.json"
         # Mirrors PPOTrainingSession.env_kwargs, including the settings the
         # Game Config panel does not own -- the panel must not hand those back.
         self.env_kwargs = {
@@ -218,7 +221,7 @@ def test_game_config_applies_toggles_and_discrete_sliders(tmp_path):
         "normal_enemies": False,
         "kamikaze_enemies": False,
         "spawn_rate_percent": 150,
-        "action_repeat": 8,
+        "action_repeat": 5,
         "lives": 5,
     }]
     assert not dashboard.game_menu_open
@@ -828,3 +831,140 @@ def test_watch_click_only_toasts_the_waiting_case(tmp_path):
 
     assert dashboard.toast == "Waiting for current update…"
     pygame.quit()
+
+
+def test_applying_the_game_config_persists_it_for_the_next_session(tmp_path):
+    """The panel is per-user tuning, not a per-launch decision.
+
+    Before this, the settings lived only in the session's env kwargs, so the
+    next process started from the command line's defaults and quietly threw
+    away whatever curriculum had been dialled in.
+    """
+    from dodge import game_settings
+    from training_gui import TrainingDashboard
+
+    session = _StubSession(tmp_path / "rewards.json")
+    dashboard = TrainingDashboard(session, hidden=True)
+    dashboard._open_game_config()
+    dashboard.game_config["difficulty"] = 3
+    dashboard.game_config["lives"] = 2
+    dashboard.game_config["powerups"] = False
+    dashboard._apply_game_config()
+
+    saved = game_settings.load(session.game_config_path)
+    assert saved["difficulty"] == 3
+    assert saved["lives"] == 2
+    assert saved["powerups"] is False
+
+
+def test_a_rejected_game_config_is_not_persisted(tmp_path):
+    """The file records what training actually runs, not what was typed."""
+    from training_gui import TrainingDashboard
+
+    class RejectingSession(_StubSession):
+        def configure_game(self, **kwargs):
+            raise ValueError("Difficulty must be easy, normal, or hard")
+
+    session = RejectingSession(tmp_path / "rewards.json")
+    dashboard = TrainingDashboard(session, hidden=True)
+    dashboard._open_game_config()
+    dashboard.game_config["difficulty"] = 9
+    dashboard._apply_game_config()
+
+    assert not session.game_config_path.exists()
+    assert dashboard.game_menu_open, "the panel stays up to show the error"
+
+
+def test_the_panel_falls_back_to_the_file_not_the_shipped_defaults(tmp_path):
+    """A live session is the truth about what is running, and normally agrees
+    with the file because a launch is seeded from it. A session that cannot
+    report its game settings at all leaves the file as the best answer."""
+    from dodge import game_settings
+    from training_gui import TrainingDashboard
+
+    class SilentSession(_StubSession):
+        def __init__(self, path):
+            super().__init__(path)
+            self.env_kwargs = {}
+            self.game_config = None
+
+    session = SilentSession(tmp_path / "rewards.json")
+    game_settings.save({**game_settings.DEFAULTS, "difficulty": 2},
+                       session.game_config_path)
+    dashboard = TrainingDashboard(session, hidden=True)
+    dashboard._open_game_config()
+
+    assert dashboard.game_config["difficulty"] == 2
+
+
+def test_the_dashboard_launches_with_the_saved_game_config(tmp_path, monkeypatch):
+    from dodge import game_settings
+    import dodge.training
+    import training_gui
+
+    captured = {}
+
+    class DashboardStub:
+        def __init__(self, session):
+            pass
+
+        def run(self):
+            captured["ran"] = True
+
+    def session_stub(**kwargs):
+        captured["kwargs"] = kwargs
+        return object()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(dodge.training, "PPOTrainingSession", session_stub)
+    monkeypatch.setattr(training_gui, "TrainingDashboard", DashboardStub)
+    game_settings.save({**game_settings.DEFAULTS, "difficulty": 3, "lives": 2,
+                        "patterns": True, "spawn_rate_percent": 125,
+                        "action_repeat": 2},
+                       game_settings.CONFIG_PATH)
+
+    assert training_gui.main([]) == 0
+    assert captured["kwargs"]["difficulty"] == 3
+    assert captured["kwargs"]["lives"] == 2
+    assert captured["kwargs"]["patterns"] is True
+    assert captured["kwargs"]["spawn_rate_percent"] == 125
+    assert captured["kwargs"]["action_repeat"] == 2
+
+
+def test_an_explicit_flag_still_beats_the_saved_game_config(tmp_path, monkeypatch):
+    """The file is a remembered default, not a lock on the command line."""
+    from dodge import game_settings
+    import dodge.training
+    import training_gui
+
+    captured = {}
+
+    class DashboardStub:
+        def __init__(self, session):
+            pass
+
+        def run(self):
+            captured["ran"] = True
+
+    def session_stub(**kwargs):
+        captured["kwargs"] = kwargs
+        return object()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(dodge.training, "PPOTrainingSession", session_stub)
+    monkeypatch.setattr(training_gui, "TrainingDashboard", DashboardStub)
+    game_settings.save({**game_settings.DEFAULTS, "difficulty": 3,
+                        "patterns": True},
+                       game_settings.CONFIG_PATH)
+
+    assert training_gui.main(["--difficulty", "normal", "--no-patterns"]) == 0
+    assert captured["kwargs"]["difficulty"] == 2
+    assert captured["kwargs"]["patterns"] is False
+
+
+def test_the_panels_defaults_are_the_persisted_modules_defaults():
+    """One definition, so a shipped value cannot drift between the two."""
+    from dodge import game_settings
+    from training_gui import GAME_DEFAULTS
+
+    assert GAME_DEFAULTS == game_settings.DEFAULTS

@@ -1,17 +1,12 @@
 """Watch end to end, with the watcher process mocked and a real directory."""
 
-import faulthandler
 from pathlib import Path
 
 import pytest
 
 pytest.importorskip("stable_baselines3")
-pytest.importorskip("lupa.luajit21")
 
 from dodge.training import PPOTrainingSession, newest_snapshot, snapshot_name
-
-pytestmark = pytest.mark.skipif(not Path("dodge.p8.png").exists(),
-                                reason="dodge.p8.png not present")
 
 
 class _Watcher:
@@ -20,15 +15,6 @@ class _Watcher:
 
     def poll(self):
         return None if self.alive else 0
-
-
-@pytest.fixture(autouse=True)
-def _quiet_luajit_seh():
-    was_enabled = faulthandler.is_enabled()
-    faulthandler.disable()
-    yield
-    if was_enabled:
-        faulthandler.enable()
 
 
 def test_watch_publishes_reloads_and_stops(tmp_path, monkeypatch):

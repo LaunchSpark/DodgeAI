@@ -7,7 +7,6 @@ import pytest
 import numpy as np
 
 pytest.importorskip("stable_baselines3")
-pytest.importorskip("lupa.luajit21")
 
 from dodge.telemetry import ModelEntry
 from dodge.observe import OBSERVATION_SIZE
@@ -15,7 +14,9 @@ from dodge.policies import ARCHITECTURES
 from dodge.training import DashboardPPO, PPOTrainingSession
 from watch_ppo import window_title
 
-pytestmark = pytest.mark.skipif(not Path("dodge.p8.png").exists(), reason="dodge.p8.png not present")
+from dodge.env import native_available
+
+pytestmark = pytest.mark.skipif(not native_available(), reason="dodge_native not installed")
 
 
 class _Alive:
@@ -188,7 +189,7 @@ def test_training_continues_after_autosave_boundary(tmp_path, monkeypatch):
         total_steps=128, autostart=False, device="cpu",
     )
     model = StubModel(session)
-    monkeypatch.setattr(training, "make_vec_env", lambda *args, **kwargs: env)
+    monkeypatch.setattr(training, "make_training_env", lambda *args, **kwargs: env)
     monkeypatch.setattr(training, "architecture_name", lambda value: "hybrid-cnn")
     monkeypatch.setattr(session, "_new_model", lambda value: model)
 
@@ -378,7 +379,7 @@ def test_watch_uses_unique_update_snapshot_and_random_seed(tmp_path, monkeypatch
 
     session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
     session.env_kwargs.update(
-        difficulty=3, patterns=True, powerups=False, action_repeat=7,
+        difficulty=3, patterns=True, powerups=False, action_repeat=5,
         normal_enemies=False, kamikaze_enemies=False,
         spawn_rate_percent=135,
     )
@@ -398,7 +399,7 @@ def test_watch_uses_unique_update_snapshot_and_random_seed(tmp_path, monkeypatch
     assert command[command.index("--current-update") + 1] == "37"
     assert command[command.index("--model-name") + 1] == architecture
     assert command[command.index("--difficulty") + 1] == "hard"
-    assert command[command.index("--action-repeat") + 1] == "7"
+    assert command[command.index("--action-repeat") + 1] == "5"
     assert "--patterns" in command
     assert "--no-powerups" in command
     assert "--no-normal-enemies" in command
@@ -423,7 +424,7 @@ def test_game_config_restarts_with_the_live_policy(tmp_path):
             path.write_bytes(b"checkpoint")
 
     assert session.configure_game(
-        difficulty=3, patterns=True, powerups=False, action_repeat=7
+        difficulty=3, patterns=True, powerups=False, action_repeat=5
     ) == "pending"
 
     # The commit is not synchronous with the click -- it lands once the
@@ -440,7 +441,7 @@ def test_game_config_restarts_with_the_live_policy(tmp_path):
         "normal_enemies": True,
         "kamikaze_enemies": True,
         "spawn_rate_percent": 100,
-        "action_repeat": 7,
+        "action_repeat": 5,
         "lives": 0,
         "max_episode_frames": None,
     }
@@ -511,7 +512,7 @@ def test_load_model_is_not_hijacked_by_a_stale_pending_config(tmp_path, monkeypa
     monkeypatch.setattr(session, "start", lambda: None)
 
     assert session.configure_game(
-        difficulty=3, patterns=True, powerups=False, action_repeat=7
+        difficulty=3, patterns=True, powerups=False, action_repeat=5
     ) == "pending"
     assert session.pending_config is not None, "the setup under test"
 
@@ -547,7 +548,7 @@ def test_reset_drops_a_pending_config(tmp_path):
     session.model = object()
 
     assert session.configure_game(
-        difficulty=3, patterns=True, powerups=False, action_repeat=7
+        difficulty=3, patterns=True, powerups=False, action_repeat=5
     ) == "pending"
     assert session.pending_config is not None, "the setup under test"
 
@@ -557,36 +558,31 @@ def test_reset_drops_a_pending_config(tmp_path):
     assert session.pending_load is None
 
 
-@pytest.mark.parametrize("n_envs,expected", [(1, "DummyVecEnv"), (4, "SubprocVecEnv")])
-def test_parallel_envs_use_separate_processes(tmp_path, monkeypatch, n_envs, expected):
-    """Extra envs are only faster if they are actually stepped in parallel.
-
-    DummyVecEnv would step each Dodge machine sequentially in this process,
-    which diversifies experience but adds no throughput.
-    """
+def test_the_session_trains_on_one_batch_with_its_game_settings(tmp_path, monkeypatch):
+    """Every env is a lane of one Rust batch, built with the session's mechanics."""
     from dodge import training
 
     captured = {}
-
-    def fake_make_vec_env(env_cls, **kwargs):
-        captured.update(kwargs)
-        raise RuntimeError("stop before spawning")
-
-    monkeypatch.setattr(training, "make_vec_env", fake_make_vec_env)
     session = training.PPOTrainingSession(
-        model_dir=tmp_path, logs_dir=tmp_path, n_envs=n_envs, autostart=False,
+        model_dir=tmp_path, logs_dir=tmp_path, n_envs=4, autostart=False,
         device="cpu", normal_enemies=False, kamikaze_enemies=False,
-        spawn_rate_percent=125,
+        spawn_rate_percent=125, lives=2,
     )
-    # make_vec_env is called before the loop's try block, so the sentinel
-    # exception escapes _run instead of being recorded as a session error.
-    with pytest.raises(RuntimeError, match="stop before spawning"):
-        session._run()
-    assert captured["n_envs"] == n_envs
-    assert captured["vec_env_cls"].__name__ == expected
+
+    def fake_make_training_env(n_envs, seed, env_kwargs):
+        captured.update(n_envs=n_envs, seed=seed, env_kwargs=env_kwargs)
+        # Stop the loop: the failure is recorded and _run returns.
+        session.shutdown_event.set()
+        raise RuntimeError("stop before building")
+
+    monkeypatch.setattr(training, "make_training_env", fake_make_training_env)
+    session._run()
+    assert captured["n_envs"] == 4
     assert captured["env_kwargs"]["normal_enemies"] is False
     assert captured["env_kwargs"]["kamikaze_enemies"] is False
     assert captured["env_kwargs"]["spawn_rate_percent"] == 125
+    assert captured["env_kwargs"]["lives"] == 2
+    assert session.data.status == "error"
 
 
 def _matching_vec_env(n_envs):
@@ -685,46 +681,62 @@ def test_rejects_a_non_positive_training_chunk(tmp_path):
                            autostart=False, device="cpu")
 
 
-def test_watch_runs_episodes_without_a_frame_cap(tmp_path, monkeypatch):
-    """Watching is not training, so an episode ends only when the agent dies."""
+def test_watch_builds_the_game_from_its_settings(tmp_path, monkeypatch):
+    """Watching plays the engine with the session's mechanics, frame by frame."""
     import watch_ppo
 
     built = {}
 
-    class StubEnv:
+    class StubEngine:
+        def reset_batch(self, seeds):
+            return {"pixels": np.zeros((1, 128, 128), np.uint8), "done": [False]}
+
+        def observe_velocity(self):
+            return {"observation": np.zeros((1, OBSERVATION_SIZE), np.float32)}
+
+        def step_pixels(self, actions):
+            return {"pixels": np.zeros((1, 128, 128), np.uint8), "done": [True]}
+
+        def reset_lanes(self, lanes, seeds):
+            return self.reset_batch(seeds)
+
+    class StubWindow:
         def __init__(self, **kwargs):
-            built.update(kwargs)
+            pass
 
-        def reset(self, seed=None):
-            return np.zeros(1, dtype=np.float32), {}
+        def show(self, pixels):
+            pass
 
-        def step(self, action):
-            return (np.zeros(1, dtype=np.float32), 0.0, True, False,
-                    {"survived_frames": 4})
+        def set_caption(self, caption):
+            pass
 
-        def close(self):
-            return None
+        def set_field(self, field):
+            pass
 
     class StubModel:
         def predict(self, observation, deterministic=True):
             return 0, None
 
+    def fake_make_engine(**kwargs):
+        built.update(kwargs)
+        return StubEngine()
+
     model_path = tmp_path / "policy.zip"
     model_path.write_bytes(b"placeholder")
-    monkeypatch.setattr(watch_ppo, "DodgeEnv", StubEnv)
+    monkeypatch.setattr(watch_ppo, "make_engine", fake_make_engine)
+    monkeypatch.setattr(watch_ppo, "GameWindow", StubWindow)
     monkeypatch.setattr(
         watch_ppo, "PPO",
         type("FakePPO", (), {"load": staticmethod(lambda *a, **k: StubModel())}))
     monkeypatch.setattr(watch_ppo.pygame.event, "get", lambda: [])
-    monkeypatch.setattr(watch_ppo.pygame.display, "set_caption", lambda title: None)
     monkeypatch.setattr(sys, "argv",
                         ["watch_ppo.py", str(model_path), "--frames", "4",
                          "--no-normal-enemies", "--no-kamikaze-enemies",
                          "--spawn-rate-percent", "125"])
 
     assert watch_ppo.main() == 0
-    assert "max_episode_frames" in built
-    assert built["max_episode_frames"] is None
+    assert built["step_frames"] == 1
+    assert built["pixels"] is True
     assert built["normal_enemies"] is False
     assert built["kamikaze_enemies"] is False
     assert built["spawn_rate_percent"] == 125
@@ -828,13 +840,12 @@ def test_every_architecture_saves_and_loads_through_the_session(tmp_path, archit
     hybrid-cnn's layer names, which a field policy simply does not have.
     """
     from stable_baselines3 import PPO
-    from stable_baselines3.common.env_util import make_vec_env
 
-    from dodge.env import DodgeEnv
+    from dodge.env import DodgeVecEnv
     from dodge.policies import architecture_name, policy_class, policy_kwargs
     from dodge.training import PPOTrainingSession
 
-    saved = PPO(policy_class(architecture), DodgeEnv(max_episode_frames=20),
+    saved = PPO(policy_class(architecture), DodgeVecEnv(n_envs=1, max_episode_frames=20),
                 n_steps=16, batch_size=8, seed=0, device="cpu",
                 policy_kwargs=policy_kwargs(architecture))
     saved.save(tmp_path / architecture)
@@ -844,8 +855,7 @@ def test_every_architecture_saves_and_loads_through_the_session(tmp_path, archit
                                  rollout_steps=16)
     assert architecture in [entry.name for entry in session.available_models()]
 
-    env = make_vec_env(DodgeEnv, n_envs=1,
-                       env_kwargs={"max_episode_frames": 20})
+    env = DodgeVecEnv(n_envs=1, max_episode_frames=20)
     try:
         loaded = session._load_model(tmp_path / f"{architecture}.zip", env)
         assert architecture_name(loaded) == architecture
@@ -882,9 +892,8 @@ def test_new_policy_tool_makes_an_architecture_selectable(tmp_path, architecture
     So an architecture with no checkpoint on disk is unreachable from the
     dashboard -- there is nothing to click. This writes the starting point.
     """
-    from stable_baselines3.common.env_util import make_vec_env
 
-    from dodge.env import DodgeEnv
+    from dodge.env import DodgeVecEnv
     from dodge.policies import architecture_name
     from dodge.training import PPOTrainingSession
     from tools.new_policy import main
@@ -896,7 +905,7 @@ def test_new_policy_tool_makes_an_architecture_selectable(tmp_path, architecture
                                  rollout_steps=16)
     assert architecture in [entry.name for entry in session.available_models()]
 
-    env = make_vec_env(DodgeEnv, n_envs=1, env_kwargs={"max_episode_frames": 20})
+    env = DodgeVecEnv(n_envs=1, max_episode_frames=20)
     try:
         loaded = session._load_model(tmp_path / f"{architecture}.zip", env)
         assert architecture_name(loaded) == architecture
@@ -1112,12 +1121,11 @@ def test_v2_splits_the_buffer_into_larger_minibatches():
 def test_completed_updates_survive_kl_early_stopping(tmp_path):
     """target_kl breaks the epoch loop early, so _n_updates // n_epochs
     under-counts. v2 sets it, and the number names every watch snapshot."""
-    from stable_baselines3.common.env_util import make_vec_env
-    from dodge.env import DodgeEnv
+    from dodge.env import DodgeVecEnv
     from dodge.training import DashboardPPO
     from dodge.policies import policy_class, policy_kwargs
 
-    env = make_vec_env(DodgeEnv, n_envs=1, env_kwargs={"max_episode_frames": 20})
+    env = DodgeVecEnv(n_envs=1, max_episode_frames=20)
     model = DashboardPPO(policy_class("mlp"), env, n_steps=16, batch_size=8,
                          n_epochs=10, target_kl=0.0, device="cpu", seed=0,
                          policy_kwargs=policy_kwargs("mlp"))
@@ -1202,12 +1210,11 @@ def test_completed_updates_survives_save_and_load(tmp_path):
 def test_the_post_update_hook_runs_after_the_optimizer_hook_is_off():
     """A save taken while the optimizer step is patched would capture a model
     mid-update, so the hook has to fire after train() has fully unwound."""
-    from stable_baselines3.common.env_util import make_vec_env
-    from dodge.env import DodgeEnv
+    from dodge.env import DodgeVecEnv
     from dodge.training import DashboardPPO
     from dodge.policies import policy_class, policy_kwargs
 
-    env = make_vec_env(DodgeEnv, n_envs=1, env_kwargs={"max_episode_frames": 20})
+    env = DodgeVecEnv(n_envs=1, max_episode_frames=20)
     seen = []
     model = DashboardPPO(policy_class("mlp"), env, n_steps=16, batch_size=8,
                          n_epochs=1, device="cpu", seed=0,
@@ -1227,12 +1234,11 @@ def test_a_failing_train_is_not_counted_and_does_not_reach_the_hook(monkeypatch)
     """An update that raised is not a completed update, and a save taken from
     the hook must never see a model whose train() blew up halfway."""
     from stable_baselines3 import PPO
-    from stable_baselines3.common.env_util import make_vec_env
-    from dodge.env import DodgeEnv
+    from dodge.env import DodgeVecEnv
     from dodge.training import DashboardPPO
     from dodge.policies import policy_class, policy_kwargs
 
-    env = make_vec_env(DodgeEnv, n_envs=1, env_kwargs={"max_episode_frames": 20})
+    env = DodgeVecEnv(n_envs=1, max_episode_frames=20)
     calls = []
     model = DashboardPPO(policy_class("mlp"), env, n_steps=16, batch_size=8,
                          n_epochs=1, device="cpu", seed=0,
@@ -1671,12 +1677,11 @@ def test_loading_applies_the_architectures_hyperparameters(tmp_path):
     silently kept whatever schedule it was seeded with. A live v2 run was found
     at 10 epochs and batch 64: 320 optimizer steps an update against v2's 32.
     """
-    from stable_baselines3.common.env_util import make_vec_env
-    from dodge.env import DodgeEnv
+    from dodge.env import DodgeVecEnv
     from dodge.training import hyperparameters, minibatch_size
 
     stale = tmp_path / "stale-v2.zip"
-    env = make_vec_env(DodgeEnv, n_envs=1, env_kwargs={"max_episode_frames": 20})
+    env = DodgeVecEnv(n_envs=1, max_episode_frames=20)
     session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu",
                                  architecture="velocity-flow-v2", n_envs=1,
                                  rollout_steps=64)
@@ -1701,11 +1706,10 @@ def test_loading_applies_the_architectures_hyperparameters(tmp_path):
 def test_a_loaded_checkpoint_logs_to_tensorboard(tmp_path):
     """The v2 seed carried tensorboard_log=None, so 1,856 updates of real
     training produced no log at all and every diagnosis had to guess."""
-    from stable_baselines3.common.env_util import make_vec_env
-    from dodge.env import DodgeEnv
+    from dodge.env import DodgeVecEnv
 
     path = tmp_path / "seed.zip"
-    env = make_vec_env(DodgeEnv, n_envs=1, env_kwargs={"max_episode_frames": 20})
+    env = DodgeVecEnv(n_envs=1, max_episode_frames=20)
     session = PPOTrainingSession(model_dir=tmp_path, logs_dir=tmp_path / "tb",
                                  autostart=False, device="cpu",
                                  architecture="velocity-flow-v2", n_envs=1,
@@ -1758,7 +1762,7 @@ def test_the_cli_trainer_uses_the_architecture_table(tmp_path, monkeypatch):
             pass
 
     monkeypatch.setattr(train_ppo, "PPO", FakePPO)
-    monkeypatch.setattr(train_ppo, "make_vec_env",
+    monkeypatch.setattr(train_ppo, "make_training_env",
                         lambda *a, **k: type("E", (), {"close": lambda self: None})())
 
     train_ppo.main([

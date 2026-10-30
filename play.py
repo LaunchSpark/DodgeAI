@@ -1,22 +1,26 @@
 #!/usr/bin/env python3
-"""Play the extracted PICO-8 cart locally.
+"""Play Dodge yourself on the native engine.
 
-    python play.py                 # normal
-    python play.py --scale 4       # smaller window
-    python play.py --seed 3        # fixed RNG seed
+    python play.py                     # normal difficulty, patterns and powerups
+    python play.py --difficulty hard   # the setting training uses
+    python play.py --scale 4           # smaller window
+    python play.py --seed 3            # fixed game seed
 
-Controls: arrows or WASD to move, Z/C for O, X/V for X, Escape to quit.
-The mouse also works -- the cart switches control mode on its own, exactly
-as the browser build does.
+Controls: arrows or WASD to move, X/V or Z/C to start the next game after a
+death, Escape to quit.
 """
 
 import argparse
+import secrets
 import sys
 
+import numpy as np
 import pygame
 
-from pico8.backends import PygameBackend
-from pico8.machine import boot
+from dodge.actions import ACTION_MASKS, DOWN, LEFT, RIGHT, UP
+from dodge.display import GameWindow
+from dodge.env import make_engine
+
 
 # PICO-8 button index -> keys that press it
 KEYMAP = {
@@ -28,6 +32,8 @@ KEYMAP = {
     5: (pygame.K_x, pygame.K_v),
 }
 
+RESTART = (1 << 4) | (1 << 5)
+
 
 def button_mask(pressed):
     mask = 0
@@ -37,19 +43,37 @@ def button_mask(pressed):
     return mask
 
 
+def action_for(mask):
+    """The movement action for a button mask; opposite directions cancel."""
+    move = mask & (LEFT | RIGHT | UP | DOWN)
+    if move & LEFT and move & RIGHT:
+        move &= ~(LEFT | RIGHT)
+    if move & UP and move & DOWN:
+        move &= ~(UP | DOWN)
+    return ACTION_MASKS.index(move)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scale", type=int, default=5, help="window scale (default 5)")
-    parser.add_argument("--seed", type=int, default=0, help="RNG seed (default 0)")
-    parser.add_argument("--cart", "--js", dest="cart", default="dodge.p8.png",
-                        help="path to the PICO-8 cartridge (default: dodge.p8.png)")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="seed of the first game (default: random)")
+    parser.add_argument("--difficulty", choices=("easy", "normal", "hard"), default="normal")
+    parser.add_argument("--patterns", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--powerups", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--frames", type=int, default=None,
-                         help="run this many frames of the main loop then exit "
-                              "(default: unlimited, i.e. run until closed)")
+                        help="run this many frames then exit "
+                             "(default: unlimited, i.e. run until closed)")
     args = parser.parse_args()
 
-    backend = PygameBackend(scale=args.scale)
-    machine = boot(js_path=args.cart, backend=backend, seed=args.seed)
+    window = GameWindow(scale=args.scale)
+    engine = make_engine(
+        step_frames=1, pixels=True, execution="serial",
+        difficulty={"easy": 1, "normal": 2, "hard": 3}[args.difficulty],
+        patterns=args.patterns, powerups=args.powerups,
+    )
+    seed = args.seed if args.seed is not None else secrets.randbelow(2**31 - 1)
+    frame = engine.reset_batch(np.array([seed], dtype=np.uint32))
     clock = pygame.time.Clock()
 
     running = True
@@ -61,15 +85,16 @@ def main():
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 running = False
 
-        pressed = pygame.key.get_pressed()
-        machine.set_buttons(button_mask(pressed))
-
-        mx, my = pygame.mouse.get_pos()
-        buttons = pygame.mouse.get_pressed()
-        machine.set_mouse(mx // args.scale, my // args.scale,
-                          (1 if buttons[0] else 0) | (2 if buttons[2] else 0))
-
-        machine.step()
+        mask = button_mask(pygame.key.get_pressed())
+        if frame["done"][0]:
+            # The last frame stays up until the player asks for another game.
+            if mask & RESTART:
+                seed = secrets.randbelow(2**31 - 1)
+                frame = engine.reset_lanes(np.array([0], dtype=np.uint32),
+                                           np.array([seed], dtype=np.uint32))
+        else:
+            frame = engine.step_pixels(np.array([action_for(mask)], dtype=np.uint8))
+        window.show(frame["pixels"][0])
         clock.tick(60)
 
         frames_run += 1

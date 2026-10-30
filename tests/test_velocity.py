@@ -14,8 +14,8 @@ from dodge.policies import policy_class, policy_kwargs, architecture_name
 
 
 def _model(seed=0):
-    from dodge.env import DodgeEnv
-    return PPO(policy_class("velocity-flow"), DodgeEnv(max_episode_frames=20),
+    from dodge.env import DodgeVecEnv
+    return PPO(policy_class("velocity-flow"), DodgeVecEnv(n_envs=1, max_episode_frames=20),
                n_steps=16, batch_size=8, n_epochs=1, seed=seed, device="cpu",
                policy_kwargs=policy_kwargs("velocity-flow"))
 
@@ -104,10 +104,10 @@ def test_the_horizon_outlasts_a_sweeping_pattern():
 
 def test_it_is_far_smaller_than_the_hybrid_network():
     """The point of dropping the flatten: 87% of hybrid-cnn was one dense layer."""
-    from dodge.env import DodgeEnv
+    from dodge.env import DodgeVecEnv
 
     field = sum(p.numel() for p in _model().policy.parameters())
-    hybrid = PPO("MlpPolicy", DodgeEnv(max_episode_frames=20), n_steps=16,
+    hybrid = PPO("MlpPolicy", DodgeVecEnv(n_envs=1, max_episode_frames=20), n_steps=16,
                  batch_size=8, seed=0, device="cpu",
                  policy_kwargs=policy_kwargs("hybrid-cnn"))
     hybrid_count = sum(p.numel() for p in hybrid.policy.parameters())
@@ -222,8 +222,8 @@ def test_global_context_is_smooth_not_tiled():
 
 
 def _model_v2(seed=0):
-    from dodge.env import DodgeEnv
-    return PPO(policy_class("velocity-flow-v2"), DodgeEnv(max_episode_frames=20),
+    from dodge.env import DodgeVecEnv
+    return PPO(policy_class("velocity-flow-v2"), DodgeVecEnv(n_envs=1, max_episode_frames=20),
                n_steps=16, batch_size=8, n_epochs=1, seed=seed, device="cpu",
                policy_kwargs=policy_kwargs("velocity-flow-v2"))
 

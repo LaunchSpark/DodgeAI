@@ -1,41 +1,38 @@
 # DodgeAI
 
-A toolchain for running the PICO-8 game `dodge` locally under Python, and for
-training a reinforcement-learning agent to play it.
+A toolchain for training a reinforcement-learning agent to play the PICO-8 game
+`dodge`, and for watching and playing it locally.
 
-This repository contains **no game content**. It ships the tooling: a cartridge
-extractor, a partial PICO-8 runtime that hosts the cart's real Lua under LuaJIT,
-a Gymnasium environment, and a training dashboard. You supply the cartridge.
+This repository contains **no game content**. The game runs on Taylor Turner's
+native Rust port of the cartridge, installed separately as the `dodge_native`
+Python module; this repository ships the environment, the policies, the
+training dashboard and the tools around them.
 
 ## Setup
 
-    pip install -r requirements.txt
+    pip install -r requirements-train.txt
 
-Download Artridge's public cartridge from the
-[Lexaloffle release](https://www.lexaloffle.com/bbs/?pid=66443#p) and place it
-at the repository root as `dodge.p8.png`. Everything else is generated from it.
+Then build the engine. It lives in its own repository and is installed as a
+Python extension with [maturin](https://www.maturin.rs/) and a Rust toolchain:
 
-Extract the cartridge sources:
+    git clone https://github.com/TaylorTurnerIT/dodge-ai-3 ../dodge-ai-3
+    cd ../dodge-ai-3 && git checkout velocity-flow   # until the PR is merged
+    pip install maturin
+    cd native/crates/dodge-python && maturin build --release
+    pip install ../../target/wheels/dodge_native-*.whl
 
-    python tools/extract_cart.py
-
-This writes `dodge.lua` (the game's Lua source) and `dodge.p8` (the full
-cartridge in PICO-8's text format). Both are generated artefacts and are
-git-ignored — re-running the extractor reproduces them byte-for-byte, so there
-is no need to keep them under version control.
-
-`dodge.p8.png`, `dodge.lua` and `dodge.p8` are all ignored by git. Keep it that way
-unless you have the rights to redistribute the cartridge you are using; see
-[Licensing](#licensing).
-
-Without those files the tooling still imports and its own tests still pass —
-the tests that need a cartridge skip themselves.
+The `velocity-flow` branch adds what this project needs on top of Turner's
+engine, all opt-in: the VelocityFlow observation computed natively, one-frame
+decisions, death telemetry, and the training options (lives, enemy toggles,
+spawn rate). Without the module the tooling still imports, and the tests that
+need a game skip themselves.
 
 ## Play it
 
-    python play.py
+    python play.py --difficulty hard
 
-Arrows or WASD to move, Z/C and X/V for the O and X buttons, Escape to quit.
+Arrows or WASD to move, X/V or Z/C to start another game after a death, Escape
+to quit.
 
 ## Training dashboard
 
@@ -47,7 +44,9 @@ Training runs on a background thread so the window stays responsive. Pause/Resum
 rollout collection, Rewards opens the reward weights, and Game Config stages difficulty,
 powerups, patterns, normal/kamikaze enemy switches, spawn rate, and decision-interval
 changes. Applying game settings checkpoints the
-live policy, rebuilds its environments, and resumes the same model. Models saves or loads real
+live policy, rebuilds its environments, resumes the same model, and saves the
+settings to [`game-config.json`](#game-settings) so the next launch starts where
+this one left off. Models saves or loads real
 Stable-Baselines3 `.zip` checkpoints, and Watch Agent opens the current policy in a second
 rendered game window with the active game configuration. Each watch launch saves an immutable snapshot, chooses a new random
 episode seed, and labels the game window with its exact PPO update and seed. The active
@@ -302,6 +301,34 @@ cartridge RNG.
 Watch Agent never inherits the setting. A policy that gets three free hits is
 not the one being shipped, so the watch window always shows real deaths.
 
+### Game settings
+
+**Game Config** applies its settings to the running session *and* writes them to
+`game-config.json`, so a launch resumes the curriculum the last one was tuned to
+instead of dropping back to the shipped defaults:
+
+    {
+      "difficulty": 1,
+      "patterns": false,
+      "powerups": true,
+      "normal_enemies": true,
+      "kamikaze_enemies": true,
+      "spawn_rate_percent": 100,
+      "action_repeat": 4,
+      "lives": 0
+    }
+
+Unlike `rewards.json`, the file is not read by the environments: applying a
+change rebuilds the training games directly, and the file is only consulted at
+startup. So an edit made while the dashboard is running takes effect on the next
+launch, not the next episode. A missing or malformed file falls back to the
+defaults, and out-of-range values are clamped rather than refused.
+
+The file is written only after the session accepts the settings, so it records
+what training actually ran. Command-line flags still win for the run that passes
+them — `--difficulty hard` overrides a saved `easy` without changing the file —
+which makes one-off experiments possible without disturbing the saved tuning.
+
 ### Reward weights
 
 The **Rewards** button opens sliders over the reward function. They write
@@ -454,35 +481,28 @@ collections, so an episode simply continues into the next rollout, and a death
 *inside* a rollout already contributes a true terminal through `episode_starts`.
 The boundary costs an advantage estimate, not an episode.
 
-Environments run in separate processes (`SubprocVecEnv`); stepping them in one
-process would diversify experience without adding throughput, since every Dodge
-environment hosts its own LuaJIT machine.
+Every environment is a lane of one Rust batch, stepped in a single call in this
+process. The tables above were measured on the earlier Lua runtime, one process
+per environment; their reasoning about buffers and rollouts still holds.
 
-### Headless simulation
+### Simulation speed
 
-Training never looks at a pixel, so a backend can declare `draws = False` and
-have the drawing builtins bound as Lua no-ops instead of Python callbacks. Lua
-still walks the whole draw path and still evaluates every argument — it has to,
-because `drawgame()` calls `spawntrail()`, which draws two random values per
-powerup enemy per frame from the same stream that decides what spawns next.
-Only the Lua-to-Python crossing goes away, about nineteen per frame.
+The Rust engine runs the game at 300,000-520,000 frames a second across a batch,
+against about 4,000 per process for the Lua runtime it replaced, so simulation
+is no longer what training waits on. Measured with velocity-flow-v2 at one frame
+per decision, per PPO update:
 
-| | Env steps/s |
-| --- | --- |
-| drawing live, near-miss counter on | 1,319 |
-| drawing null | 1,580 |
-| near-miss counter removed | 1,649 |
-| both | **2,253** |
+| Envs x steps | Collect | Update | Throughput |
+| --- | --- | --- | --- |
+| Lua, 8 x 256 | 3.1s | 1.9s | 547 steps/s |
+| Rust, 8 x 256 | 1.4s | 2.2s | 583 steps/s |
+| Rust, 32 x 256 | | | 829 steps/s |
+| Rust, 64 x 256 | 1.8s | 16.6s | 900 steps/s |
 
-Neither change pays much alone: remove one and the other becomes the wall, since
-both cost the same thing. Together they make the environment 1.7x faster.
-
-That is not 1.7x on training. With eight workers the collection phase is
-dominated by its sequential policy forward passes and the process round trips
-around them, not by simulation; measured at 8 x 64, the full cycle moved only
-from 1.74s to 1.69s. The environment headroom shows up if the env count rises,
-and in anything that steps a single environment — evaluation, or watching a
-policy play.
+Collection is about fourteen times faster per sample, and the gradient update is
+now nearly all of the cycle. At 128 environments the update's minibatch no
+longer fits the GPU comfortably and throughput collapses to about 100 steps/s,
+so 32-64 is the useful range. Note that the env count also sets the buffer size.
 
 ## PPO bots
 
@@ -592,13 +612,15 @@ and appear in the dashboard's Models selector.
 
 | Path | What | Tracked |
 | --- | --- | --- |
-| `pico8/` | partial PICO-8 runtime in Python, hosting the cart's Lua under LuaJIT | yes |
-| `dodge/` | Gymnasium environment, observations, PPO session, telemetry | yes |
-| `tools/` | the cartridge extractor | yes |
-| `play.py`, `training_gui.py`, `train_ppo.py`, `watch_ppo.py` | entry points | yes |
+| `dodge/` | batched environment, reference observation encoder, policies, PPO session, telemetry, game window | yes |
+| `tools/` | starting a fresh checkpoint | yes |
+| `play.py`, `training_gui.py`, `train_ppo.py`, `watch_ppo.py`, `gradient_bot.py` | entry points | yes |
 | `docs/superpowers/` | design specs and implementation plans | yes |
-| `dodge.p8.png` | Artridge's public PICO-8 cartridge — supply this yourself | no, ignored |
-| `dodge.lua`, `dodge.p8` | generated by the extractor | no, ignored |
+| `docs/paper/` | the evaluation paper; its scripts ran on the Lua runtime, removed after commit `0b83fcc` | yes |
+| `rewards.json`, `game-config.json` | per-user tuning written by the dashboard | no, ignored |
+
+The game engine itself, `dodge_native`, is installed from Taylor Turner's
+repository; see [Setup](#setup).
 
 ## Licensing
 
@@ -606,8 +628,8 @@ The code in this repository is original work; see [LICENSE](LICENSE).
 
 **The game is not.** `dodge` is a third-party PICO-8 cartridge, and this project
 deliberately does not distribute it — no cartridge content is tracked in git or
-present in its history. You bring your own `dodge.p8.png`, and everything derived
-from it stays local and git-ignored.
+present in its history. The game runs on Taylor Turner's Rust port, which is
+installed from its own repository under its own terms.
 
 If you intend to redistribute a cartridge, or to publish a build that embeds
 one, that is between you and the cartridge's author. Two things worth knowing

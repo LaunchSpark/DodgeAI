@@ -92,35 +92,27 @@ EMPTY_ENEMIES = np.zeros((0, 7), dtype=np.float64)
 EMPTY_HAZARDS = np.zeros((0, 4), dtype=np.float64)
 
 
-def read_state(machine):
-    """Pull the exact game state the field needs out of the Lua runtime."""
-    g = machine.globals
-    lua_enemies = g.enemies
-    rows = []
-    for index in range(1, len(lua_enemies) + 1):
-        enemy = lua_enemies[index]
-        rows.append((float(enemy.x), float(enemy.y),
-                     float(enemy.vx), float(enemy.vy),
-                     float(enemy.s), float(enemy.p), float(enemy.spd)))
+def read_state(state):
+    """The exact game state the field needs, from the engine's `lane_state`."""
+    rows = [(enemy["x"], enemy["y"], enemy["vx"], enemy["vy"],
+             enemy["s"], enemy["p"], enemy["spd"]) for enemy in state["enemies"]]
     enemies = np.array(rows, dtype=np.float64) if rows else EMPTY_ENEMIES
 
     hazards = EMPTY_HAZARDS
-    pattern = g.cp
+    pattern = state["cp"]
     if pattern is not None:
-        lethal_pattern = int(pattern.tpe) == 1
-        rects = pattern.rects
-        lethal = [(float(r.x), float(r.y), float(r.w), float(r.h))
-                  for r in (rects[i] for i in range(1, len(rects) + 1))
-                  if lethal_pattern or float(r.sh) == 2]
+        lethal_pattern = int(pattern["tpe"]) == 1
+        lethal = [(r["x"], r["y"], r["w"], r["h"]) for r in pattern["rects"]
+                  if lethal_pattern or r["sh"] == 2]
         if lethal:
             hazards = np.array(lethal, dtype=np.float64)
 
     return GameState(
-        px=float(g.px), py=float(g.py),
-        dpx=float(g.dpx), dpy=float(g.dpy),
-        size=float(g.size),
-        speed=float(g.spd), freeze=float(g.frz),
-        camp_timer=float(g.ftimer), camp_armed=bool(g.fy),
+        px=state["px"], py=state["py"],
+        dpx=state["dpx"], dpy=state["dpy"],
+        size=state["size"],
+        speed=state["spd"], freeze=state["frz"],
+        camp_timer=float(state["ftimer"]), camp_armed=bool(state["fy"]),
         enemies=enemies, hazards=hazards,
     )
 
@@ -334,5 +326,10 @@ class GradientBot:
         self.config = config
         self.action_repeat = action_repeat
 
-    def act(self, machine):
-        return choose_action(read_state(machine), self.config, self.action_repeat)
+    def act(self, state):
+        """The action for one game, given its engine `lane_state`."""
+        return choose_action(read_state(state), self.config, self.action_repeat)
+
+    def policy(self, observations, lane_state):
+        """Act for every lane of a batch; the shape `play_games` expects."""
+        return [self.act(lane_state(lane)) for lane in range(len(observations))]

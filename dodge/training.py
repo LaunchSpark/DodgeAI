@@ -16,12 +16,10 @@ import warnings
 import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
-from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.save_util import load_from_zip_file
 from stable_baselines3.common.utils import get_device
-from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
-from .env import DodgeEnv, validate_spawn_rate_percent
+from .env import MAX_ACTION_REPEAT, DodgeVecEnv, validate_spawn_rate_percent
 from .policies import (ARCHITECTURES, COORDINATE_INPUTS, DEFAULT_ARCHITECTURE,
                        architecture_from_kwargs,
                        HYBRID_INPUT_CHANNELS, architecture_name,
@@ -445,6 +443,11 @@ class DashboardCallback(BaseCallback):
             self.session.data.update = self.session._completed_updates(self.model)
 
 
+def make_training_env(n_envs, seed, env_kwargs):
+    """The VecEnv a session trains on: every env is a lane of one Rust batch."""
+    return DodgeVecEnv(n_envs=n_envs, seed=seed, **env_kwargs)
+
+
 class PPOTrainingSession:
     """Own a PPO model and train it without blocking the Pygame event loop."""
 
@@ -681,17 +684,16 @@ class PPOTrainingSession:
                 self.pending_load = None
                 env_kwargs = dict(self.env_kwargs)
             self._clear_snapshot("loading" if load_path else "starting")
-            env = make_vec_env(
-                DodgeEnv,
-                n_envs=self.n_envs,
-                seed=self.seed,
-                env_kwargs=env_kwargs,
-                # DummyVecEnv steps envs sequentially in this process, which
-                # gives varied experience but no CPU parallelism. Each Dodge env
-                # runs its own LuaJIT machine, so real processes are what make
-                # extra envs faster rather than merely more diverse.
-                vec_env_cls=SubprocVecEnv if self.n_envs > 1 else DummyVecEnv,
-            )
+            try:
+                env = make_training_env(self.n_envs, self.seed, env_kwargs)
+            except Exception as error:
+                self.last_error = error
+                with self.lock:
+                    self.data.status = "error"
+                self._fail_save_requests(error)
+                while not self.shutdown_event.is_set() and not self.restart_event.is_set():
+                    time.sleep(0.1)
+                continue
             try:
                 self.model = self._load_model(load_path, env) if load_path else self._new_model(env)
                 self.rollout_steps = self.model.n_steps
@@ -1047,8 +1049,8 @@ class PPOTrainingSession:
         spawn_rate_percent = validate_spawn_rate_percent(spawn_rate_percent)
         if difficulty not in (1, 2, 3):
             raise ValueError("Difficulty must be easy, normal, or hard")
-        if not 1 <= action_repeat <= 8:
-            raise ValueError("Decision interval must be between 1 and 8 frames")
+        if not 1 <= action_repeat <= MAX_ACTION_REPEAT:
+            raise ValueError(f"Decision interval must be between 1 and {MAX_ACTION_REPEAT} frames")
         if not 0 <= lives <= 5:
             raise ValueError("Training lives must be between 0 and 5")
         changes = {

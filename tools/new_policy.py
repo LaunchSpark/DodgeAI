@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from stable_baselines3 import PPO
 
-from dodge.env import DodgeEnv
+from dodge.env import DodgeVecEnv
 from dodge.policies import ARCHITECTURES, architecture_name, policy_class, policy_kwargs
 from dodge.training import hyperparameters, minibatch_size
 
@@ -35,7 +35,7 @@ def main(argv=None):
 
     # A throwaway environment: only its observation and action spaces are
     # recorded, and the session rebinds the real ones when it loads this.
-    env = DodgeEnv(max_episode_frames=20)
+    env = DodgeVecEnv(n_envs=1, max_episode_frames=20)
     # Seeded with the architecture's own schedule. These used to be bare
     # defaults, and because loading inherited whatever the checkpoint carried,
     # a seed's throwaway numbers became the schedule of every run started from

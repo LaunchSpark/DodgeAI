@@ -1,19 +1,17 @@
 """The analytic controller, and the forward model both bots rely on."""
 
-from pathlib import Path
-
 import numpy as np
 import pytest
-
-pytest.importorskip("lupa.luajit21")
 
 from dodge.actions import ACTION_MASKS, ACTION_NAMES
 from dodge.gradient import (CAMP_FRAMES, ControllerConfig, GameState,
                             EMPTY_HAZARDS, action_scores, camp_penalty,
                             predict_enemies, read_state, simulate_player)
 
-pytestmark = pytest.mark.skipif(not Path("dodge.p8.png").exists(),
-                                reason="dodge.p8.png not present")
+from dodge.env import native_available
+
+pytestmark = pytest.mark.skipif(not native_available(),
+                                reason="dodge_native not installed")
 
 
 def _state(enemies, camp_timer=0.0, px=64.0, py=64.0):
@@ -23,54 +21,53 @@ def _state(enemies, camp_timer=0.0, px=64.0, py=64.0):
                      hazards=EMPTY_HAZARDS)
 
 
-def test_player_model_matches_the_cart_exactly():
-    """Every score depends on this, so it is pinned against the real game."""
-    from dodge.env import DodgeEnv
-
-    env = DodgeEnv(max_episode_frames=None, action_repeat=1)
-    try:
-        for action in (2, 4, 8):
-            env.reset(seed=5)
-            for _ in range(20):
-                env.step(0)
-            state = read_state(env.machine)
-            predicted = simulate_player(state.px, state.py, state.dpx, state.dpy,
-                                        ACTION_MASKS[action], 12, held=12)
-            actual = []
-            for _ in range(12):
-                env.step(action)
-                actual.append((float(env.machine.globals.px),
-                               float(env.machine.globals.py)))
-            np.testing.assert_allclose(predicted, actual, atol=1e-9)
-    finally:
-        env.close()
+def _engine():
+    from dodge.env import make_engine
+    engine = make_engine(difficulty=1)
+    engine.reset_ml_batch(np.array([5], dtype=np.uint32))
+    return engine
 
 
-def test_enemy_model_matches_the_cart_exactly():
-    from dodge.env import DodgeEnv
+def _step(engine, action, frames=1):
+    for _ in range(frames):
+        engine.step_ml_batch(np.array([action], dtype=np.uint8))
+    return engine.lane_state(0)
 
-    env = DodgeEnv(max_episode_frames=None, action_repeat=1)
-    try:
-        env.reset(seed=5)
-        for _ in range(90):
-            env.step(0)
-        state = read_state(env.machine)
-        count = len(state.enemies)
-        path = simulate_player(state.px, state.py, state.dpx, state.dpy,
-                               ACTION_MASKS[2], 24, held=24)
-        xs, ys = predict_enemies(state, path)
 
-        for frame in range(24):
-            env.step(2)
-            live = env.machine.globals.enemies
-            if len(live) != count:
-                break            # one died; the model does not simulate that
-            for index in range(count):
-                enemy = live[index + 1]
-                assert xs[frame][index] == pytest.approx(float(enemy.x), abs=1e-9)
-                assert ys[frame][index] == pytest.approx(float(enemy.y), abs=1e-9)
-    finally:
-        env.close()
+def test_player_model_matches_the_engine():
+    """Every score depends on this, so it is pinned against the real game.
+
+    The engine runs PICO-8's 16.16 fixed point and the model runs floats, so
+    they agree to fixed-point resolution rather than bit for bit.
+    """
+    for action in (2, 4, 8):
+        engine = _engine()
+        state = read_state(_step(engine, 0, 20))
+        predicted = simulate_player(state.px, state.py, state.dpx, state.dpy,
+                                    ACTION_MASKS[action], 12, held=12)
+        actual = []
+        for _ in range(12):
+            lane = _step(engine, action)
+            actual.append((lane["px"], lane["py"]))
+        np.testing.assert_allclose(predicted, actual, atol=1e-3)
+
+
+def test_enemy_model_matches_the_engine():
+    engine = _engine()
+    state = read_state(_step(engine, 0, 90))
+    count = len(state.enemies)
+    assert count > 0
+    path = simulate_player(state.px, state.py, state.dpx, state.dpy,
+                           ACTION_MASKS[2], 24, held=24)
+    xs, ys = predict_enemies(state, path)
+
+    for frame in range(24):
+        live = _step(engine, 2)["enemies"]
+        if len(live) != count:
+            break            # one died; the model does not simulate that
+        for index in range(count):
+            assert xs[frame][index] == pytest.approx(live[index]["x"], abs=1e-2)
+            assert ys[frame][index] == pytest.approx(live[index]["y"], abs=1e-2)
 
 
 def test_the_button_is_released_after_the_decision_interval():

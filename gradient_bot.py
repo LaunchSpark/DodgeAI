@@ -18,38 +18,49 @@ from pathlib import Path
 
 import numpy as np
 
-from dodge.env import DodgeEnv
+from dodge.env import make_engine, play_games
 from dodge.gradient import ControllerConfig, GradientBot
 
 DEFAULT_EPISODES = 30
 FIRST_SEED = 90_000
 
 
-def play(policy, episodes, seed=FIRST_SEED, render=False, **env_kwargs):
-    """Run whole episodes and return each one's length in seconds.
+def play(policy, episodes, seed=FIRST_SEED, action_repeat=4, **game_settings):
+    """Play whole games, one per seed, and return each one's length in seconds.
 
-    ``policy`` is called with the machine and returns an action. Episodes are
+    ``policy(observations, lane_state)`` returns one action per game. Games are
     never truncated: the question is how long the player survives, and a cap
     would answer a different one.
     """
-    env = DodgeEnv(max_episode_frames=None,
-                   render_mode="human" if render else None,
-                   caption="Gradient Bot", **env_kwargs)
-    lengths, scores = [], []
-    try:
-        for episode in range(episodes):
-            env.reset(seed=seed + episode)
-            frames = 0
-            while True:
-                _, _, terminated, truncated, info = env.step(policy(env.machine))
-                frames = info["frames"]
-                if terminated or truncated:
-                    break
-            lengths.append(frames / 60.0)
-            scores.append(info["score"])
-    finally:
-        env.close()
-    return lengths, scores
+    results = play_games(policy, range(seed, seed + episodes),
+                         step_frames=action_repeat, **game_settings)
+    return ([result["frames"] / 60.0 for result in results],
+            [result["score"] for result in results])
+
+
+def watch(bot, seed, action_repeat, **game_settings):
+    """Play one game in a window and return its length in seconds."""
+    import pygame
+    from dodge.display import GameWindow
+
+    window = GameWindow(caption="Gradient Bot")
+    engine = make_engine(step_frames=1, pixels=True, execution="serial", **game_settings)
+    frame = engine.reset_batch(np.array([seed], dtype=np.uint32))
+    clock = pygame.time.Clock()
+    frames = held = action = 0
+    while not frame["done"][0]:
+        if any(event.type == pygame.QUIT for event in pygame.event.get()):
+            break
+        if held == 0:
+            action, held = bot.act(engine.lane_state(0)), action_repeat
+        frame = engine.step_pixels(np.array([action], dtype=np.uint8))
+        held -= 1
+        frames += 1
+        window.show(frame["pixels"][0])
+        clock.tick(60)
+    score = float(engine.observe_velocity()["score"][0])
+    pygame.quit()
+    return frames / 60.0, score
 
 
 def summarise(label, lengths, scores, baseline=None):
@@ -79,35 +90,37 @@ def main(argv=None):
     parser.add_argument("--horizon", type=int, default=ControllerConfig.horizon)
     args = parser.parse_args(argv)
 
-    env_kwargs = dict(difficulty=args.difficulty, powerups=args.powerups,
-                      patterns=args.patterns, action_repeat=args.action_repeat)
+    game_settings = dict(difficulty=args.difficulty, powerups=args.powerups,
+                         patterns=args.patterns)
     config = ControllerConfig(horizon=args.horizon)
     bot = GradientBot(config, action_repeat=args.action_repeat)
 
     if args.watch:
-        lengths, scores = play(bot.act, 1, args.seed, render=True, **env_kwargs)
-        print(f"survived {lengths[0]:.2f}s, score {scores[0]:.1f}")
+        length, score = watch(bot, args.seed, args.action_repeat, **game_settings)
+        print(f"survived {length:.2f}s, score {score:.1f}")
         return 0
 
     started = time.perf_counter()
     rng = np.random.default_rng(0)
-    random_lengths, random_scores = play(lambda machine: int(rng.integers(9)),
-                                         args.episodes, args.seed, **env_kwargs)
+    random_lengths, random_scores = play(
+        lambda observations, _: rng.integers(9, size=len(observations)),
+        args.episodes, args.seed, args.action_repeat, **game_settings)
     baseline = summarise("random", random_lengths, random_scores)
 
-    bot_lengths, bot_scores = play(bot.act, args.episodes, args.seed, **env_kwargs)
+    bot_lengths, bot_scores = play(bot.policy, args.episodes, args.seed,
+                                   args.action_repeat, **game_settings)
     summarise("gradient bot", bot_lengths, bot_scores, baseline)
 
     if args.compare:
         from stable_baselines3 import PPO
-        from dodge.observe import observe
         model = PPO.load(args.compare, device="cpu")
 
-        def act(machine):
-            action, _ = model.predict(observe(machine), deterministic=True)
-            return int(action)
+        def act(observations, _):
+            actions, _ = model.predict(observations, deterministic=True)
+            return actions
 
-        lengths, scores = play(act, args.episodes, args.seed, **env_kwargs)
+        lengths, scores = play(act, args.episodes, args.seed, args.action_repeat,
+                               **game_settings)
         summarise(args.compare.stem[:26], lengths, scores, baseline)
 
     print(f"\n{args.episodes} episodes each, seeds {args.seed}..{args.seed + args.episodes - 1}, "

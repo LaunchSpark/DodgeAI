@@ -1,30 +1,15 @@
-import faulthandler
-from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
-import pygame
 
-gymnasium = pytest.importorskip("gymnasium")
-pytest.importorskip("lupa.luajit21")
-
-from gymnasium.utils.env_checker import check_env
-
-from dodge.env import DodgeEnv, center_survival_scalar
+from dodge.env import (DodgeVecEnv, center_survival_scalar, make_engine,
+                       native_available, play_games)
+from dodge.observe import OBSERVATION_SIZE, observe
 from dodge.rewards import RewardConfig
-from dodge.observe import (CELL_COUNT, OBSERVATION_SIZE, PLAYER_VALUES,
-                           VELOCITY_SCALE)
 
-pytestmark = pytest.mark.skipif(not Path("dodge.p8.png").exists(), reason="dodge.p8.png not present")
-
-
-@pytest.fixture(scope="module", autouse=True)
-def _quiet_luajit_seh():
-    was_enabled = faulthandler.is_enabled()
-    faulthandler.disable()
-    yield
-    if was_enabled:
-        faulthandler.enable()
+pytestmark = pytest.mark.skipif(not native_available(),
+                                reason="dodge_native with observe_velocity not installed")
 
 
 @pytest.fixture(autouse=True)
@@ -41,182 +26,127 @@ def _default_reward_weights(tmp_path, monkeypatch):
     monkeypatch.setattr(rewards, "CONFIG_PATH", path)
 
 
-def test_environment_passes_gymnasium_checker():
-    env = DodgeEnv(max_episode_frames=40)
-    check_env(env, skip_render_check=True)
-    env.close()
+def make(**kwargs):
+    settings = dict(n_envs=4, seed=3, difficulty=3, patterns=True, powerups=True,
+                    action_repeat=1)
+    settings.update(kwargs)
+    return DodgeVecEnv(**settings)
 
 
-def test_frame_cap_truncates_the_episode():
-    env = DodgeEnv(action_repeat=2, max_episode_frames=6)
-    env.reset(seed=11)
-    truncated = False
-    for _ in range(3):
-        _, _, terminated, truncated, info = env.step(0)
-        if terminated:
-            break
-    assert truncated and info["frames"] == 6
-    env.close()
+def idle(env):
+    return np.zeros(env.num_envs, dtype=np.int64)
 
 
-def test_no_frame_cap_never_truncates():
-    """Watching a policy runs until the agent dies, however long that takes."""
-    env = DodgeEnv(action_repeat=2, max_episode_frames=None)
-    env.reset(seed=11)
-    for _ in range(400):
-        _, _, terminated, truncated, info = env.step(0)
-        assert not truncated
-        if terminated:
-            break
-    assert info["frames"] > 6, "should have run well past the usual training cap"
-    env.close()
+def test_reset_returns_one_observation_per_lane():
+    env = make()
+    observation = env.reset()
+    assert observation.shape == (4, OBSERVATION_SIZE)
+    assert observation.dtype == np.float32
+    assert np.all(np.abs(observation) <= 1.0)
+    # The player starts in the middle of the arena.
+    assert np.allclose(observation[:, 0], 64 / 127, atol=0.02)
+
+
+def test_alive_frame_pays_survival_credit():
+    env = make()
+    env.reset()
+    _, reward, done, info = env.step(idle(env))
+    assert not done.any()
+    # Centre of the arena, no score yet: exactly one frame of survival credit.
+    assert np.allclose(reward, RewardConfig().survival_per_frame)
+    assert all(lane["survived_frames"] == 1 for lane in info)
+
+
+def test_same_seed_and_actions_are_deterministic():
+    rng = np.random.default_rng(5)
+    actions = [rng.integers(0, 9, size=4) for _ in range(300)]
+
+    def run():
+        env = make(seed=11)
+        observations = [env.reset()]
+        for action in actions:
+            observations.append(env.step(action)[0])
+        return np.stack(observations)
+
+    np.testing.assert_array_equal(run(), run())
+
+
+def test_frame_cap_truncates_and_restarts_the_lane():
+    env = make(max_episode_frames=5)
+    env.reset()
+    for _ in range(4):
+        _, _, done, _ = env.step(idle(env))
+        assert not done.any()
+    observation, _, done, info = env.step(idle(env))
+    assert done.all()
+    assert all(lane["TimeLimit.truncated"] and lane["run_over"] for lane in info)
+    assert all(lane["episode"]["l"] == 5 for lane in info)
+    assert info[0]["terminal_observation"].shape == (OBSERVATION_SIZE,)
+    # The returned observation is the restarted game, not the terminal one.
+    assert np.allclose(observation[:, 0], 64 / 127, atol=0.02)
 
 
 def test_non_positive_frame_cap_is_rejected():
     with pytest.raises(ValueError):
-        DodgeEnv(max_episode_frames=0)
+        make(max_episode_frames=0)
 
 
-def test_enemy_controls_reach_the_cartridge_runtime():
-    env = DodgeEnv(
-        normal_enemies=False,
-        kamikaze_enemies=False,
-        spawn_rate_percent=125,
-        max_episode_frames=20,
-    )
-    env.reset(seed=11)
-    g = env.machine.globals
-    assert g.training_normal_enemies is False
-    assert g.training_kamikaze_enemies is False
-    assert g.training_spawn_rate == pytest.approx(1.25)
-    env.close()
+def test_death_terminates_with_the_death_penalty_and_names_the_cause():
+    env = make()
+    env.reset()
+    # Idling in the centre trips the anti-camping wave, which kills quickly.
+    for _ in range(2_000):
+        _, reward, done, info = env.step(idle(env))
+        if done.any():
+            lane = int(np.flatnonzero(done)[0])
+            assert info[lane]["run_over"]
+            assert not info[lane]["TimeLimit.truncated"]
+            assert reward[lane] == pytest.approx(-RewardConfig().death_penalty)
+            assert info[lane]["death"]["cause"] in {"normal", "kamikaze", "kamikaze_blast",
+                                                    "static_rect", "moving_rect"}
+            assert info[lane]["death"]["fyou_triggers"] >= 1
+            return
+    pytest.fail("no lane died while idling")
 
 
-def test_environment_step_returns_expected_contract():
-    env = DodgeEnv(action_repeat=2, max_episode_frames=20)
-    observation, info = env.reset(seed=11)
-    assert observation.shape == (OBSERVATION_SIZE,)
-    assert observation.dtype == np.float32
-    assert info["seed"] == 11
-
-    observation, reward, terminated, truncated, info = env.step(2)
-    assert observation.shape == (OBSERVATION_SIZE,)
-    assert isinstance(reward, float)
-    assert isinstance(terminated, bool)
-    assert isinstance(truncated, bool)
-    assert info["frames"] == 2
-    env.close()
-
-
-def test_the_observation_carries_velocity_not_history():
-    """One frame. Motion is given per cell rather than inferred from a stack.
-
-    Everything in this game moves under one 4px cell per decision, so a frame
-    difference usually showed nothing at all.
-    """
-    env = DodgeEnv(action_repeat=4, max_episode_frames=None, powerups=True)
-    observation, _ = env.reset(seed=11)
-    assert observation.shape == (OBSERVATION_SIZE,)
-
-    for _ in range(40):
-        observation, *_ = env.step(2)     # hold right
-    categories = observation[PLAYER_VALUES:PLAYER_VALUES + CELL_COUNT]
-    vx = observation[PLAYER_VALUES + CELL_COUNT:PLAYER_VALUES + 2 * CELL_COUNT]
-    occupied = categories > 0
-
-    assert occupied.any(), "the arena should have entities by now"
-    assert np.all(vx[~occupied] == 0.0), "empty cells carry no velocity"
-    env.close()
+def test_an_absorbed_hit_ends_the_episode_but_leaves_the_game_running():
+    env = make(lives=1, n_envs=8)
+    env.reset()
+    rng = np.random.default_rng(2)
+    for _ in range(5_000):
+        _, reward, done, info = env.step(rng.integers(0, 9, size=env.num_envs))
+        # Two enemies can land on the same frame, spending the life and then
+        # killing; look for a hit the game survived.
+        spent = [i for i, lane in enumerate(info)
+                 if lane["training_events"]["lives_spent"]
+                 and not lane["training_events"]["deaths"]]
+        if spent:
+            lane = spent[0]
+            assert done[lane]
+            assert not info[lane]["run_over"]
+            assert info[lane]["training_events"]["deaths"] == 0
+            assert reward[lane] == pytest.approx(-RewardConfig().death_penalty)
+            run_frames = info[lane]["run_frames"]
+            _, _, _, info = env.step(idle(env))
+            # A new episode on the same game: run frames keep counting.
+            assert info[lane]["frames"] == 1
+            assert info[lane]["run_frames"] == run_frames + 1
+            return
+    pytest.fail("no lane survived spending a life")
 
 
-def test_the_player_reports_its_own_velocity():
-    """Without a second frame there is nothing else to derive momentum from."""
-    env = DodgeEnv(action_repeat=4, max_episode_frames=None)
-    observation, _ = env.reset(seed=11)
-    assert observation[2] == 0.0 and observation[3] == 0.0
-
-    for _ in range(20):
-        observation, *_ = env.step(2)     # hold right
-    # Terminal speed is 2.5px a frame, scaled by VELOCITY_SCALE.
-    assert observation[2] == pytest.approx(2.5 / VELOCITY_SCALE, abs=0.02)
-    assert observation[3] == 0.0
-
-    for _ in range(20):
-        observation, *_ = env.step(1)     # hold left
-    assert observation[2] < 0.0, "velocity is signed"
-    env.close()
+def test_disabled_enemy_types_never_appear():
+    env = make(normal_enemies=False, kamikaze_enemies=False, n_envs=2)
+    env.reset()
+    for _ in range(600):
+        env.step(idle(env))
+        for lane in range(env.num_envs):
+            assert all(enemy["p"] >= 2 for enemy in env.lane_state(lane)["enemies"])
 
 
-def test_same_seed_and_actions_are_deterministic():
-    def run():
-        env = DodgeEnv(action_repeat=2, max_episode_frames=100)
-        observation, _ = env.reset(seed=29)
-        trace = [observation]
-        for action in [0, 2, 2, 3, 3, 1, 4] * 3:
-            observation, reward, terminated, truncated, _ = env.step(action)
-            trace.append(np.append(observation, reward))
-            if terminated or truncated:
-                break
-        env.close()
-        return trace
-
-    left, right = run(), run()
-    assert len(left) == len(right)
-    for a, b in zip(left, right):
-        np.testing.assert_array_equal(a, b)
-
-
-def test_headless_drawing_changes_nothing_about_the_game():
-    """Nulling the draw builtins must not move the shared RNG stream.
-
-    drawgame() calls spawntrail(), which draws two random values per powerup
-    enemy per frame, so anything that skipped the draw traversal would change
-    which enemies spawn later. Binding the builtins as Lua no-ops leaves the
-    traversal and its arguments intact, which is what this pins down.
-    """
-    from pico8 import cart
-    from pico8.backends import NullBackend
-    from pico8.machine import Machine
-
-    class CountingBackend:
-        """Draws for real, as far as the machine can tell.
-
-        Deliberately not a Backend subclass: __getattr__ only fires for names
-        that normal lookup misses, and Backend defines every drawing method.
-        """
-
-        draws = True
-
-        def __init__(self):
-            self.calls = 0
-
-        def __getattr__(self, name):
-            def record(*args):
-                self.calls += 1
-            return record
-
-    rom, _ = cart.read_rom(Path("dodge.p8.png"))
-    code = cart.decompress_code(rom)
-
-    def run(backend):
-        machine = Machine(rom, code, backend, seed=77)
-        machine.start_game(difficulty=1, patterns=True, powerups=True)
-        trace = []
-        for frame in range(400):
-            machine.set_buttons(1 << (frame // 31) % 4)
-            machine.step()
-            g = machine.globals
-            trace.append((float(g.px), float(g.py), float(g.score),
-                          [(float(g.enemies[i].x), float(g.enemies[i].y),
-                            float(g.enemies[i].p))
-                           for i in range(1, len(g.enemies) + 1)]))
-            if g.isdead:
-                break
-        return trace
-
-    drawing = CountingBackend()
-    assert run(drawing) == run(NullBackend())
-    assert drawing.calls > 0, "the drawing backend must actually have been used"
+def test_spawn_rate_outside_the_supported_range_is_rejected():
+    with pytest.raises(ValueError, match="spawn rate"):
+        make(spawn_rate_percent=40)
 
 
 def test_survival_credit_is_flat_across_the_interior():
@@ -248,300 +178,62 @@ def test_edge_penalty_of_zero_pays_every_position_equally():
                                       edge_penalty=0.0) == pytest.approx(1.0)
 
 
-def test_survival_reward_at_the_spawn_point_is_the_flat_rate():
-    env = DodgeEnv(action_repeat=1)
-    env.reset(seed=31)
+class _LuaList:
+    """1-based indexing, the shape dodge/observe.py reads."""
 
-    _, reward, terminated, _, info = env.step(0)
+    def __init__(self, items):
+        self.items = items
 
-    assert not terminated
-    assert info["survived_frames"] == 1
-    assert info["survival_reward"] == pytest.approx(0.01)
-    assert reward == pytest.approx(0.01)
-    env.close()
+    def __len__(self):
+        return len(self.items)
 
-
-def test_death_penalty_is_one_point():
-    env = DodgeEnv(action_repeat=4)
-    env.reset(seed=31)
-    env.machine.lua.execute("enemies={{x=62,y=62,s=4,p=0}}")
-
-    _, reward, terminated, truncated, info = env.step(0)
-
-    assert terminated
-    assert not truncated
-    assert info["survived_frames"] == 0
-    assert info["score_delta"] == 0
-    assert reward == -RewardConfig().death_penalty == -1.0
-    env.close()
+    def __getitem__(self, index):
+        return self.items[index - 1]
 
 
-def test_weights_are_reread_when_an_episode_starts(tmp_path):
-    """The dashboard's sliders reach worker processes only through the file.
-
-    Environments live in separate processes during training, so a weight
-    change must arrive by re-reading rather than by any in-memory update.
-    """
-    from dodge.rewards import RewardConfig, save
-
-    path = tmp_path / "rewards.json"
-    save(RewardConfig(death_penalty=1.0), path)
-    env = DodgeEnv(action_repeat=4, reward_config_path=path)
-    env.reset(seed=31)
-    assert env.reward_config.death_penalty == 1.0
-
-    save(RewardConfig(death_penalty=4.0), path)
-    assert env.reward_config.death_penalty == 1.0, "not until the episode ends"
-
-    env.reset(seed=31)
-    assert env.reward_config.death_penalty == 4.0
-    env.machine.lua.execute("enemies={{x=62,y=62,s=4,p=0}}")
-    _, reward, terminated, _, _ = env.step(0)
-    assert terminated and reward == pytest.approx(-4.0)
-    env.close()
+def _reference_globals(state):
+    cp = None
+    if state["cp"] is not None:
+        rects = []
+        for rect in state["cp"]["rects"]:
+            rect = dict(rect)
+            rect["warnings"] = (_LuaList([_LuaList(list(w)) for w in rect["warnings"]])
+                                if rect["warnings"] else None)
+            rects.append(SimpleNamespace(**rect))
+        cp = SimpleNamespace(tpe=state["cp"]["tpe"], timer=state["cp"]["timer"],
+                             rects=_LuaList(rects))
+    return SimpleNamespace(
+        px=state["px"], py=state["py"], dpx=state["dpx"], dpy=state["dpy"],
+        spd=state["spd"], frz=state["frz"], cp=cp,
+        enemies=_LuaList([SimpleNamespace(**enemy) for enemy in state["enemies"]]))
 
 
-def test_luck_score_weight_restores_the_carts_own_scoring(tmp_path):
-    from dodge.rewards import RewardConfig, save
-
-    path = tmp_path / "rewards.json"
-    save(RewardConfig(uncontrolled_score_weight=1.0), path)
-    env = DodgeEnv(action_repeat=1, reward_config_path=path)
-    env.reset(seed=31)
-    env.machine.lua.execute("score=score+0.5 difficultycurve(true)")
-
-    _, reward, _, _, info = env.step(0)
-
-    assert info["uncontrolled_score"] == pytest.approx(0.5)
-    assert reward == pytest.approx(info["survival_reward"] + 0.5)
-    env.close()
-
-
-def test_score_from_enemies_colliding_is_not_rewarded():
-    """Enemies destroying each other is luck, not play.
-
-    The cart credits 0.5 whenever an enemy dies to another enemy or a pattern,
-    which the agent does not cause. Paying for it injects variance the critic
-    cannot explain, so only agent-caused score reaches the reward.
-    """
-    env = DodgeEnv(action_repeat=1)
-    env.reset(seed=31)
-    # Drive the cart's own enemy-death path: score rises and the hook counts it.
-    env.machine.lua.execute("score=score+0.5 difficultycurve(true)")
-
-    _, reward, terminated, _, info = env.step(0)
-
-    assert not terminated
-    assert info["score_delta"] == pytest.approx(0.5)
-    assert info["training_events"]["enemies_destroyed"] == 1
-    assert info["uncontrolled_score"] == pytest.approx(0.5)
-    # Only the survival credit survives into the reward.
-    assert reward == pytest.approx(info["survival_reward"])
-    env.close()
+def test_the_engine_observation_matches_the_reference_encoder():
+    """dodge/observe.py is the specification; the engine must match it exactly."""
+    engine = make_engine(difficulty=3, patterns=True, powerups=True)
+    lanes = 8
+    engine.reset_ml_batch(np.arange(lanes, dtype=np.uint32) + 500)
+    rng = np.random.default_rng(1)
+    checked = 0
+    for step in range(900):
+        if step % 8 == 0:
+            actions = rng.integers(0, 9, lanes, dtype=np.uint8)
+        done = engine.step_ml_batch(actions)["done"]
+        if step % 13 == 0:
+            native = engine.observe_velocity()["observation"]
+            for lane in range(lanes):
+                expected = observe(SimpleNamespace(
+                    globals=_reference_globals(engine.lane_state(lane))))
+                np.testing.assert_array_equal(native[lane], expected)
+                checked += 1
+        finished = np.flatnonzero(done).astype(np.uint32)
+        if len(finished):
+            engine.reset_ml_lanes(finished, finished + 9_000 + step)
+    assert checked > 400
 
 
-def test_human_render_backend_is_reused_across_episode_resets(monkeypatch):
-    monkeypatch.setenv("SDL_VIDEODRIVER", "dummy")
-    env = DodgeEnv(render_mode="human", scale=1, caption="Persistent watcher")
-    env.reset(seed=1)
-    backend = env.machine.backend
-    window = backend.window
-    env.reset(seed=2)
-    assert env.machine.backend is backend
-    assert env.machine.backend.window is window
-    assert pygame.display.get_caption()[0] == "Persistent watcher"
-    env.close()
-
-
-def test_an_absorbed_hit_ends_the_episode_but_leaves_the_game_running():
-    """The agent's episode stops at the hit; the cart does not.
-
-    Ending the episode is what stops the agent learning to spend lives: a
-    terminal bootstraps V=0, so nothing after the hit is ever credited to the
-    actions before it. Leaving the cart running is what buys the state variety.
-    """
-    env = DodgeEnv(action_repeat=4, lives=1)
-    env.reset(seed=31)
-    env.machine.lua.execute("enemies={{x=62,y=62,s=4,p=0}}")
-
-    _, reward, terminated, truncated, info = env.step(0)
-
-    assert terminated, "the RL episode ends at the hit"
-    assert not truncated, "terminated, not truncated: truncation would bootstrap V(s')"
-    assert reward == pytest.approx(-RewardConfig().death_penalty)
-    assert not bool(env.machine.globals.isdead), "the cart is still alive"
-    env.close()
-
-
-def test_reset_after_an_absorbed_hit_continues_the_same_game():
-    """The next episode starts mid-game, which is the point of the device.
-
-    Rebuilding the cartridge here would put the agent back at the spawn point
-    and throw away the very state variety the life was spent reaching. No frame
-    is advanced either, so the new episode opens on the state the old one ended
-    on.
-    """
-    env = DodgeEnv(action_repeat=4, lives=1, max_episode_frames=None)
-    env.reset(seed=31)
-    env.machine.lua.execute("enemies={{x=62,y=62,s=4,p=0}}")
-    final, _, terminated, _, _ = env.step(0)
-    assert terminated
-    machine = env.machine
-
-    observation, info = env.reset()
-
-    assert env.machine is machine, "the cartridge run must not be rebuilt"
-    np.testing.assert_array_equal(observation, final)
-    env.close()
-
-
-def test_the_cartridge_is_rebuilt_once_the_lives_are_gone():
-    """Resuming a finished run would hand the agent a corpse to play."""
-    env = DodgeEnv(action_repeat=4, lives=1, max_episode_frames=None)
-    env.reset(seed=31)
-    env.machine.lua.execute("enemies={{x=62,y=62,s=4,p=0}}")
-    env.step(0)                                   # spends the only life
-    env.reset()
-    dead_run = env.machine
-    env.machine.lua.execute("enemies={{x=62,y=62,s=4,p=0}}")
-    _, _, terminated, _, info = env.step(0)
-    assert terminated and bool(env.machine.globals.isdead), "no lives left, so a real death"
-    assert info["training_events"]["deaths"] == 1
-
-    env.reset()
-
-    assert env.machine is not dead_run, "a real death starts a new run"
-    assert not bool(env.machine.globals.isdead)
-    env.close()
-
-
-def test_run_frames_accumulate_across_episodes_while_frames_restart():
-    """Two clocks: one the agent's episode owns, one the cartridge run owns."""
-    env = DodgeEnv(action_repeat=2, lives=2, max_episode_frames=None)
-    env.reset(seed=31)
-    env.step(0)                                   # frames 1-2
-    env.machine.lua.execute("enemies={{x=62,y=62,s=4,p=0}}")
-    _, _, terminated, _, info = env.step(0)       # frame 3 collides
-    assert terminated
-    assert info["frames"] == 3 and info["run_frames"] == 3
-
-    env.reset()
-    _, _, _, _, info = env.step(0)                # frames 4-5
-
-    assert info["frames"] == 2, "the episode's own clock restarts"
-    assert info["run_frames"] == 5, "the run's clock does not"
-    env.close()
-
-
-def test_the_frame_cap_bounds_the_run_not_the_episode():
-    """A run that keeps absorbing hits would otherwise never turn over, holding
-    one seed and one difficulty ramp in the buffer indefinitely."""
-    env = DodgeEnv(action_repeat=2, lives=3, max_episode_frames=6)
-    env.reset(seed=31)
-    env.step(0)                                   # frames 1-2
-    env.machine.lua.execute("enemies={{x=62,y=62,s=4,p=0}}")
-    _, _, terminated, truncated, info = env.step(0)
-    assert terminated and not truncated and info["run_frames"] == 3
-
-    env.reset()
-    _, _, _, truncated, _ = env.step(0)           # run 5, episode 2
-    assert not truncated
-    _, _, _, truncated, info = env.step(0)        # run 7, episode 4
-
-    assert truncated, "the run passed its cap"
-    assert info["frames"] == 4, "this episode is well short of the cap on its own"
-    assert info["run_frames"] == 7
-    env.close()
-
-
-def test_a_direct_death_outside_collision_remains_a_real_death():
-    """Training lives only absorb classified enemy and pattern collisions."""
-    env = DodgeEnv(action_repeat=1, lives=3)
-    env.reset(seed=31)
-    env.machine.lua.execute("die()")
-
-    _, reward, terminated, _, info = env.step(0)
-
-    assert terminated and bool(env.machine.globals.isdead)
-    assert info["training_events"]["lives_spent"] == 0
-    assert info["training_events"]["deaths"] == 1
-    env.close()
-
-
-def test_lives_are_off_by_default_and_a_hit_ends_the_run():
-    """The default path through the conditional reset must be the old one."""
-    env = DodgeEnv(action_repeat=4)
-    env.reset(seed=31)
-    env.machine.lua.execute("enemies={{x=62,y=62,s=4,p=0}}")
-    _, _, terminated, _, info = env.step(0)
-    assert terminated and bool(env.machine.globals.isdead)
-    assert info["training_events"]["lives_spent"] == 0
-    machine = env.machine
-
-    env.reset()
-
-    assert env.machine is not machine
-    env.close()
-
-
-def test_negative_lives_are_rejected():
-    with pytest.raises(ValueError):
-        DodgeEnv(lives=-1)
-
-
-def test_a_real_pattern_crush_spends_a_life_and_restarts_the_same_pattern():
-    """A pattern retry is an episode boundary inside the same cartridge run.
-
-    The cart grows its own pattern to sh == 2 and the player is stood in it.
-    Enemies are cleared each frame only so the idle player survives the ~500
-    frames a pattern needs to mature.
-    """
-    env = DodgeEnv(action_repeat=1, lives=3, patterns=True, max_episode_frames=None)
-    env.reset(seed=5)
-    g = env.machine.globals
-
-    lethal = None
-    pattern_index = None
-    for _ in range(4000):
-        env.machine.lua.execute("enemies={}")
-        env.step(0)
-        if g.cp is not None:
-            if pattern_index is None:
-                get_pattern_index = env.machine.lua.eval("""
-                    function()
-                        for i, pattern in ipairs(patterns) do
-                            if pattern == cp then return i end
-                        end
-                    end
-                """)
-                pattern_index = int(get_pattern_index())
-            for i in range(1, len(g.cp.rects) + 1):
-                r = g.cp.rects[i]
-                if float(r.sh) >= 2 and float(r.w) > 8 and float(r.h) > 8:
-                    lethal = (float(r.x), float(r.y), float(r.w), float(r.h))
-                    break
-        if lethal or bool(g.isdead):
-            break
-    assert lethal is not None and not bool(g.isdead), "no pattern turned lethal"
-
-    x, y, w, h = lethal
-    env.machine.lua.execute(f"px={x + w / 2} py={y + h / 2}")
-    _, reward, terminated, _, info = env.step(0)
-
-    assert terminated and not bool(g.isdead)
-    assert int(g.training_lives) == 2
-    assert info["training_events"]["lives_spent"] == 1
-    assert reward == pytest.approx(-RewardConfig().death_penalty), "charged once"
-    assert info["run_over"] is False
-    assert int(get_pattern_index()) == pattern_index, "the selected pattern changed"
-    assert float(g.cp.timer) <= 1.0, "the pattern did not restart from frame zero"
-    assert all(float(g.cp.rects[i].sh) < 2
-               for i in range(1, len(g.cp.rects) + 1)), \
-        "the old lethal pattern geometry survived the restart"
-
-    machine = env.machine
-    _, reset_info = env.reset()
-    assert env.machine is machine
-    assert reset_info["frames"] == 0
-    assert env.machine.globals.cp is not None
-    env.close()
+def test_play_games_reports_one_result_per_seed():
+    results = play_games(lambda observations, _: np.zeros(len(observations)),
+                         [1, 2, 3], difficulty=3, patterns=True, powerups=True)
+    assert [result["seed"] for result in results] == [1, 2, 3]
+    assert all(result["died"] and result["frames"] > 0 for result in results)

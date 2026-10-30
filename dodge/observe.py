@@ -1,4 +1,8 @@
-"""Convert Dodge's Lua state into a small, fixed PPO observation.
+"""The VelocityFlow observation, as a reference encoder.
+
+The engine computes this observation natively (`observe_velocity`); this module
+is the specification it is tested against, reading game state under the
+cartridge's own names.
 
 One frame, not a stack. Motion is supplied directly: every occupied cell also
 carries the velocity of whatever occupies it, read from the game rather than

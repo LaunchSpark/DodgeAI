@@ -14,7 +14,7 @@ import time
 
 import pygame
 
-from dodge import rewards
+from dodge import game_settings, rewards
 from dodge.rewards import SLIDERS as REWARD_SLIDERS
 from dodge.policies import ARCHITECTURES
 from dodge.telemetry import PROGRESS_ROWS, sample_snapshot
@@ -60,16 +60,13 @@ EVENT_SPECS = (
     ("lives_spent", "Lives spent", (177, 130, 224)),
 )
 
-GAME_DEFAULTS = {
-    "difficulty": 1,
-    "patterns": False,
-    "powerups": True,
-    "normal_enemies": True,
-    "kamikaze_enemies": True,
-    "spawn_rate_percent": 100,
-    "action_repeat": 4,
-    "lives": 0,
-}
+# Defined once in the module that persists them, so the shipped values and
+# the saved file cannot disagree about what a setting starts at.
+GAME_DEFAULTS = game_settings.DEFAULTS
+
+# The command line names difficulties; everything else numbers them.
+DIFFICULTY_LEVELS = {"easy": 1, "normal": 2, "hard": 3}
+DIFFICULTY_NAMES = {level: name for name, level in DIFFICULTY_LEVELS.items()}
 
 
 @dataclass(frozen=True)
@@ -84,7 +81,7 @@ class GameSliderSpec:
 GAME_SLIDERS = (
     GameSliderSpec("difficulty", "Difficulty", 1, 3),
     GameSliderSpec("spawn_rate_percent", "Spawn rate", 50, 150, 5),
-    GameSliderSpec("action_repeat", "Decision interval", 1, 8),
+    GameSliderSpec("action_repeat", "Decision interval", 1, 5),
     # Training only: the first N lethal collisions end the episode without
     # ending the cartridge run; active patterns restart from their beginning.
     GameSliderSpec("lives", "Training lives", 0, 5),
@@ -822,7 +819,9 @@ class TrainingDashboard:
         self.reward_config = rewards.load(self.reward_config_path)
         self.game_menu_open = False
         self.game_regions = {}
-        self.game_config = dict(GAME_DEFAULTS)
+        self.game_config_path = getattr(self.session, "game_config_path",
+                                        game_settings.CONFIG_PATH)
+        self.game_config = game_settings.load(self.game_config_path)
         self.dragging_slider = None
         if getattr(self.session.data, "status", None) == "idle":
             self._open_models()
@@ -835,10 +834,17 @@ class TrainingDashboard:
     def _open_game_config(self):
         getter = getattr(self.session, "game_config", None)
         current = getter() if getter else getattr(self.session, "env_kwargs", {})
+        # The live session wins where it can answer: it is what the training
+        # games are actually running, and a launch seeds it from the saved
+        # file, so the two normally agree. The file is the fallback for a
+        # session that cannot report its settings at all -- without it the
+        # panel would drop back to the shipped defaults and offer to undo the
+        # user's saved tuning on the next Apply.
+        #
         # Only the settings this panel owns. The session's env kwargs carry
         # others -- the frame cap, for one -- and _apply_game_config splats
         # this dict straight into configure_game, which does not take them.
-        self.game_config = {**GAME_DEFAULTS,
+        self.game_config = {**game_settings.load(self.game_config_path),
                             **{key: value for key, value in current.items()
                                if key in GAME_DEFAULTS}}
         self.game_menu_open = True
@@ -861,8 +867,21 @@ class TrainingDashboard:
         except (OSError, ValueError) as error:
             self._show_toast(str(error))
             return
+        # Written only once the session has accepted it, so the file records
+        # what training is running rather than what was typed. Written even
+        # when nothing changed: that is still the user confirming these
+        # settings, and it is what a first Apply on an install without a file
+        # yet has to do.
+        try:
+            game_settings.save(self.game_config, self.game_config_path)
+        except OSError as error:
+            saved_error = str(error)
+        else:
+            saved_error = None
         self.game_menu_open = False
-        if changed == "pending":
+        if saved_error is not None:
+            self._show_toast(f"Applied, but not saved: {saved_error}")
+        elif changed == "pending":
             self._show_toast("Applying after this update…")
         else:
             self._show_toast("Game configuration applied" if changed
@@ -1264,7 +1283,7 @@ def main(argv=None):
     parser.add_argument("--device", default="auto",
                         help="torch device for the policy update: auto, cpu or cuda")
     parser.add_argument("--envs", type=int, default=8,
-                        help="games stepped in parallel processes (default 8)")
+                        help="games stepped together as lanes of one Rust batch (default 8)")
     parser.add_argument("--rollout-steps", type=int, default=256,
                         help="steps per env per PPO update; the buffer holds "
                              "envs * rollout-steps samples (default 8 * 256)")
@@ -1275,23 +1294,29 @@ def main(argv=None):
     parser.add_argument("--models-dir", type=Path,
                         default=Path("artifacts/models"),
                         help="directory watched for PPO checkpoints")
-    parser.add_argument("--difficulty", choices=("easy", "normal", "hard"), default="easy")
-    parser.add_argument("--patterns", action="store_true")
-    parser.add_argument("--powerups", action=argparse.BooleanOptionalAction,
-                        default=True)
-    parser.add_argument("--normal-enemies", action=argparse.BooleanOptionalAction,
-                        default=True)
-    parser.add_argument("--kamikaze-enemies", action=argparse.BooleanOptionalAction,
-                        default=True)
-    parser.add_argument("--spawn-rate-percent", type=int, default=100,
+    # The game settings below default to whatever the Game Config panel last
+    # saved, so a launch resumes the curriculum the last session was tuned to.
+    # Passing a flag still overrides it for that run; the file only moves when
+    # the panel applies a change.
+    parser.add_argument("--difficulty", choices=("easy", "normal", "hard"))
+    parser.add_argument("--patterns", action=argparse.BooleanOptionalAction)
+    parser.add_argument("--powerups", action=argparse.BooleanOptionalAction)
+    parser.add_argument("--normal-enemies", action=argparse.BooleanOptionalAction)
+    parser.add_argument("--kamikaze-enemies", action=argparse.BooleanOptionalAction)
+    parser.add_argument("--spawn-rate-percent", type=int,
                         help="enemy and pattern cadence, from 50 to 150 percent")
-    parser.add_argument("--lives", type=int, default=0,
+    parser.add_argument("--action-repeat", type=int,
+                        help="game frames each decision is held for, 1 to 5")
+    parser.add_argument("--lives", type=int,
                         help="training only: lethal collisions that end the "
                              "episode without ending the cartridge run; "
-                             "patterns restart from their beginning "
-                             "(default 0)")
+                             "patterns restart from their beginning")
     parser.add_argument("--screenshot", type=Path,
                         help="render one dashboard frame to this PNG and exit")
+    saved_game = game_settings.load()
+    parser.set_defaults(difficulty=DIFFICULTY_NAMES[saved_game["difficulty"]],
+                        **{key: value for key, value in saved_game.items()
+                           if key != "difficulty"})
     args = parser.parse_args(argv)
 
     if args.screenshot:
@@ -1312,12 +1337,13 @@ def main(argv=None):
         n_envs=args.envs,
         rollout_steps=args.rollout_steps,
         model_dir=args.models_dir,
-        difficulty={"easy": 1, "normal": 2, "hard": 3}[args.difficulty],
+        difficulty=DIFFICULTY_LEVELS[args.difficulty],
         patterns=args.patterns,
         powerups=args.powerups,
         normal_enemies=args.normal_enemies,
         kamikaze_enemies=args.kamikaze_enemies,
         spawn_rate_percent=args.spawn_rate_percent,
+        action_repeat=args.action_repeat,
         lives=args.lives,
         architecture=args.architecture,
         device=args.device,

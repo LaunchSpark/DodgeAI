@@ -1,7 +1,14 @@
 __pycache__/
 *.pyc
 .pytest_cache/
-artifacts/
+# Keep generated artifacts ignored, with selected shareable models below.
+artifacts/*
+!artifacts/models/
+artifacts/models/*
+!artifacts/models/README.md
+!artifacts/models/can-reach-100.zip
+!artifacts/models/velocity-flow-v2.zip
+!artifacts/models/velocity-flow-v2-latest.zip
 
 # Third-party game content is never tracked. dodge.p8.png is the cartridge
 # you supply; dodge.lua and dodge.p8 are generated from it by
@@ -15,3 +22,7 @@ dodge.rom
 # Reward weights are per-user tuning state. Defaults live in
 # dodge/rewards.py, and a missing file simply uses them.
 rewards.json
+
+# The Game Config panel's settings, likewise per-user. Defaults live in
+# dodge/game_settings.py, and a missing file simply uses them.
+game-config.json
