@@ -105,3 +105,45 @@ def test_from_best_needs_a_retained_best(tmp_path):
     with pytest.raises(SystemExit):
         train_ppo.main(["--architecture", "mlp", "--from-best", "--name", "none",
                         "--models-dir", str(tmp_path), "--logs-dir", str(tmp_path)])
+
+
+@pytest.mark.parametrize("flags,expected", [
+    ([], (8, 256)),
+    (["--preset", "gpu"], (64, 256)),
+    (["--preset", "gpu", "--envs", "256", "--rollout-steps", "64"], (256, 64)),
+    (["--envs", "32"], (32, 256)),
+])
+def test_a_preset_sets_the_env_shape_and_flags_override_it(flags, expected):
+    import train_ppo
+    _, args = train_ppo.parse_args(flags)
+    assert (args.envs, args.rollout_steps) == expected
+
+
+@pytest.mark.parametrize("flags", [["--envs", "0"], ["--rollout-steps", "0"],
+                                   ["--checkpoint-updates", "-1"]])
+def test_a_non_positive_shape_is_refused(flags):
+    import train_ppo
+    with pytest.raises(SystemExit):
+        train_ppo.parse_args(flags)
+
+
+def test_checkpoints_fall_every_n_updates_and_leave_training_untouched(tmp_path):
+    """Counted in updates, not env steps, so --envs does not move them; the
+    boundary updates are skipped, since the boundary already saved them; and
+    taking a checkpoint must not perturb the run that takes it."""
+    from dodge.resume import read_state
+
+    models = tmp_path / "models"
+    train(tmp_path, "--steps", "64", "--name", "every", "--checkpoint-updates", "1")
+    train(tmp_path, "--steps", "64", "--name", "never", "--checkpoint-updates", "0")
+
+    # 2 envs x 8 steps = 16 decisions an update; boundaries at updates 2 and 4.
+    periodic = sorted(path.name for path in models.glob("every_*_steps.zip"))
+    assert periodic == ["every_16_steps.zip", "every_48_steps.zip"]
+    assert not list(models.glob("never_*_steps.zip"))
+    state = read_state(models / "every_48_steps.zip")
+    assert state["counters"]["ppo_updates"] == 3 and not state["at_boundary"]
+
+    every, never = parameters(models / "every.zip"), parameters(models / "never.zip")
+    for name in every:
+        assert torch.equal(every[name], never[name]), name

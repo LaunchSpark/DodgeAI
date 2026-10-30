@@ -1108,9 +1108,8 @@ def test_v2_carries_its_own_hyperparameters():
 
 
 def test_v2_splits_the_buffer_into_larger_minibatches():
-    """Profiled on a 1070: per-sample cost is flat from 128 to 256 and then
-    degrades hard -- 512 makes the learning phase slower, not faster. 256 is
-    the floor of that curve."""
+    """v2 takes eight minibatches an epoch, so 256 at the default buffer --
+    the value every v2 curve so far was trained under."""
     from dodge.training import minibatch_size
 
     assert minibatch_size(2048, "velocity-flow") == 128
@@ -1754,6 +1753,8 @@ def test_the_cli_trainer_uses_the_architecture_table(tmp_path, monkeypatch):
     class FakePPO:
         def __init__(self, policy, env, **kwargs):
             captured.update(kwargs)
+            # What train_ppo reads back to log the update's schedule.
+            self.__dict__.update(kwargs, n_envs=8)
 
         def learn(self, *a, **k):
             return self
