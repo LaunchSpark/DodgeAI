@@ -54,7 +54,10 @@ def test_alive_frame_pays_survival_credit():
     assert not done.any()
     # Centre of the arena, no score yet: exactly one frame of survival credit.
     assert np.allclose(reward, RewardConfig().survival_per_frame)
-    assert all(lane["survived_frames"] == 1 for lane in info)
+    # Per-step fields of lanes still mid-episode travel as arrays.
+    assert all(lane == {} for lane in info)
+    assert np.all(info.batch.survived_frames == 1)
+    assert all(info.lane(lane)["survived_frames"] == 1 for lane in range(env.num_envs))
 
 
 def test_same_seed_and_actions_are_deterministic():
@@ -117,9 +120,9 @@ def test_an_absorbed_hit_ends_the_episode_but_leaves_the_game_running():
         _, reward, done, info = env.step(rng.integers(0, 9, size=env.num_envs))
         # Two enemies can land on the same frame, spending the life and then
         # killing; look for a hit the game survived.
-        spent = [i for i, lane in enumerate(info)
-                 if lane["training_events"]["lives_spent"]
-                 and not lane["training_events"]["deaths"]]
+        events = info.batch.events
+        spent = np.flatnonzero((events["lives_spent"] > 0)
+                               & (events["deaths"] == 0)).tolist()
         if spent:
             lane = spent[0]
             assert done[lane]
@@ -129,8 +132,8 @@ def test_an_absorbed_hit_ends_the_episode_but_leaves_the_game_running():
             run_frames = info[lane]["run_frames"]
             _, _, _, info = env.step(idle(env))
             # A new episode on the same game: run frames keep counting.
-            assert info[lane]["frames"] == 1
-            assert info[lane]["run_frames"] == run_frames + 1
+            assert info.lane(lane)["frames"] == 1
+            assert info.lane(lane)["run_frames"] == run_frames + 1
             return
     pytest.fail("no lane survived spending a life")
 
@@ -170,6 +173,29 @@ def test_survival_credit_tapers_only_near_the_wall():
     # Corners lie beyond a cardinal edge; the taper clamps instead of inverting.
     assert scalar(10, 10, screen_width=10) == pytest.approx(0.5)
     assert scalar(0, 0, screen_width=10) == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize("edge_penalty", [0.0, 0.35, 0.5, 0.7, 1.0])
+def test_batched_survival_credit_matches_the_scalar_to_the_bit(edge_penalty):
+    """The env credits every lane at once; each must equal the scalar exactly,
+    or the float32 reward moves."""
+    from dodge.env import center_survival_scalars
+    from dodge.observe import ARENA_SIZE
+
+    rng = np.random.default_rng(7)
+    centre, radius = ARENA_SIZE / 2.0, ARENA_SIZE / 2.0
+    on_boundaries = [centre + radius * r for r in (0.6, 1.0)]
+    x = np.concatenate([rng.uniform(-4, ARENA_SIZE + 4, 20_000),
+                        rng.integers(0, ARENA_SIZE * 256, 5_000) / 256.0,
+                        on_boundaries, [0.0, ARENA_SIZE, centre]])
+    y = np.concatenate([rng.uniform(-4, ARENA_SIZE + 4, 20_000),
+                        rng.integers(0, ARENA_SIZE * 256, 5_000) / 256.0,
+                        [centre, centre], [0.0, ARENA_SIZE, centre]])
+    batched = center_survival_scalars(x, y, edge_penalty=edge_penalty)
+    expected = np.array([center_survival_scalar(a, b, edge_penalty=edge_penalty)
+                         for a, b in zip(x, y)])
+    assert batched.dtype == np.float64
+    assert batched.tobytes() == expected.tobytes()
 
 
 def test_edge_penalty_of_zero_pays_every_position_equally():

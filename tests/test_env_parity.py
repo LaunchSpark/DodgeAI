@@ -136,8 +136,15 @@ def assert_step_identical(expected, actual, step):
             assert infos_a[lane] == {}
 
 
-@pytest.mark.parametrize("restart_observe", ["auto", "nursery", "batch"])
-@pytest.mark.parametrize("name", list(CONFIGS))
+# A restarted game's first observation comes either from re-observing the
+# whole batch or from the nursery engine; "auto" picks by measured cost, so
+# both are also forced on the configs that restart the most games.
+CASES = ([(name, "auto") for name in CONFIGS]
+         + [(name, mode) for name in ("64-lanes", "16-lanes-repeat-4-cap")
+            for mode in ("nursery", "batch")])
+
+
+@pytest.mark.parametrize("name, restart_observe", CASES)
 def test_step_is_bit_identical_to_the_original(name, restart_observe, _weights_and_clock):
     clock = _weights_and_clock
     config = CONFIGS[name]

@@ -297,6 +297,10 @@ class DashboardCallback(BaseCallback):
         # Each env's finished-episode lengths for the run in progress, banked
         # until the run ends and the whole split is known.
         self.run_segments = {}
+        # Per-lane kills and reward of lanes whose episode is still running,
+        # banked in bulk from DodgeVecEnv's batched infos (see _lanes).
+        self._banked_kills = None
+        self._banked_reward = None
         self.last_step_time = time.monotonic()
         self.last_timesteps = 0
         # Throughput is measured over a window rather than per callback. A
@@ -350,7 +354,7 @@ class DashboardCallback(BaseCallback):
                 self._rate_steps = 0
             data.rollout_progress = (self.n_calls % self.session.rollout_steps) / self.session.rollout_steps
 
-            for index, info in enumerate(infos):
+            for index, info in self._lanes(infos, rewards, data):
                 events = info.get("training_events", {})
                 for key, count in events.items():
                     if key in self.rollout_events:
@@ -401,6 +405,41 @@ class DashboardCallback(BaseCallback):
         self.last_step_time = now
         self.last_timesteps = self.num_timesteps
         return True
+
+    def _lanes(self, infos, rewards, data):
+        """(index, info) for each lane _on_step has to visit.
+
+        DodgeVecEnv's StepInfos carry every lane's per-step fields as arrays
+        on `infos.batch`, and a full info dict only for a lane whose episode
+        ended. The other lanes are banked here in bulk -- their events
+        counted, their kills and reward held per lane until their episode
+        ends -- and only the lanes that ended are visited, carrying what they
+        banked into the per-lane totals the visit adds to. The totals come
+        out exactly as visiting every lane would make them. Any other infos
+        list is visited lane by lane.
+        """
+        batch = getattr(infos, "batch", None)
+        if batch is None:
+            return enumerate(infos)
+        done = np.asarray(batch.done, dtype=bool)
+        if self._banked_reward is None or len(self._banked_reward) != len(done):
+            self._banked_kills = np.zeros(len(done), dtype=np.int64)
+            self._banked_reward = np.zeros(len(done))
+        running = ~done
+        for key, values in batch.events.items():
+            if key in self.rollout_events:
+                count = int(values[running].sum())
+                self.rollout_events[key] += count
+                data.events[key].total += count
+        self._banked_kills[running] += batch.events["enemies_destroyed"][running]
+        self._banked_reward[running] += rewards[running]
+        ended = np.flatnonzero(done).tolist()
+        for index in ended:
+            self.episode_kills[index] = int(self._banked_kills[index])
+            self.episode_reward[index] = float(self._banked_reward[index])
+            self._banked_kills[index] = 0
+            self._banked_reward[index] = 0.0
+        return [(index, infos[index]) for index in ended]
 
     def _on_rollout_end(self):
         try:
