@@ -28,7 +28,7 @@ def test_summary_reports_the_papers_columns():
 
 
 def test_survival_curve_starts_at_everyone_alive():
-    curve = survival_curve([game(f) for f in (500, 1500, 2500)])
+    curve = survival_curve([game(f) for f in (500, 1500, 2500)], step=1000)
     assert curve[0] == {"frames": 0, "alive": 1.0}
     assert curve[1]["alive"] == pytest.approx(2 / 3)
     assert curve[-1]["alive"] == 0.0
@@ -71,3 +71,9 @@ def test_evaluation_bundles_every_figure():
     assert set(result) == {"summary", "survival", "causes", "hazard", "patterns",
                            "anti_camping"}
     assert result["anti_camping"]["games_triggered"] == 0.5
+
+
+def test_short_games_get_a_finer_survival_step():
+    curve = survival_curve([game(f) for f in (120, 300, 451)])
+    assert len(curve) >= 10
+    assert curve[1]["frames"] == 25

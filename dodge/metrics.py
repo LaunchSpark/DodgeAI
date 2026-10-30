@@ -48,11 +48,21 @@ def summary(games):
     }
 
 
-def survival_curve(games, step=1000):
-    """Share of games still alive at each multiple of `step` frames."""
+SURVIVAL_STEPS = (25, 50, 100, 250, 500, 1000)
+
+
+def survival_curve(games, step=None):
+    """Share of games still alive at each multiple of `step` frames.
+
+    The paper's step is 1,000 frames; by default the step shrinks for short
+    games so the curve keeps at least ten points.
+    """
     frames = np.array([game["frames"] for game in games], dtype=float)
     if not len(frames):
         return []
+    if step is None:
+        step = next((s for s in reversed(SURVIVAL_STEPS) if frames.max() / s >= 10),
+                    SURVIVAL_STEPS[0])
     top = int(frames.max()) + step
     return [{"frames": t, "alive": float((frames >= t).mean())}
             for t in range(0, top, step)]
