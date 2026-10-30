@@ -19,7 +19,8 @@ import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.save_util import load_from_zip_file
-from stable_baselines3.common.utils import ConstantSchedule, get_device
+from stable_baselines3.common.utils import (ConstantSchedule, explained_variance,
+                                            get_device)
 
 from .env import EVENT_FIELDS, MAX_ACTION_REPEAT, DodgeVecEnv, validate_spawn_rate_percent
 from . import schedule
@@ -1015,8 +1016,15 @@ class PPOTrainingSession:
 
     def _on_post_update(self, model):
         """The safe point. Saves first, then a snapshot if anyone needs one."""
+        buffer = getattr(model, "rollout_buffer", None)
+        explained = (float(explained_variance(buffer.values.flatten(),
+                                              buffer.returns.flatten()))
+                     if buffer is not None else float("nan"))
         with self.lock:
             self.data.games.close_update(self._completed_updates(model))
+            # NaN when the returns have no variance at all; nothing to chart.
+            if explained == explained:
+                self.data.explained_variance.append(explained)
         self._process_save_requests(model)
         self._apply_schedule(model)
         self._score_dev_cohort(model)

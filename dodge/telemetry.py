@@ -109,6 +109,11 @@ class DashboardSnapshot:
     # info["training_events"] reports kills as a per-step delta, so the
     # trainer accumulates them across the episode.
     enemies_killed: RunSeries = field(default_factory=RunSeries)
+    # One entry per PPO update: how much of the variance in the rollout's
+    # returns the critic's values predicted, 1 - Var(returns - values) /
+    # Var(returns), as SB3 logs it. Near 1 the critic tracks the returns; near
+    # 0 or below it is guessing, and every advantage is mostly noise.
+    explained_variance: RunSeries = field(default_factory=RunSeries)
     events: dict[str, EventCount] = field(
         default_factory=lambda: {key: EventCount() for key in EVENT_KEYS}
     )
@@ -130,6 +135,7 @@ class DashboardSnapshot:
             episode_length=self.episode_length.copy(),
             life_lengths=tuple(band.copy() for band in self.life_lengths),
             enemies_killed=self.enemies_killed.copy(),
+            explained_variance=self.explained_variance.copy(),
             games=self.games.copy(),
             events={
                 key: EventCount(count.rollout, count.total,
@@ -152,9 +158,10 @@ class ModelEntry:
 PROGRESS_ROWS = (
     ("reward", "Episode reward", "", True),
     ("episode_length", "Survival time", "s", True),
-    # Enemies killed was dropped: it tracked survival time and reward so
-    # closely that it said nothing they did not, and the events panel
-    # still counts kills.
+    # In place of enemies killed, which tracked survival time and reward so
+    # closely that it said nothing they did not; the events panel still
+    # counts kills.
+    ("explained_variance", "Explained variance", "", True),
     ("entropy", "Policy entropy", "", False),
 )
 
@@ -185,6 +192,7 @@ def sample_snapshot(seed=42, updates=180):
             data.life_lengths[band].append(
                 weights[band] * scale if band < lives else 0.0)
         data.enemies_killed.append(max(0.0, 1.4 + progress * 7 + rng.uniform(-1.1, 1.1)))
+        data.explained_variance.append(0.2 + progress * 0.5 + rng.uniform(-0.08, 0.08))
     # best_score is the game's own score, not the reward, so it is not derived
     # from the reward series.
     data.best_score = 12.0

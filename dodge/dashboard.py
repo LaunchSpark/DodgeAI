@@ -20,6 +20,8 @@ from .telemetry import EVENT_KEYS, PROGRESS_ROWS
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "web" / "dist"
 PUSH_SECONDS = 1.0
+# Progress rows recorded once per PPO update rather than once per episode.
+PER_UPDATE_ROWS = ("entropy", "explained_variance")
 # The paper's protocol: fixed seeds from here, one game each, frame cap 18,000.
 EVALUATION_FIRST_SEED = 1_000_000
 EVALUATION_FRAME_CAP = 18_000
@@ -197,10 +199,12 @@ class Dashboard:
         if evaluated:
             curves[f"Evaluation, {len(evaluation_games)} fixed seeds"] = evaluated["survival"]
         figures = evaluated or training_eval
-        # Entropy is logged once per update; the rest once per episode.
+        # Entropy and explained variance are logged once per update; the rest
+        # once per episode.
         chart_specs = {
             key: charts.training_series(getattr(data, key), label, unit,
-                                        per="PPO updates" if key == "entropy" else "Episodes")
+                                        per=("PPO updates" if key in PER_UPDATE_ROWS
+                                             else "Episodes"))
             for key, label, unit, _ in PROGRESS_ROWS if getattr(data, key)
         }
         if data.games.quarters:

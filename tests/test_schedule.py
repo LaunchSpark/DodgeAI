@@ -166,3 +166,21 @@ def test_scoring_runs_beside_training_and_skips_while_busy(tmp_path, monkeypatch
     finally:
         release.set()
         env.close()
+
+
+def test_each_update_records_the_critics_explained_variance(tmp_path, monkeypatch):
+    session, model, env = _session(tmp_path, monkeypatch)
+    try:
+        buffer = model.rollout_buffer
+        rng = np.random.default_rng(0)
+        buffer.returns[:] = rng.normal(size=buffer.returns.shape)
+        buffer.values[:] = buffer.returns + 0.5 * rng.normal(size=buffer.values.shape)
+        session._on_post_update(model)
+        expected = 1 - np.var(buffer.returns - buffer.values) / np.var(buffer.returns)
+        assert session.data.explained_variance.as_list() == [pytest.approx(expected)]
+        # Returns with no variance give NaN, which is not charted.
+        buffer.returns[:] = 1.0
+        session._on_post_update(model)
+        assert len(session.data.explained_variance.as_list()) == 1
+    finally:
+        env.close()
