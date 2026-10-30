@@ -23,8 +23,10 @@ Python extension with [maturin](https://www.maturin.rs/) and a Rust toolchain:
 
 The `velocity-flow` branch adds what this project needs on top of Turner's
 engine, all opt-in: the VelocityFlow observation computed natively, one-frame
-decisions, death telemetry, and the training options (lives, enemy toggles,
-spawn rate). Without the module the tooling still imports, and the tests that
+decisions, death telemetry, Taylor Turner's gameplay trace (his death
+diagnostic, recorder and enemy identities from `dodge-native`, read per lane
+with `lane_trace`), and the training options (lives, enemy toggles, spawn
+rate). Training never turns the trace on. Without the module the tooling still imports, and the tests that
 need a game skip themselves.
 
 ## Play it
@@ -50,8 +52,13 @@ It opens <http://127.0.0.1:8765>, with the same controls as the window below
   window, deaths with and without a pattern, the deadliest patterns), from
   recent training games, or from **Evaluate**, which freezes the live policy
   and plays it on fixed seeds from 1,000,000 while training carries on.
-* **Death paths**: on request, records the last 120 frames of every game that
-  ends inside a pattern, for every pattern, and lets you replay each one.
+* **Death paths**: on request, plays the live policy on fixed seeds with the
+  engine's trace on and records every pattern appearance, survived or died.
+  Pick a pattern to see all its appearances at once over its rectangles
+  (deaths coloured by cause, survived ones grey); click one to watch it as the
+  real game, from the pattern's start to its end or the death. Replays are
+  re-simulated from the seed and the recorded decisions, and say so if they
+  ever stop matching the recording.
 
 Every chart has a table view. For frontend work, run `pnpm run dev` in `web/`
 alongside `dashboard.py`; it proxies `/api` to the server.
