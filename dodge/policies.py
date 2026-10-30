@@ -4,7 +4,6 @@ from functools import partial
 
 import torch
 from torch import nn
-from torch.nn import functional as F
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
 from .observe import (
@@ -142,6 +141,17 @@ def _sense_features(coordinates, grids):
 
 
 _GRID_AXIS_CACHE = {}
+_LEVEL_CACHE = {}
+
+
+def _entity_levels(device, dtype):
+    """Entity type of each one-hot channel, (1, CELL_TYPES, 1, 1), per device."""
+    key = (device, dtype)
+    cached = _LEVEL_CACHE.get(key)
+    if cached is None:
+        cached = torch.arange(1, CELL_TYPES + 1, device=device, dtype=dtype)
+        cached = _LEVEL_CACHE[key] = cached.reshape(1, CELL_TYPES, 1, 1)
+    return cached
 
 
 def _grid_axes(device, dtype):
@@ -224,10 +234,13 @@ class DodgeHybridExtractor(BaseFeaturesExtractor):
         start = PLAYER_VALUES
         cells = torch.round(
             observations[:, start:start + CELL_COUNT] * CELL_TYPES
-        ).long().clamp(0, CELL_TYPES).reshape(batch, GRID_SIZE, GRID_SIZE)
+        ).clamp(0, CELL_TYPES).reshape(batch, 1, GRID_SIZE, GRID_SIZE)
         # Empty cells become all-zero channels; the rest carry entity type.
-        grids = F.one_hot(cells, num_classes=CELL_TYPES + 1)[..., 1:]
-        grids = grids.permute(0, 3, 1, 2).to(dtype=observations.dtype)
+        # One comparison per type, written straight into NCHW: the same 0/1
+        # planes F.one_hot gave, without its int64 detour, the min/max checks
+        # it runs over the input, or the permuted copy back to channels-first.
+        levels = _entity_levels(observations.device, observations.dtype)
+        grids = (cells == levels).to(dtype=observations.dtype)
 
         velocity = observations[:, start + CELL_COUNT:].reshape(
             batch, VELOCITY_CHANNELS, GRID_SIZE, GRID_SIZE)

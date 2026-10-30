@@ -45,6 +45,7 @@ from torch.nn import functional as F
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.policies import ActorCriticPolicy
 
+from . import speed
 from .actions import ACTION_MASKS
 from .gradient import simulate_player
 from .observe import ARENA_SIZE, CELL_SIZE, GRID_SIZE
@@ -187,8 +188,7 @@ class VelocityFlowExtractor(BaseFeaturesExtractor):
         # per-cell detail. A global summary should be a smooth low-frequency
         # surface; the step at a block edge is not a fact about danger, and the
         # controller samples across those edges.
-        context = F.interpolate(context, size=trunk.shape[-2:],
-                                mode="bilinear", align_corners=False)
+        context = speed.upsample(context, trunk.shape[-2:])
         return self.field_head(torch.cat((trunk, context), dim=1))
 
     def field(self, observations):
@@ -197,11 +197,11 @@ class VelocityFlowExtractor(BaseFeaturesExtractor):
         Slice 0 is the nearest future and is what the watch overlay draws.
         """
         _, grids = DodgeHybridExtractor.policy_inputs(observations)
-        return self._field_from_trunk(self.field_net(grids))
+        return self._field_from_trunk(self.field_net(speed.trunk_layout(grids)))
 
     def forward(self, observations):
         coordinates, grids = DodgeHybridExtractor.policy_inputs(observations)
-        trunk = self.field_net(grids)
+        trunk = self.field_net(speed.trunk_layout(grids))
         field = self._field_from_trunk(trunk)
 
         # Player position, in pixels. The leading pair, not the trailing one:
@@ -265,8 +265,7 @@ class _HalfResolutionTrunk(nn.Module):
     def forward(self, grids):
         stem = self.stem(grids)
         body = self.body(F.avg_pool2d(stem, 2))
-        return F.interpolate(body, size=stem.shape[-2:],
-                             mode="bilinear", align_corners=False)
+        return speed.upsample(body, stem.shape[-2:])
 
 
 class VelocityFlowV2Extractor(VelocityFlowExtractor):
@@ -340,7 +339,14 @@ class _FieldLogits(nn.Module):
 
 
 class VelocityFlowPolicy(ActorCriticPolicy):
-    """ActorCritic whose logits come from the field, not from a head."""
+    """ActorCritic whose logits come from the field, not from a head.
+
+    forward and evaluate_actions are Stable-Baselines3's, op for op, minus the
+    torch.distributions object they build on the way. That object is the same
+    arithmetic -- normalise the logits, softmax, gather -- wrapped in argument
+    validation that costs a device sync per check on CUDA, and SB3 builds one
+    per call. Rollout forwards on CUDA additionally replay as a CUDA graph.
+    """
 
     def _build(self, lr_schedule):
         super()._build(lr_schedule)
@@ -349,3 +355,71 @@ class VelocityFlowPolicy(ActorCriticPolicy):
         self.optimizer = self.optimizer_class(
             self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs
         )
+        speed.configure_cudnn()
+        self._graphs = speed.GraphCache()
+
+    def __getstate__(self):
+        # Captured graphs belong to one process and one device.
+        state = self.__dict__.copy()
+        state.pop("_graphs", None)
+        return state
+
+    def __setstate__(self, state):
+        super().__setstate__(state)
+        self._graphs = speed.GraphCache()
+
+    def _distribution_inputs(self, obs):
+        """Normalised log-probabilities and values.
+
+        log_pmf is exactly what torch's Categorical stores as its logits.
+        """
+        features = self.extract_features(obs)
+        latent_pi, latent_vf = self.mlp_extractor(features)
+        values = self.value_net(latent_vf)
+        logits = self.action_net(latent_pi)
+        log_pmf = logits - logits.logsumexp(dim=-1, keepdim=True)
+        return log_pmf, values
+
+    def _sampling_inputs(self, obs):
+        log_pmf, values = self._distribution_inputs(obs)
+        return log_pmf, F.softmax(log_pmf, dim=-1), values
+
+    def _parameter_signature(self):
+        return tuple(t.data_ptr() for t in self.parameters()) + tuple(
+            t.data_ptr() for t in self.buffers())
+
+    def forward(self, obs, deterministic=False):
+        graph = None
+        if (speed.CUDA_GRAPHS and obs.is_cuda and not self.training
+                and not torch.is_grad_enabled()):
+            graph = self._graphs.lookup(self._sampling_inputs, obs,
+                                        self._parameter_signature())
+        if graph is not None:
+            log_pmf, probs, values = graph(obs)
+            # The graph's outputs are overwritten by its next replay.
+            values = values.clone()
+        else:
+            log_pmf, probs, values = self._sampling_inputs(obs)
+        # Categorical.mode and Categorical.sample, as SB3 calls them.
+        if deterministic:
+            actions = torch.argmax(probs, dim=1)
+        else:
+            actions = torch.multinomial(probs.reshape(-1, N_ACTIONS), 1, True).T
+            actions = actions.reshape(probs.shape[:-1])
+        log_prob = self._log_prob(log_pmf, actions)
+        return actions.reshape((-1, *self.action_space.shape)), values, log_prob
+
+    @staticmethod
+    def _log_prob(log_pmf, actions):
+        """Categorical.log_prob, without the support check."""
+        value = actions.long().unsqueeze(-1)
+        value, log_pmf = torch.broadcast_tensors(value, log_pmf)
+        return log_pmf.gather(-1, value[..., :1]).squeeze(-1)
+
+    def evaluate_actions(self, obs, actions):
+        log_pmf, values = self._distribution_inputs(obs)
+        log_prob = self._log_prob(log_pmf, actions)
+        # Categorical.entropy, op for op.
+        clamped = torch.clamp(log_pmf, min=torch.finfo(log_pmf.dtype).min)
+        entropy = -(clamped * F.softmax(log_pmf, dim=-1)).sum(-1)
+        return values, log_prob, entropy
