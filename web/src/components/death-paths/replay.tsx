@@ -126,7 +126,7 @@ export function Replay({ runId, appearance, onBack }: {
         {(error || (meta && !meta.matched)) && (
           <div className="absolute inset-0 grid place-items-center p-6 text-center text-sm text-white">
             <div className="grid gap-1">
-              <b>This replay does not match the recording.</b>
+              <b>{error ? "Could not load this replay." : "This replay does not match the recording."}</b>
               <span className="text-white/80">{error ?? meta?.reason}</span>
             </div>
           </div>

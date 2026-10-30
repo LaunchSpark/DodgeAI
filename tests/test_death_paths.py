@@ -89,8 +89,10 @@ def test_pattern_view_lists_its_appearances(recording):
     pid = recording.summary()["patterns"][0]["pid"]
     view = recording.pattern(pid)
     assert view["run_id"] == recording.run_id and view["pid"] == pid
-    assert view["appearances"] == [a for a in recording.appearances if a["pid"] == pid]
-    layouts = {tuple(map(tuple, a["rects"])) for a in view["appearances"] if a["rects"]}
+    assert [a["id"] for a in view["appearances"]] == [
+        a["id"] for a in recording.appearances if a["pid"] == pid]
+    layouts = {tuple(map(tuple, a["rects"])) for a in view["appearances"]
+               if any(rect[4] for rect in a["rects"])}
     assert (view["layout"] is not None) == (len(layouts) == 1)
 
 

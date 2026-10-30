@@ -147,3 +147,11 @@ def test_replay_of_stale_run_is_rejected(client, recorded):
         assert response.status_code == 409
         assert response.json()["detail"] == "That sampling run has been replaced; reopen the pattern."
     assert client.get("/api/death-paths/replay/99", params={"run": "run-a"}).status_code == 404
+
+
+def test_the_last_run_stays_open_while_the_next_one_records(client, recorded):
+    # The result is only replaced when the new run finishes.
+    client.app.state.dashboard.death_paths.status = "running"
+    response = client.get("/api/death-paths/pattern/28", params={"run": "run-a"})
+    assert response.status_code == 200
+    assert [a["id"] for a in response.json()["appearances"]] == [0, 1]

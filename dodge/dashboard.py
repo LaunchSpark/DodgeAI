@@ -317,9 +317,13 @@ class Dashboard:
         return {**snapshot, "data": self.death_paths.result.summary()}
 
     def death_path_recording(self, run_id):
-        """The finished recording, if it is still run `run_id`."""
+        """The last finished recording, if it is still run `run_id`.
+
+        A run in progress or one that failed leaves the previous result in place,
+        so its appearances stay open until a new run replaces it.
+        """
         with self.death_paths.lock:
-            recording = self.death_paths.result if self.death_paths.status == "done" else None
+            recording = self.death_paths.result
         if recording is None or recording.run_id != run_id:
             raise LookupError(STALE_RUN)
         return recording
@@ -334,7 +338,7 @@ class Dashboard:
         return {"fps": REPLAY_FPS, "count": len(frames),
                 "frames": base64.b64encode(zlib.compress(frames.tobytes())).decode("ascii"),
                 "samples": result.samples, "matched": result.matched, "reason": result.reason,
-                "appearance": recording.appearances[appearance_id]}
+                "appearance": recording.appearance(appearance_id)}
 
 
 def create_app(session):

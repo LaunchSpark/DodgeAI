@@ -83,3 +83,15 @@ def test_no_pattern_replay_is_last_300_frames(recording):
         result = replay(recording, appearance["id"])
         assert result.matched, result.reason
         assert len(result.frames) == min(300, appearance["end"])
+
+
+def test_unfinished_appearance_replays_to_the_cap():
+    capped = record(dodge, SEEDS[:16], frame_cap=600, step_frames=1, difficulty=1,
+                    patterns=True, powerups=True)
+    unfinished = [a for a in capped.appearances if a["outcome"] == "unfinished"]
+    assert unfinished
+    for appearance in unfinished:
+        result = replay(capped, appearance["id"])
+        assert result.matched, result.reason
+        assert len(result.frames) == _window(appearance)
+        assert result.samples[-1]["frame"] == appearance["end"]

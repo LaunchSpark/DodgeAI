@@ -37,7 +37,15 @@ RECT_KINDS = ("static_rect", "moving_rect")
 
 
 def _points(values):
-    return [round(value, 2) for value in values]
+    # Paths are most of a recording's memory: 8 bytes a frame, not ~64 as lists.
+    return np.asarray(values, dtype=np.float32)
+
+
+def _public(appearance):
+    """An appearance as JSON wants it: paths as lists, to the hundredth."""
+    return {**appearance,
+            "x": np.round(np.asarray(appearance["x"], dtype=np.float64), 2).tolist(),
+            "y": np.round(np.asarray(appearance["y"], dtype=np.float64), 2).tolist()}
 
 
 def _rects(rects):
@@ -128,12 +136,18 @@ class Recording:
         return {"run_id": self.run_id, "games": self.games,
                 "patterns": order + ([loose] if loose is not None else [])}
 
+    def appearance(self, appearance_id):
+        return _public(self.appearances[appearance_id])
+
     def pattern(self, pid):
         appearances = [a for a in self.appearances if a["pid"] == pid]
-        layouts = {tuple(map(tuple, a["rects"])) for a in appearances if a["rects"]}
+        # Only rectangles caught at their first lethal frame say where the
+        # pattern strikes; a death during the warning keeps earlier ones.
+        layouts = {tuple(map(tuple, a["rects"])) for a in appearances
+                   if any(rect[4] for rect in a["rects"])}
         layout = [list(rect) for rect in next(iter(layouts))] if len(layouts) == 1 else None
         return {"run_id": self.run_id, "pid": pid, "layout": layout,
-                "appearances": appearances}
+                "appearances": [_public(a) for a in appearances]}
 
 
 def record(policy, seeds, *, frame_cap=18_000, progress=None, **game_settings):
