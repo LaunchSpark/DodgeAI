@@ -365,6 +365,10 @@ class DashboardCallback(BaseCallback):
                         self.episode_reward.get(index, 0.0) + float(rewards[index])
                     )
 
+                run = info.get("run")
+                if run is not None:
+                    data.games.add(run, data.update)
+
                 episode = info.get("episode")
                 finished = episode is not None or (
                     # Monitor normally supplies episode, but retain the Dodge
@@ -792,6 +796,8 @@ class PPOTrainingSession:
 
     def _on_post_update(self, model):
         """The safe point. Saves first, then a snapshot if anyone needs one."""
+        with self.lock:
+            self.data.games.close_update(self._completed_updates(model))
         self._process_save_requests(model)
         self._service_pending_watch(model, publish_for_live_watchers=True)
 

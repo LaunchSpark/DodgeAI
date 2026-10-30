@@ -5,6 +5,7 @@ from collections import deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+from .metrics import summary
 from .series import RunSeries
 
 
@@ -30,6 +31,49 @@ class EventCount:
     rollout: int = 0
     total: int = 0
     history: deque[int] = field(default_factory=lambda: deque(maxlen=18))
+
+
+class GameLog:
+    """Finished games for the evaluation figures, and quarter means per update.
+
+    Games are kept in a bounded window, so the figures describe the policy as
+    it plays now. The per-update rows span the whole run: when they fill, every
+    other row is dropped, so old history loses resolution instead of falling
+    off the left edge.
+    """
+
+    def __init__(self, capacity=2048, window=256, rows=480):
+        self.games = deque(maxlen=capacity)
+        self.window = window
+        self.rows_capacity = rows
+        self.quarters = []
+        self._new_games = 0
+
+    def add(self, game, update):
+        self.games.append({**game, "update": update})
+        self._new_games += 1
+
+    def recent(self, count=None):
+        games = list(self.games)
+        return games[-(count or self.window):]
+
+    def close_update(self, update):
+        """Record the quarter means of the latest window, if games ended since."""
+        if not self._new_games:
+            return
+        self._new_games = 0
+        stats = summary(self.recent())
+        self.quarters.append({"update": update, "q1": stats["q1"], "mean": stats["mean"],
+                              "q4": stats["q4"], "games": stats["games"]})
+        if len(self.quarters) > self.rows_capacity:
+            self.quarters = self.quarters[::2]
+
+    def copy(self):
+        clone = GameLog(self.games.maxlen, self.window, self.rows_capacity)
+        clone.games = deque(self.games, maxlen=self.games.maxlen)
+        clone.quarters = list(self.quarters)
+        clone._new_games = self._new_games
+        return clone
 
 
 @dataclass
@@ -68,6 +112,8 @@ class DashboardSnapshot:
     events: dict[str, EventCount] = field(
         default_factory=lambda: {key: EventCount() for key in EVENT_KEYS}
     )
+    # Whole games, as the environment reports them when they end.
+    games: GameLog = field(default_factory=GameLog)
 
     def copy(self):
         """A detached copy the dashboard can render from outside the lock.
@@ -84,6 +130,7 @@ class DashboardSnapshot:
             episode_length=self.episode_length.copy(),
             life_lengths=tuple(band.copy() for band in self.life_lengths),
             enemies_killed=self.enemies_killed.copy(),
+            games=self.games.copy(),
             events={
                 key: EventCount(count.rollout, count.total,
                                 deque(count.history, maxlen=count.history.maxlen))
