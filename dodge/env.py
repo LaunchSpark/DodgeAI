@@ -151,22 +151,29 @@ EVENT_FIELDS = ("enemies_destroyed", "explosion_pickups", "freeze_pickups",
 class StepBatch:
     """Every lane's per-step info fields for one step, as arrays.
 
-    Each attribute is the array of what `info[<same name>]` holds per lane;
-    `events` maps each `training_events` key to its array. The arrays belong
-    to this step alone: the env never writes to them afterwards.
+    Each attribute is the array of what `info[<same name>]` holds per lane.
+    `event_counts` holds `training_events`, one column per key of
+    EVENT_FIELDS, so a consumer can total every event in one reduction;
+    `events` maps each key to its column. The arrays belong to this step
+    alone: the env never writes to them afterwards.
     """
 
     __slots__ = ("score", "score_delta", "frames", "run_frames", "run_over",
                  "survived_frames", "survival_reward", "uncontrolled_score",
-                 "events", "done")
+                 "event_counts", "done")
 
     def __init__(self, **fields):
         for name, value in fields.items():
             setattr(self, name, value)
 
+    @property
+    def events(self):
+        """training_events key -> that event's per-lane counts."""
+        return {key: self.event_counts[:, column]
+                for column, key in enumerate(EVENT_FIELDS)}
+
     def lane_info(self, lane):
         """Lane `lane`'s info dict, without the end-of-episode entries."""
-        events = self.events
         return {
             "score": float(self.score[lane]),
             "score_delta": float(self.score_delta[lane]),
@@ -178,7 +185,8 @@ class StepBatch:
             "survived_frames": int(self.survived_frames[lane]),
             "survival_reward": float(self.survival_reward[lane]),
             "uncontrolled_score": float(self.uncontrolled_score[lane]),
-            "training_events": {key: int(events[key][lane]) for key in EVENT_FIELDS},
+            "training_events": dict(zip(EVENT_FIELDS,
+                                        self.event_counts[lane].tolist())),
         }
 
 
@@ -578,16 +586,9 @@ class DodgeVecEnv(VecEnv):
             survived_frames=survived,
             survival_reward=survival_reward,
             uncontrolled_score=uncontrolled,
-            events={
-                "enemies_destroyed": kills,
-                "explosion_pickups": pickups[:, 0],
-                "freeze_pickups": pickups[:, 1],
-                "shrink_pickups": pickups[:, 2],
-                "lives_spent": lives_spent,
-                "survival_frames": survived,
-                "patterns_survived": patterns_survived,
-                "deaths": dead.astype(np.int64),
-            },
+            # Columns in EVENT_FIELDS order; dead is promoted to int64.
+            event_counts=np.column_stack((kills, pickups, lives_spent, survived,
+                                          patterns_survived, dead)),
             done=done,
         )
         infos = StepInfos([{} for _ in range(lanes)], batch)

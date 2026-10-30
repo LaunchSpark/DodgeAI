@@ -19,7 +19,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.save_util import load_from_zip_file
 from stable_baselines3.common.utils import get_device
 
-from .env import MAX_ACTION_REPEAT, DodgeVecEnv, validate_spawn_rate_percent
+from .env import EVENT_FIELDS, MAX_ACTION_REPEAT, DodgeVecEnv, validate_spawn_rate_percent
 from .resume import CheckpointWriter, read_state, restore_training_state
 from .policies import (ARCHITECTURES, COORDINATE_INPUTS, DEFAULT_ARCHITECTURE,
                        architecture_from_kwargs,
@@ -425,15 +425,16 @@ class DashboardCallback(BaseCallback):
         if self._banked_reward is None or len(self._banked_reward) != len(done):
             self._banked_kills = np.zeros(len(done), dtype=np.int64)
             self._banked_reward = np.zeros(len(done))
-        running = ~done
-        for key, values in batch.events.items():
+        ended = np.flatnonzero(done).tolist()
+        # Most steps end no episode, and a slice spares the masked copies.
+        running = ~done if ended else slice(None)
+        counts = batch.event_counts[running]
+        for key, count in zip(EVENT_FIELDS, counts.sum(axis=0).tolist()):
             if key in self.rollout_events:
-                count = int(values[running].sum())
                 self.rollout_events[key] += count
                 data.events[key].total += count
-        self._banked_kills[running] += batch.events["enemies_destroyed"][running]
+        self._banked_kills[running] += counts[:, EVENT_FIELDS.index("enemies_destroyed")]
         self._banked_reward[running] += rewards[running]
-        ended = np.flatnonzero(done).tolist()
         for index in ended:
             self.episode_kills[index] = int(self._banked_kills[index])
             self.episode_reward[index] = float(self._banked_reward[index])
