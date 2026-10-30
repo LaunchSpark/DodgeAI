@@ -6,7 +6,9 @@ a few hundred thousand frames a second. The engine also computes the
 VelocityFlow observation; the reward is computed here.
 """
 
+from dataclasses import asdict
 import math
+import secrets
 import time
 
 import numpy as np
@@ -15,6 +17,7 @@ from stable_baselines3.common.vec_env.base_vec_env import VecEnv
 
 from . import rewards
 from .actions import ACTION_MASKS
+from .seeds import ExplicitSeeds, SeedStream
 from .observe import ARENA_SIZE, OBSERVATION_SIZE
 
 try:
@@ -128,6 +131,11 @@ class DodgeVecEnv(VecEnv):
     starting from mid-game states: an episode ends (terminated) at each one
     while the game carries on underneath it. `max_episode_frames` caps the
     game, not the episode, and ends it as a truncation.
+
+    Game seeds come from a `SeedStream` keyed by `seed`: each slot's n-th game
+    plays a hash of (stream, seed, slot, n) that avoids every reserved range
+    (see dodge.seeds), so training cannot land on an evaluation cohort.
+    `seeds` instead deals an explicit list in order, reserved or not.
     """
 
     def __init__(
@@ -145,6 +153,8 @@ class DodgeVecEnv(VecEnv):
         max_episode_frames=None,
         reward_config_path=None,
         execution="parallel",
+        seeds=None,
+        seed_stream="train",
     ):
         if max_episode_frames is not None and max_episode_frames < 1:
             raise ValueError("max_episode_frames must be positive or None")
@@ -168,7 +178,25 @@ class DodgeVecEnv(VecEnv):
         self.reward_config_path = (reward_config_path if reward_config_path is not None
                                    else rewards.CONFIG_PATH)
         self.reward_config = rewards.load(self.reward_config_path)
-        self._rng = np.random.default_rng(seed)
+        # What the env was built with, for a checkpoint's provenance manifest
+        # and for evaluating on the same game.
+        self.game_settings = {
+            "difficulty": int(difficulty), "patterns": bool(patterns),
+            "powerups": bool(powerups), "normal_enemies": bool(normal_enemies),
+            "kamikaze_enemies": bool(kamikaze_enemies),
+            "spawn_rate_percent": int(spawn_rate_percent),
+            "action_repeat": int(action_repeat), "lives": int(lives),
+            "max_episode_frames": max_episode_frames, "execution": execution,
+        }
+        if seeds is not None:
+            self._stream = ExplicitSeeds(seeds, n_slots=n_envs)
+        else:
+            # An unseeded env still gets a definite run seed, so its stream
+            # can be recorded and resumed like any other.
+            run_seed = seed if seed is not None else secrets.randbits(63)
+            self._stream = SeedStream(run_seed, n_envs, stream=seed_stream)
+        # Raw game frames advanced across every lane, for the run's counters.
+        self.total_frames = 0
         self._actions = None
         lanes = np.zeros(n_envs)
         self._episode_started = lanes.copy()
@@ -176,14 +204,106 @@ class DodgeVecEnv(VecEnv):
         self._episode_frames = np.zeros(n_envs, dtype=np.int64)
         self._run_frames = np.zeros(n_envs, dtype=np.int64)
         self._game_seeds = np.zeros(n_envs, dtype=np.uint32)
+        # Each lane's game as the stream counts them: its seed is the hash of
+        # this index, which is what an abandoned-episode record reports.
+        self._game_indices = np.zeros(n_envs, dtype=np.int64)
         # Per game: frames lived with a pattern active, and how many times each
         # pattern was met -- what the per-pattern and hazard metrics need.
         self._pattern_frames = np.zeros(n_envs, dtype=np.int64)
         self._encounters = [{} for _ in range(n_envs)]
         self._previous = None
 
-    def _draw_seeds(self, count):
-        return self._rng.integers(0, 2**31 - 1, size=count, dtype=np.uint32)
+    def _draw_seeds(self, lanes):
+        """The next game seed for each of `lanes`, recorded as their games."""
+        lanes = np.asarray(lanes, dtype=np.int64)
+        seeds = self._stream.draw(lanes)
+        self._game_seeds[lanes] = seeds
+        self._game_indices[lanes] = self._stream.next_episode_indices[lanes] - 1
+        return seeds
+
+    @property
+    def next_episode_indices(self):
+        """Per slot, the index of the next game it will start."""
+        return self._stream.next_episode_indices.copy()
+
+    @next_episode_indices.setter
+    def next_episode_indices(self, indices):
+        indices = np.asarray(indices, dtype=np.int64).reshape(-1)
+        if len(indices) != self.num_envs:
+            raise ValueError(f"expected {self.num_envs} episode indices, got {len(indices)}")
+        self._stream.next_episode_indices = indices.copy()
+
+    @property
+    def game_seeds(self):
+        """The seed of the game each lane is playing."""
+        return self._game_seeds.copy()
+
+    @property
+    def seed_mode(self):
+        return self._stream.kind
+
+    def seed_state(self):
+        """Everything needed to put the same games back in the same lanes."""
+        return {
+            "seeds": self._stream.state_dict(),
+            "game_seeds": [int(seed) for seed in self._game_seeds],
+            "game_indices": [int(index) for index in self._game_indices],
+            "total_frames": int(self.total_frames),
+        }
+
+    def restore_seed_state(self, state):
+        """Restart every lane on the game `seed_state` recorded, from frame 0.
+
+        Exact when the state was taken just after `abandon_episodes` (a
+        segment boundary), where every lane was at the start of its game.
+        Returns the observation.
+        """
+        # SB3's load seeds the env; a restored stream supersedes that.
+        self._reset_seeds()
+        saved = state["seeds"]
+        if saved.get("kind") == SeedStream.kind:
+            self._stream = SeedStream(saved["run_seed"], self.num_envs,
+                                      stream=saved["stream"])
+        self._stream.load_state_dict(saved)
+        self._game_indices[:] = state["game_indices"]
+        self.total_frames = int(state["total_frames"])
+        return self._start_all(np.asarray(state["game_seeds"], dtype=np.uint32))
+
+    def abandon_episodes(self):
+        """Give up every game in flight; each lane starts on its next seed.
+
+        The segment boundary: what Turner's teacher does every
+        `segment_updates` PPO updates, so that a checkpoint taken here can be
+        resumed exactly. Returns the new observation and one record per lane
+        of the game it gave up.
+        """
+        score = (self._previous["score"] if self._previous is not None
+                 else np.zeros(self.num_envs))
+        abandoned = [{
+            "slot": lane,
+            "seed": int(self._game_seeds[lane]),
+            "episode_index": int(self._game_indices[lane]),
+            "frames": int(self._run_frames[lane]),
+            "episode_frames": int(self._episode_frames[lane]),
+            "score": float(score[lane]),
+        } for lane in range(self.num_envs)]
+        lanes = np.arange(self.num_envs)
+        return self._start_all(self._draw_seeds(lanes)), abandoned
+
+    def config(self):
+        """The env's full configuration, for a provenance manifest."""
+        stream = self._stream.state_dict()
+        return {
+            "n_envs": self.num_envs,
+            **self.game_settings,
+            "seed_mode": self._stream.kind,
+            "run_seed": stream.get("run_seed"),
+            "seed_stream": stream.get("stream"),
+            "reserved_seed_ranges": {name: list(bounds) for name, bounds in
+                                     getattr(self._stream, "reserved", {}).items()},
+            "reward_config_path": str(self.reward_config_path),
+            "reward_config": asdict(self.reward_config),
+        }
 
     def _counters(self, state):
         return {
@@ -215,12 +335,20 @@ class DodgeVecEnv(VecEnv):
         self._episode_frames[lanes] = 0
 
     def reset(self):
+        if (self._seeds and self._seeds[0] is not None
+                and isinstance(self._stream, SeedStream)):
+            # VecEnv.seed(), which SB3 calls with the model's seed: the stream
+            # restarts from that run seed, as the old rng was re-seeded.
+            self._stream = SeedStream(self._seeds[0], self.num_envs,
+                                      stream=self._stream.stream)
+        self._reset_seeds()
+        return self._start_all(self._draw_seeds(np.arange(self.num_envs)))
+
+    def _start_all(self, seeds):
+        """Start every lane on a fresh game of `seeds`."""
         # Picked up per reset so a dashboard edit reaches the next episodes.
         self.reward_config = rewards.load(self.reward_config_path)
-        if self._seeds and self._seeds[0] is not None:
-            self._rng = np.random.default_rng(self._seeds[0])
-        self._reset_seeds()
-        self._game_seeds[:] = self._draw_seeds(self.num_envs)
+        self._game_seeds[:] = seeds
         self.engine.reset_ml_batch(self._game_seeds)
         state = self.engine.observe_velocity()
         self._previous = None
@@ -242,6 +370,7 @@ class DodgeVecEnv(VecEnv):
         state = self.engine.observe_velocity()
         self._run_frames += frames
         self._episode_frames += frames
+        self.total_frames += int(frames.sum())
 
         now = self._counters(state)
         dead = state["dead"]
@@ -319,6 +448,7 @@ class DodgeVecEnv(VecEnv):
             if run_over[lane]:
                 # The whole game, for the dashboard's evaluation figures.
                 info["run"] = {
+                    "seed": int(self._game_seeds[lane]),
                     "frames": int(self._run_frames[lane]),
                     "score": float(now["score"][lane]),
                     "died": bool(dead[lane]),
@@ -344,8 +474,7 @@ class DodgeVecEnv(VecEnv):
         self._start_episodes(np.flatnonzero(done & ~run_over))
         restart = np.flatnonzero(run_over).astype(np.uint32)
         if len(restart):
-            seeds = self._draw_seeds(len(restart))
-            self._game_seeds[restart] = seeds
+            seeds = self._draw_seeds(restart)
             self.engine.reset_ml_lanes(restart, seeds)
             fresh = self.engine.observe_velocity()
             self._start_runs(restart, fresh)
