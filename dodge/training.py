@@ -1467,7 +1467,7 @@ class PPOTrainingSession:
             "--spawn-rate-percent", str(game_config["spawn_rate_percent"]),
             "--update", str(update),
             "--current-update", str(update),
-            "--live-dir", str(self.live_watch_dir),
+            "--live-dir", str(Path(self.live_watch_dir).resolve()),
             "--seed", str(secrets.randbelow(2**31 - 1)),
             "--model-name", model_name,
         ]
