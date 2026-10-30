@@ -49,6 +49,7 @@ def _session(tmp_path, monkeypatch):
                                  autostart=False, device="cpu", n_envs=2,
                                  rollout_steps=16, architecture="mlp")
     session.schedule_path = tmp_path / "training.json"
+    session.score_in_background = False
     env = make_training_env(2, 0, session.env_kwargs)
     model = session._new_model(env)
     session.model_architecture = "mlp"
@@ -105,9 +106,11 @@ def test_a_plateau_steps_the_rate_down_and_a_new_best_resets_it(tmp_path, monkey
 
         # 500 best; 400, 450 miss -> step to 1e-4; 600 best; 300, 200 miss -> 3e-5.
         assert rates == [3e-4, 3e-4, 1e-4, 1e-4, 1e-4, 3e-5]
+        # The next boundary applies the stepped rate.
+        session._apply_schedule(model)
         assert model.lr_schedule(1.0) == pytest.approx(3e-5)
         assert (tmp_path / "models" / "mlp-candidate.zip").exists()
-        assert "stepped down to 0.0001" in events[2].message
+        assert "steps down to 0.0001" in events[2].message
         assert session.schedule_status["last"]["mean"] == 200.0
     finally:
         env.close()
@@ -127,4 +130,39 @@ def test_scoring_is_off_between_boundaries_and_without_a_file(tmp_path, monkeypa
         model.completed_updates = 60
         session._score_dev_cohort(model)
     finally:
+        env.close()
+
+
+def test_scoring_runs_beside_training_and_skips_while_busy(tmp_path, monkeypatch):
+    import threading
+
+    session, model, env = _session(tmp_path, monkeypatch)
+    session.score_in_background = True
+    release = threading.Event()
+    calls = []
+
+    class Gate:
+        def consider(self, scored, candidate, *, update=None):
+            calls.append(update)
+            assert scored is not model  # a copy loaded off disk
+            release.wait(10)
+            return {"promoted": True, "best_mean": 1.0,
+                    "dev": {"mean": 1.0, "q1": 1.0}}
+
+    try:
+        monkeypatch.setattr(session, "_retention_gate", lambda: Gate())
+        monkeypatch.setattr(session, "_emit", lambda event: None)
+        schedule.save(TrainingConfig(retain_every=1), session.schedule_path)
+        model.completed_updates = 1
+        session._score_dev_cohort(model)  # returns while the gate is blocked
+        assert session.schedule_status["scoring"] == 1
+        model.completed_updates = 2
+        session._score_dev_cohort(model)  # still busy: skipped
+        release.set()
+        session._scoring.join(10)
+        assert calls == [1]
+        assert session.schedule_status["scoring"] is None
+        assert session.schedule_status["last"]["update"] == 1
+    finally:
+        release.set()
         env.close()

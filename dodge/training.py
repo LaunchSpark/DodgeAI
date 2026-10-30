@@ -24,6 +24,7 @@ from stable_baselines3.common.utils import ConstantSchedule, get_device
 from .env import EVENT_FIELDS, MAX_ACTION_REPEAT, DodgeVecEnv, validate_spawn_rate_percent
 from . import schedule
 from .resume import CheckpointWriter, read_state, restore_training_state
+from .evaluate import evaluate_policy
 from .retention import RetentionGate, best_path_for
 from .seeds import DEV_COHORT_SIZE, dev_cohort
 from .policies import (ARCHITECTURES, COORDINATE_INPUTS, DEFAULT_ARCHITECTURE,
@@ -436,6 +437,21 @@ def _finished_lanes(infos, dones):
     return np.flatnonzero(done).tolist()
 
 
+def _evaluate_argmax(model, seeds, *, deterministic=True, frame_cap=None,
+                     **game_settings):
+    """evaluate_model without its RNG save-and-restore.
+
+    That restore is right on the training thread and wrong off it: run beside
+    training, it would rewind the generators training is drawing from. Argmax
+    play draws nothing, so there is nothing to protect.
+    """
+    def policy(observations):
+        actions, _ = model.predict(observations, deterministic=True)
+        return actions
+
+    return evaluate_policy(policy, seeds, frame_cap=frame_cap, **game_settings)
+
+
 class DashboardCallback(BaseCallback):
     def __init__(self, session):
         super().__init__(verbose=0)
@@ -732,6 +748,9 @@ class PPOTrainingSession:
         self.schedule_status = {}
         self._scorings_since_best = 0
         self._game_settings = {}
+        # The dev-cohort scoring in flight, if any; see _score_dev_cohort.
+        self._scoring = None
+        self.score_in_background = True
         if autostart and architecture is not None:
             self.start()
 
@@ -1038,16 +1057,18 @@ class PPOTrainingSession:
         name = self.active_model_name or self.model_architecture
         return RetentionGate(best_path_for(self.model_dir, name),
                              game_settings=self._game_settings,
-                             seeds=dev_cohort(DEV_COHORT_SIZE))
+                             seeds=dev_cohort(DEV_COHORT_SIZE),
+                             evaluate=_evaluate_argmax)
 
     def _score_dev_cohort(self, model):
-        """On schedule, score the held-out cohort and keep the best so far.
+        """On schedule, start scoring the held-out cohort; keep the best so far.
 
-        The candidate is saved with its sidecars and handed to the retention
-        gate, which promotes it to `<name>-best.zip` only if its dev mean beats
-        every earlier one. Enough scorings in a row without a new best step the
-        learning rate down a stage, by rewriting the panel's file, so the panel
-        shows the rate the run is actually using.
+        The candidate is saved with its sidecars and scored on its own thread,
+        from a copy loaded off disk, so training -- and every other request
+        served at this boundary, Watch and Save included -- carries on during
+        the minutes a scoring takes. A boundary that falls while the last
+        scoring is still running skips its turn, so the candidate file is never
+        overwritten under a scoring.
         """
         if not schedule.exists(self.schedule_path):
             return
@@ -1055,33 +1076,65 @@ class PPOTrainingSession:
         update = self._completed_updates(model)
         if not config.retain_every or update % config.retain_every:
             return
+        if self._scoring is not None and self._scoring.is_alive():
+            return
         name = self.active_model_name or self.model_architecture
         candidate = self.model_dir / f"{name}-candidate"
-        with self.lock:
-            self.data.progress_phase = "scoring"
         model.save(candidate)
         self._write_sidecars(model, candidate)
-        outcome = self._retention_gate().consider(model, candidate, update=update)
+        with self.lock:
+            self.schedule_status = {**self.schedule_status, "scoring": update}
+        if not self.score_in_background:
+            self._score_candidate(candidate, update)
+            return
+        self._scoring = threading.Thread(target=self._score_candidate,
+                                         args=(candidate, update),
+                                         name="dodge-dev-cohort", daemon=True)
+        self._scoring.start()
+
+    def _score_candidate(self, candidate, update):
+        """Score one saved candidate and act on the verdict.
+
+        Enough scorings in a row without a new best step the learning rate down
+        a stage by rewriting the panel's file; the next update boundary applies
+        it, as it would a change made by hand, and the panel shows the rate the
+        run is actually using.
+        """
+        try:
+            scored = PPO.load(candidate, device=self.device)
+            outcome = self._retention_gate().consider(scored, candidate, update=update)
+        except Exception as error:
+            with self.lock:
+                self.schedule_status = {**self.schedule_status, "scoring": None}
+            self._emit(SessionEvent("schedule", False,
+                                    f"Dev cohort scoring failed: {error}",
+                                    candidate, update))
+            return
         dev = outcome["dev"]
-        self._scorings_since_best = 0 if outcome["promoted"] else self._scorings_since_best + 1
+        config = schedule.load(self.schedule_path)
+        with self.lock:
+            self._scorings_since_best = (0 if outcome["promoted"]
+                                         else self._scorings_since_best + 1)
+            since_best = self._scorings_since_best
         message = (f"Dev cohort at update {update}: mean {dev['mean']:.0f}, "
                    f"Q1 {dev['q1']:.0f} -- "
                    + ("new best" if outcome["promoted"]
                       else f"best is {outcome['best_mean']:.0f}"))
-        if config.patience and self._scorings_since_best >= config.patience:
+        if config.patience and since_best >= config.patience:
             lower = schedule.next_stage(config.learning_rate)
             if lower is not None:
                 schedule.save(schedule.TrainingConfig(**{**asdict(config),
                                                          "learning_rate": lower}),
                               self.schedule_path)
-                self._scorings_since_best = 0
-                message += f"; learning rate stepped down to {lower:g}"
-                self._apply_schedule(model)
+                with self.lock:
+                    self._scorings_since_best = since_best = 0
+                message += f"; learning rate steps down to {lower:g} from the next update"
         with self.lock:
             self.schedule_status = {
                 **self.schedule_status,
+                "scoring": None,
                 "best_mean": outcome["best_mean"],
-                "since_best": self._scorings_since_best,
+                "since_best": since_best,
                 "last": {"update": update, "mean": dev["mean"], "q1": dev["q1"],
                          "promoted": outcome["promoted"]},
             }
