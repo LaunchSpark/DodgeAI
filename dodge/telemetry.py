@@ -152,7 +152,9 @@ class ModelEntry:
 PROGRESS_ROWS = (
     ("reward", "Episode reward", "", True),
     ("episode_length", "Survival time", "s", True),
-    ("enemies_killed", "Enemies killed", "", True),
+    # Enemies killed was dropped: it tracked survival time and reward so
+    # closely that it said nothing they did not, and the events panel
+    # still counts kills.
     ("entropy", "Policy entropy", "", False),
 )
 
