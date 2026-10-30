@@ -21,7 +21,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.save_util import load_from_zip_file
 from stable_baselines3.common.utils import get_device
 
-from .env import MAX_ACTION_REPEAT, DodgeVecEnv, validate_spawn_rate_percent
+from .env import EVENT_FIELDS, MAX_ACTION_REPEAT, DodgeVecEnv, validate_spawn_rate_percent
 from .resume import CheckpointWriter, read_state, restore_training_state
 from .policies import (ARCHITECTURES, COORDINATE_INPUTS, DEFAULT_ARCHITECTURE,
                        architecture_from_kwargs,
@@ -381,6 +381,8 @@ def migrate_widened_inputs(source_params, target, path, device="cpu"):
 
 _EVENT_GETTER = operator.itemgetter(*EVENT_KEYS)
 _KILLS_COLUMN = EVENT_KEYS.index("enemies_destroyed")
+# DodgeVecEnv's batched event_counts columns, reordered into EVENT_KEYS order.
+_BATCH_COLUMNS = [EVENT_FIELDS.index(key) for key in EVENT_KEYS]
 
 
 def _event_counts(infos):
@@ -388,7 +390,13 @@ def _event_counts(infos):
 
     One C-level itemgetter per lane where the info carries every key, which
     DodgeVecEnv's always does; the per-key fallback is for partial dicts.
+    DodgeVecEnv's StepInfos carry every lane's counts as one array on
+    `infos.batch`, and only finished lanes get a full dict, so that array is
+    read directly when present.
     """
+    batch = getattr(infos, "batch", None)
+    if batch is not None:
+        return np.asarray(batch.event_counts, dtype=np.int64)[:, _BATCH_COLUMNS]
     rows = []
     for info in infos:
         events = info.get("training_events")
@@ -411,6 +419,10 @@ def _finished_lanes(infos, dones):
     done = np.zeros(len(infos), dtype=bool)
     flags = np.asarray(dones, dtype=bool).reshape(-1)[:len(infos)]
     done[:len(flags)] = flags
+    batch = getattr(infos, "batch", None)
+    if batch is not None:
+        # Only finished lanes carry a full dict, and batch.done marks them.
+        return np.flatnonzero(done | np.asarray(batch.done, dtype=bool)).tolist()
     for index, info in enumerate(infos):
         if "episode" in info and info["episode"] is not None:
             done[index] = True

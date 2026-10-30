@@ -88,6 +88,37 @@ def center_survival_scalar(x, y, screen_width=ARENA_SIZE, edge_penalty=0.5):
     return max(0.0, 1.0 - edge_penalty * taper)
 
 
+# Measured crossover of center_survival_scalars' two paths.
+SCALARS_LOOP_BELOW = 24
+
+
+def center_survival_scalars(x, y, screen_width=ARENA_SIZE, edge_penalty=0.5):
+    """`center_survival_scalar` over arrays of positions, bit for bit.
+
+    The distance goes through the same `math.hypot` the scalar version calls
+    -- numpy's hypot is a different routine that may round the last bit
+    differently -- and every other operation is the same IEEE double
+    operation in the same order, so each lane gets exactly the scalar's value
+    and the reward does not move by a bit.
+
+    Below a few dozen lanes numpy's per-call overhead outweighs its speed, so
+    a small batch simply calls the scalar function on each lane.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    if len(x) < SCALARS_LOOP_BELOW:
+        return np.array([center_survival_scalar(a, b, screen_width, edge_penalty)
+                         for a, b in zip(x.tolist(), y.tolist())], dtype=np.float64)
+    center = screen_width / 2.0
+    dx = (x - center).tolist()
+    dy = (y - center).tolist()
+    distance = np.fromiter(map(math.hypot, dx, dy), dtype=np.float64,
+                           count=len(dx)) / center
+    taper = np.minimum((distance - CENTRE_PLATEAU) / (1.0 - CENTRE_PLATEAU), 1.0)
+    tapered = np.maximum(0.0, 1.0 - edge_penalty * taper)
+    return np.where(distance <= CENTRE_PLATEAU, 1.0, tapered)
+
+
 MAX_ACTION_REPEAT = 5
 
 
@@ -123,6 +154,77 @@ def make_engine(*, step_frames=1, difficulty=1, patterns=False, powerups=False,
     )
 
 
+# The keys of info["training_events"], in the order they appear there.
+EVENT_FIELDS = ("enemies_destroyed", "explosion_pickups", "freeze_pickups",
+                "shrink_pickups", "lives_spent", "survival_frames",
+                "patterns_survived", "deaths")
+
+
+class StepBatch:
+    """Every lane's per-step info fields for one step, as arrays.
+
+    Each attribute is the array of what `info[<same name>]` holds per lane.
+    `event_counts` holds `training_events`, one column per key of
+    EVENT_FIELDS, so a consumer can total every event in one reduction;
+    `events` maps each key to its column. The arrays belong to this step
+    alone: the env never writes to them afterwards.
+    """
+
+    __slots__ = ("score", "score_delta", "frames", "run_frames", "run_over",
+                 "survived_frames", "survival_reward", "uncontrolled_score",
+                 "event_counts", "done")
+
+    def __init__(self, **fields):
+        for name, value in fields.items():
+            setattr(self, name, value)
+
+    @property
+    def events(self):
+        """training_events key -> that event's per-lane counts."""
+        return {key: self.event_counts[:, column]
+                for column, key in enumerate(EVENT_FIELDS)}
+
+    def lane_info(self, lane):
+        """Lane `lane`'s info dict, without the end-of-episode entries."""
+        return {
+            "score": float(self.score[lane]),
+            "score_delta": float(self.score_delta[lane]),
+            "frames": int(self.frames[lane]),
+            "run_frames": int(self.run_frames[lane]),
+            # The episode always ended; this says whether the game did
+            # too, which is what the dashboard's survival metric follows.
+            "run_over": bool(self.run_over[lane]),
+            "survived_frames": int(self.survived_frames[lane]),
+            "survival_reward": float(self.survival_reward[lane]),
+            "uncontrolled_score": float(self.uncontrolled_score[lane]),
+            "training_events": dict(zip(EVENT_FIELDS,
+                                        self.event_counts[lane].tolist())),
+        }
+
+
+class StepInfos(list):
+    """One step's infos: a list of one dict per lane, as a VecEnv returns.
+
+    Building a full dict for every lane on every step cost more than the
+    engine's own step. So a lane whose episode ended gets its full dict --
+    everything SB3 reads (terminal_observation, TimeLimit.truncated, episode)
+    and death and run, which only ever appear there -- and every other lane
+    an empty dict. Every lane's per-step fields are on `batch` as arrays,
+    which is where the dashboard reads them; `lane(i)` rebuilds lane i's
+    full dict from them, identical to what the env used to put in the list.
+
+    A wrapper that copies the list into a plain one drops `batch`.
+    """
+
+    def __init__(self, infos, batch):
+        super().__init__(infos)
+        self.batch = batch
+
+    def lane(self, index):
+        """Lane `index`'s full info dict."""
+        return self[index] if self.batch.done[index] else self.batch.lane_info(index)
+
+
 class DodgeVecEnv(VecEnv):
     """N games as one VecEnv, with the VelocityFlow observation and reward.
 
@@ -136,6 +238,10 @@ class DodgeVecEnv(VecEnv):
     plays a hash of (stream, seed, slot, n) that avoids every reserved range
     (see dodge.seeds), so training cannot land on an evaluation cohort.
     `seeds` instead deals an explicit list in order, reserved or not.
+
+    `step` returns its infos as a `StepInfos`: the full info dict only for a
+    lane whose episode ended, every lane's per-step fields as arrays on
+    `infos.batch`, and `infos.lane(i)` for lane i's full dict.
     """
 
     def __init__(
@@ -165,12 +271,22 @@ class DodgeVecEnv(VecEnv):
             spaces.Box(low=-1.0, high=1.0, shape=(OBSERVATION_SIZE,), dtype=np.float32),
             spaces.Discrete(len(ACTION_MASKS)),
         )
-        self.engine = make_engine(
+        self._engine_settings = dict(
             step_frames=action_repeat,
             difficulty=difficulty, patterns=patterns, powerups=powerups,
             normal_enemies=normal_enemies, kamikaze_enemies=kamikaze_enemies,
-            spawn_rate_percent=spawn_rate_percent, lives=lives, execution=execution,
+            spawn_rate_percent=spawn_rate_percent, lives=lives,
         )
+        self.engine = make_engine(**self._engine_settings, execution=execution)
+        # A second, small engine that starts restarted games on their own, so
+        # their first observation costs a few lanes' encoding rather than the
+        # whole batch's. See _fresh_games.
+        self._nursery = None
+        # "auto" picks whichever of the two is cheaper, from the timings
+        # below; "nursery" and "batch" force one, for the parity tests.
+        self._restart_observe = "auto"
+        self._observe_seconds = None
+        self._nursery_lane_seconds = None
         self.action_repeat = int(action_repeat)
         self.max_episode_frames = max_episode_frames
         # Resolved here rather than as a default argument so the location can
@@ -306,28 +422,32 @@ class DodgeVecEnv(VecEnv):
         }
 
     def _counters(self, state):
+        # copy=False: observe_velocity returns fresh arrays, so the ones
+        # already of the right type need no copy of their own.
         return {
-            "score": state["score"].astype(np.float64),
+            "score": state["score"].astype(np.float64, copy=False),
             "kills": state["uncontrolled_kills"].astype(np.int64),
             "lives": state["lives_spent"].astype(np.int64),
             "pickups": state["pickups"].astype(np.int64),
-            "pattern": state["pattern_active"].copy(),
+            "pattern": state["pattern_active"],
             "pattern_id": state["pattern_id"].astype(np.int64),
         }
 
-    def _start_runs(self, lanes, state):
-        """Bookkeeping for lanes whose game was just reset."""
+    def _start_runs(self, lanes, fresh):
+        """Bookkeeping for lanes whose game was just reset.
+
+        `fresh` holds those lanes' counters, in the order of `lanes`.
+        """
         self._run_frames[lanes] = 0
         self._pattern_frames[lanes] = 0
         for lane in lanes:
             self._encounters[lane] = {}
         self._start_episodes(lanes)
-        fresh = self._counters(state)
         if self._previous is None:
             self._previous = fresh
         else:
             for key, values in fresh.items():
-                self._previous[key][lanes] = values[lanes]
+                self._previous[key][lanes] = values
 
     def _start_episodes(self, lanes):
         self._episode_started[lanes] = time.monotonic()
@@ -352,7 +472,7 @@ class DodgeVecEnv(VecEnv):
         self.engine.reset_ml_batch(self._game_seeds)
         state = self.engine.observe_velocity()
         self._previous = None
-        self._start_runs(np.arange(self.num_envs), state)
+        self._start_runs(np.arange(self.num_envs), self._counters(state))
         self.reset_infos = [{"seed": int(seed), "score": 0.0, "frames": 0, "run_frames": 0}
                             for seed in self._game_seeds]
         return state["observation"]
@@ -360,85 +480,141 @@ class DodgeVecEnv(VecEnv):
     def step_async(self, actions):
         self._actions = np.asarray(actions, dtype=np.uint8).reshape(self.num_envs)
 
+    def _step_engine(self, actions):
+        # The same step as step_ml_batch, without encoding the 225-value ML
+        # observation this env never reads.
+        step = getattr(self.engine, "step_ml_positions_batch", None)
+        return (step or self.engine.step_ml_batch)(actions)
+
+    def _observe(self):
+        """observe_velocity, timed for _fresh_games' choice."""
+        started = time.perf_counter()
+        state = self.engine.observe_velocity()
+        elapsed = time.perf_counter() - started
+        self._observe_seconds = (elapsed if self._observe_seconds is None
+                                 else 0.9 * self._observe_seconds + 0.1 * elapsed)
+        return state
+
+    def _fresh_games(self, lanes, seeds):
+        """Start `lanes` on `seeds`; their first observations and counters.
+
+        Observing the whole batch again to read a few restarted lanes costs
+        every lane's encoding. A game's start depends only on the settings
+        and its seed, so the nursery -- a second engine on the same settings
+        -- can start the same games on their own and encode only them. That
+        costs a reset per lane on top of the batch's own, so it is used only
+        while the measured costs say it is the cheaper of the two.
+        """
+        started = time.perf_counter()
+        self.engine.reset_ml_lanes(lanes, seeds)
+        reset_lane = (time.perf_counter() - started) / len(lanes)
+        mode = self._restart_observe
+        if mode == "auto":
+            per_lane = (self._nursery_lane_seconds if self._nursery_lane_seconds is not None
+                        else reset_lane)
+            mode = ("nursery" if self._observe_seconds is not None
+                    and len(lanes) * per_lane < self._observe_seconds else "batch")
+        if mode == "batch":
+            if self._nursery_lane_seconds is not None:
+                # Drift back towards the batch's own reset cost, so one slow
+                # nursery call cannot rule the nursery out for good.
+                self._nursery_lane_seconds = (0.9 * self._nursery_lane_seconds
+                                              + 0.1 * reset_lane)
+            fresh = self._observe()
+            observation = fresh["observation"][lanes]
+            counters = {key: values[lanes] for key, values in self._counters(fresh).items()}
+            return observation, counters
+        if self._nursery is None:
+            # Serial: it holds a handful of lanes, too few to split.
+            self._nursery = make_engine(**self._engine_settings, execution="serial")
+        started = time.perf_counter()
+        self._nursery.reset_ml_batch(seeds)
+        fresh = self._nursery.observe_velocity()
+        elapsed = (time.perf_counter() - started) / len(lanes)
+        self._nursery_lane_seconds = (elapsed if self._nursery_lane_seconds is None
+                                      else 0.9 * self._nursery_lane_seconds + 0.1 * elapsed)
+        return fresh["observation"], self._counters(fresh)
+
     def step_wait(self):
         lanes = self.num_envs
         weights = self.reward_config
         # The engine holds each action for action_repeat frames and stops a
         # lane early at the frame it dies.
-        stepped = self.engine.step_ml_batch(self._actions)
+        stepped = self._step_engine(self._actions)
         frames = stepped["frames_advanced"].astype(np.int64)
-        state = self.engine.observe_velocity()
+        state = self._observe()
         self._run_frames += frames
         self._episode_frames += frames
         self.total_frames += int(frames.sum())
 
         now = self._counters(state)
+        previous = self._previous
         dead = state["dead"]
-        lives_spent = now["lives"] - self._previous["lives"]
+        lives_spent = now["lives"] - previous["lives"]
+        # A spent life ends the episode too. terminated, never truncated: SB3
+        # bootstraps V=0 at a terminal and V(s') at a truncation, and it is the
+        # zero that keeps the value of surviving the hit from being credited
+        # back to the actions that led into it.
+        terminated = dead | (lives_spent > 0)
         # The frame of a hit earns nothing, as a death frame never has.
-        hit = dead | (lives_spent > 0)
-        survived = np.maximum(frames - hit, 0)
+        survived = np.maximum(frames - terminated, 0)
         # Credited at the decision's end position: exact at one frame per
         # decision, and the plateau makes it nearly so at a few.
-        credit = survived * np.array([
-            center_survival_scalar(x, y, edge_penalty=weights.edge_penalty)
-            for x, y in zip(state["player_x"], state["player_y"])
-        ])
-        patterns_survived = (self._previous["pattern"] & ~now["pattern"]
-                             & ~dead).astype(np.int64)
+        credit = survived * center_survival_scalars(state["player_x"], state["player_y"],
+                                                    edge_penalty=weights.edge_penalty)
+        patterns_survived = previous["pattern"] & ~(now["pattern"] | dead)
         self._pattern_frames += frames * now["pattern"]
-        met = (now["pattern_id"] >= 0) & (now["pattern_id"] != self._previous["pattern_id"])
-        for lane in np.flatnonzero(met):
+        met = (now["pattern_id"] >= 0) & (now["pattern_id"] != previous["pattern_id"])
+        for lane in np.flatnonzero(met).tolist():
             pattern = int(now["pattern_id"][lane])
             self._encounters[lane][pattern] = self._encounters[lane].get(pattern, 0) + 1
-        score_delta = now["score"] - self._previous["score"]
-        kills = now["kills"] - self._previous["kills"]
-        pickups = now["pickups"] - self._previous["pickups"]
+        score_delta = now["score"] - previous["score"]
+        kills = now["kills"] - previous["kills"]
+        pickups = now["pickups"] - previous["pickups"]
         uncontrolled = rewards.UNCONTROLLED_SCORE_PER_ENEMY * kills
         survival_reward = weights.survival_per_frame * credit
         reward = (survival_reward
                   + weights.score_weight * (score_delta - uncontrolled)
                   + weights.uncontrolled_score_weight * uncontrolled
                   - weights.death_penalty * (lives_spent + dead))
-        # A spent life ends the episode too. terminated, never truncated: SB3
-        # bootstraps V=0 at a terminal and V(s') at a truncation, and it is the
-        # zero that keeps the value of surviving the hit from being credited
-        # back to the actions that led into it.
-        terminated = dead | (lives_spent > 0)
         # The cap bounds the game, not the episode, so a run that keeps
         # absorbing hits cannot hold one seed forever.
-        truncated = (np.zeros(lanes, dtype=bool) if self.max_episode_frames is None
-                     else (self._run_frames >= self.max_episode_frames) & ~terminated)
-        run_over = dead | truncated
-        done = terminated | truncated
+        if self.max_episode_frames is None:
+            truncated = np.zeros(lanes, dtype=bool)
+            run_over, done = dead, terminated
+        else:
+            truncated = (self._run_frames >= self.max_episode_frames) & ~terminated
+            run_over = dead | truncated
+            done = terminated | truncated
         self._episode_reward += reward
         self._previous = now
 
+        # training_events, columns in EVENT_FIELDS order.
+        event_counts = np.empty((lanes, len(EVENT_FIELDS)), dtype=np.int64)
+        event_counts[:, 0] = kills
+        event_counts[:, 1:4] = pickups
+        event_counts[:, 4] = lives_spent
+        event_counts[:, 5] = survived
+        event_counts[:, 6] = patterns_survived
+        event_counts[:, 7] = dead
+        batch = StepBatch(
+            # Copies of what the restarts below overwrite in place.
+            score=now["score"].copy(),
+            score_delta=score_delta,
+            frames=self._episode_frames.copy(),
+            run_frames=self._run_frames.copy(),
+            run_over=run_over,
+            survived_frames=survived,
+            survival_reward=survival_reward,
+            uncontrolled_score=uncontrolled,
+            event_counts=event_counts,
+            done=done,
+        )
+        infos = StepInfos([{} for _ in range(lanes)], batch)
         observation = state["observation"]
-        infos = []
-        for lane in range(lanes):
-            info = {
-                "score": float(now["score"][lane]),
-                "score_delta": float(score_delta[lane]),
-                "frames": int(self._episode_frames[lane]),
-                "run_frames": int(self._run_frames[lane]),
-                # The episode always ended; this says whether the game did
-                # too, which is what the dashboard's survival metric follows.
-                "run_over": bool(run_over[lane]),
-                "survived_frames": int(survived[lane]),
-                "survival_reward": float(survival_reward[lane]),
-                "uncontrolled_score": float(uncontrolled[lane]),
-                "training_events": {
-                    "enemies_destroyed": int(kills[lane]),
-                    "explosion_pickups": int(pickups[lane, 0]),
-                    "freeze_pickups": int(pickups[lane, 1]),
-                    "shrink_pickups": int(pickups[lane, 2]),
-                    "lives_spent": int(lives_spent[lane]),
-                    "survival_frames": int(survived[lane]),
-                    "patterns_survived": int(patterns_survived[lane]),
-                    "deaths": int(dead[lane]),
-                },
-            }
+        ended = np.flatnonzero(done)
+        for lane in ended.tolist():
+            info = batch.lane_info(lane)
             if dead[lane]:
                 info["death"] = {
                     "cause": DEATH_CAUSES.get(int(state["death_cause"][lane])),
@@ -459,27 +635,29 @@ class DodgeVecEnv(VecEnv):
                     "encounters": dict(self._encounters[lane]),
                     "lives_spent": int(now["lives"][lane]),
                 }
-            if done[lane]:
-                info["terminal_observation"] = observation[lane].copy()
-                info["TimeLimit.truncated"] = bool(truncated[lane])
-                info["episode"] = {
-                    "r": float(self._episode_reward[lane]),
-                    "l": int(math.ceil(self._episode_frames[lane] / self.action_repeat)),
-                    "t": round(time.monotonic() - self._episode_started[lane], 6),
-                }
-            infos.append(info)
+            info["terminal_observation"] = observation[lane].copy()
+            info["TimeLimit.truncated"] = bool(truncated[lane])
+            info["episode"] = {
+                "r": float(self._episode_reward[lane]),
+                "l": int(math.ceil(self._episode_frames[lane] / self.action_repeat)),
+                "t": round(time.monotonic() - self._episode_started[lane], 6),
+            }
+            infos[lane] = info
 
-        # A spent life opens a new episode on the running game; only a death
-        # or the cap starts a new game.
-        self._start_episodes(np.flatnonzero(done & ~run_over))
-        restart = np.flatnonzero(run_over).astype(np.uint32)
-        if len(restart):
-            seeds = self._draw_seeds(restart)
-            self.engine.reset_ml_lanes(restart, seeds)
-            fresh = self.engine.observe_velocity()
-            self._start_runs(restart, fresh)
-            observation = observation.copy()
-            observation[restart] = fresh["observation"][restart]
+        if len(ended):
+            # A spent life opens a new episode on the running game; only a
+            # death or the cap starts a new game.
+            spent = ended[~run_over[ended]]
+            if len(spent):
+                self._start_episodes(spent)
+            restart = ended[run_over[ended]].astype(np.uint32)
+            if len(restart):
+                seeds = self._draw_seeds(restart)
+                fresh_observation, fresh = self._fresh_games(restart, seeds)
+                self._start_runs(restart, fresh)
+                # Every terminal observation was copied out above, so the
+                # step's own array can take the restarted games' rows.
+                observation[restart] = fresh_observation
         return observation, reward.astype(np.float32), done, infos
 
     def lane_state(self, lane):
@@ -488,6 +666,7 @@ class DodgeVecEnv(VecEnv):
 
     def close(self):
         self.engine = None
+        self._nursery = None
 
     def get_attr(self, attr_name, indices=None):
         return [getattr(self, attr_name) for _ in self._get_indices(indices)]

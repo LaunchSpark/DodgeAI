@@ -208,3 +208,35 @@ def test_the_callback_follows_a_change_in_lane_count(tmp_path, monkeypatch):
     _step(callback, [dict(live) for _ in range(4)], [False, True, False, True],
           [1.0] * 4)
     assert session.data.reward.as_list() == [3.0, 1.0]
+
+
+def test_the_callback_reads_batched_infos_exactly_as_full_dicts(tmp_path,
+                                                                monkeypatch):
+    """DodgeVecEnv's StepInfos give a running lane an empty dict and carry its
+    fields on `batch`; the callback must total them exactly as it would the
+    full dicts `lane(i)` rebuilds."""
+    from dodge.env import DodgeVecEnv
+
+    batched_session, batched = _callback(tmp_path / "batched", monkeypatch)
+    full_session, full = _callback(tmp_path / "full", monkeypatch)
+    env = DodgeVecEnv(n_envs=16, seed=0, difficulty=3, patterns=True, lives=2,
+                      max_episode_frames=400)
+    env.reset()
+    rng = np.random.default_rng(0)
+    finished = 0
+    for _ in range(600):
+        _, rewards, dones, infos = env.step(rng.integers(0, 9, 16))
+        assert hasattr(infos, "batch")
+        finished += int(np.sum(dones))
+        _step(batched, infos, dones, rewards)
+        _step(full, [infos.lane(i) for i in range(len(infos))], dones, rewards)
+    env.close()
+
+    assert finished > 0
+    a, b = batched_session.data, full_session.data
+    assert a.reward.as_list() == b.reward.as_list()
+    assert a.enemies_killed.as_list() == b.enemies_killed.as_list()
+    assert a.episode_length.as_list() == b.episode_length.as_list()
+    assert [x.as_list() for x in a.life_lengths] == [x.as_list() for x in b.life_lengths]
+    assert {k: e.total for k, e in a.events.items()} == {k: e.total for k, e in b.events.items()}
+    assert batched.rollout_events == full.rollout_events
