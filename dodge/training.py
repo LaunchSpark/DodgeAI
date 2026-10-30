@@ -20,6 +20,7 @@ from stable_baselines3.common.save_util import load_from_zip_file
 from stable_baselines3.common.utils import get_device
 
 from .env import MAX_ACTION_REPEAT, DodgeVecEnv, validate_spawn_rate_percent
+from .resume import CheckpointWriter, read_state, restore_training_state
 from .policies import (ARCHITECTURES, COORDINATE_INPUTS, DEFAULT_ARCHITECTURE,
                        architecture_from_kwargs,
                        HYBRID_INPUT_CHANNELS, architecture_name,
@@ -666,7 +667,25 @@ class PPOTrainingSession:
         )
         model.set_learning_tracker(self._track_learning)
         model.set_post_update(self._on_post_update)
+        # Seed stream, generators and games from the state sidecar, if any.
+        state = read_state(path)
+        if state is not None:
+            restore_training_state(model, env, state, strict=False)
         return model
+
+    def _begin_lineage(self, parent=None):
+        """Checkpoints saved from here on descend from `parent`, if given."""
+        self._checkpoints = (CheckpointWriter.resuming(parent) if parent
+                             else CheckpointWriter())
+
+    def _write_sidecars(self, model, path):
+        """The state sidecar and provenance manifest of a checkpoint just saved."""
+        if getattr(self, "_checkpoints", None) is None:
+            self._begin_lineage()
+        self._checkpoints.extra_config = {"source": "dashboard",
+                                          "architecture": self.model_architecture}
+        self._checkpoints.write_sidecars(model, path,
+                                         ppo_updates=self._completed_updates(model))
 
     def _clear_snapshot(self, status="starting"):
         with self.lock:
@@ -698,6 +717,7 @@ class PPOTrainingSession:
                 self.model = self._load_model(load_path, env) if load_path else self._new_model(env)
                 self.rollout_steps = self.model.n_steps
                 self.model_architecture = architecture_name(self.model)
+                self._begin_lineage(load_path)
                 callback = DashboardCallback(self)
                 reset_num_timesteps = load_path is None
                 while not self.shutdown_event.is_set() and not self.restart_event.is_set():
@@ -716,6 +736,7 @@ class PPOTrainingSession:
                     # immediately into the next chunk.
                     latest = self.model_dir / f"{self.model_architecture}-latest"
                     self.model.save(latest)
+                    self._write_sidecars(self.model, latest)
             except Exception as error:
                 # Assigned before the status flips to "error": request_save
                 # reads status under self.lock and then last_error outside
@@ -740,6 +761,7 @@ class PPOTrainingSession:
                 return
             try:
                 model.save(request.path)
+                self._write_sidecars(model, request.output_path)
                 request.completed_update = self._completed_updates(model)
             except Exception as error:
                 request.error = error
