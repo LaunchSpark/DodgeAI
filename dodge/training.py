@@ -86,9 +86,15 @@ ARCHITECTURE_HYPERPARAMETERS = {
         "target_kl": 0.02,
         # The critic is the weak half, so its loss gets equal weight.
         "vf_coef": 1.0,
-        # 256-sample minibatches: profiled on a GTX 1070, per-sample cost is
-        # flat from 128 to 256 and then degrades badly (512 is 0.41ms/sample
-        # against 0.32, and 2048 is 2.88). 256 is the floor of that curve.
+        # Eight minibatches an epoch: 256 samples at 8 envs. Re-measured on the
+        # GTX 1070 with the native env, per-sample cost is flat from 256 to
+        # 2048 (0.26-0.28ms a sample per epoch), so minibatch size is not what
+        # makes large buffers slow -- epochs are. With eight large minibatches
+        # an update takes 32 optimizer steps, target_kl never trips, and all
+        # four epochs run: 16.8s an update at 64 envs. Capping the minibatch at
+        # 256 instead lets target_kl stop the update after about one epoch,
+        # 4.3s at 64 envs -- faster, but a different amount of learning per
+        # update, so it is not applied by default (see README, Simulation speed).
         "minibatches_per_epoch": 8,
     },
 }

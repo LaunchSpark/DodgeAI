@@ -511,20 +511,35 @@ per environment; their reasoning about buffers and rollouts still holds.
 
 The Rust engine runs the game at 300,000-520,000 frames a second across a batch,
 against about 4,000 per process for the Lua runtime it replaced, so simulation
-is no longer what training waits on. Measured with velocity-flow-v2 at one frame
-per decision, per PPO update:
+is no longer what training waits on. Measured on a GTX 1070 with
+velocity-flow-v2 at one frame per decision, hard difficulty with patterns, per
+PPO update (four epochs at most, `target_kl` 0.02):
 
-| Envs x steps | Collect | Update | Throughput |
-| --- | --- | --- | --- |
-| Lua, 8 x 256 | 3.1s | 1.9s | 547 steps/s |
-| Rust, 8 x 256 | 1.4s | 2.2s | 583 steps/s |
-| Rust, 32 x 256 | | | 829 steps/s |
-| Rust, 64 x 256 | 1.8s | 16.6s | 900 steps/s |
+| Envs x steps | Minibatch | Optimizer steps (of max) | Collect | Update | Throughput |
+| --- | --- | --- | --- | --- | --- |
+| Lua, 8 x 256 | 256 | | 3.1s | 1.9s | 547 steps/s |
+| Rust, 8 x 256 | 256 | 32 of 32 | 1.3s | 2.3s | 567 steps/s |
+| Rust, 32 x 256 | 1,024 | 32 of 32 | 1.5s | 8.4s | 833 steps/s |
+| Rust, 64 x 256 | 2,048 | 32 of 32 | 1.7s | 16.8s | 885 steps/s |
+| Rust, 32 x 256, capped | 256 | 37-61 of 128 | 1.5s | 3.3s | 1,732 steps/s |
+| Rust, 64 x 256, capped | 256 | 46-81 of 256 | 1.7s | 4.3s | 2,704 steps/s |
+| Rust, 128 x 256, capped | 256 | 53-88 of 512 | 2.7s | 5.4s | 4,027 steps/s |
 
-Collection is about fourteen times faster per sample, and the gradient update is
-now nearly all of the cycle. At 128 environments the update's minibatch no
-longer fits the GPU comfortably and throughput collapses to about 100 steps/s,
-so 32-64 is the useful range. Note that the env count also sets the buffer size.
+Collection is about fourteen times faster per sample, so the gradient update is
+the cycle. Its cost is set by how many samples it processes, not by the
+minibatch size: a sample costs 0.26-0.28 ms per epoch from 256 to 2,048.
+
+The default minibatch is an eighth of the buffer, so an update always takes 32
+optimizer steps. Steps that large never reach `target_kl`, so every update runs
+all four epochs and the update grows with the env count. The "capped" rows hold
+the minibatch at 256 instead: more, smaller steps reach the KL target after
+about one epoch and the update stops there. That is three times the throughput
+at 64 envs, but each update does about a quarter of the optimization, so whether
+it learns as much per hour has to be measured on a learning curve, not a stopwatch.
+
+Uncapped, 128 envs means a 4,096-sample minibatch, which ran at about 100
+steps/s, so keep to 64 or fewer without the cap. The env count also sets the
+buffer size.
 
 ## PPO bots
 
