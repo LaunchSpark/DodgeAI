@@ -196,6 +196,12 @@ def test_batched_survival_credit_matches_the_scalar_to_the_bit(edge_penalty):
                          for a, b in zip(x, y)])
     assert batched.dtype == np.float64
     assert batched.tobytes() == expected.tobytes()
+    # Small batches take a per-lane path of their own.
+    small = np.concatenate([center_survival_scalars(x[i:i + 8], y[i:i + 8],
+                                                    edge_penalty=edge_penalty)
+                            for i in range(0, len(x), 8)])
+    assert small.dtype == np.float64
+    assert small.tobytes() == expected.tobytes()
 
 
 def test_edge_penalty_of_zero_pays_every_position_equally():

@@ -88,6 +88,10 @@ def center_survival_scalar(x, y, screen_width=ARENA_SIZE, edge_penalty=0.5):
     return max(0.0, 1.0 - edge_penalty * taper)
 
 
+# Measured crossover of center_survival_scalars' two paths.
+SCALARS_LOOP_BELOW = 24
+
+
 def center_survival_scalars(x, y, screen_width=ARENA_SIZE, edge_penalty=0.5):
     """`center_survival_scalar` over arrays of positions, bit for bit.
 
@@ -96,10 +100,18 @@ def center_survival_scalars(x, y, screen_width=ARENA_SIZE, edge_penalty=0.5):
     differently -- and every other operation is the same IEEE double
     operation in the same order, so each lane gets exactly the scalar's value
     and the reward does not move by a bit.
+
+    Below a few dozen lanes numpy's per-call overhead outweighs its speed, so
+    a small batch simply calls the scalar function on each lane.
     """
+    x = np.asarray(x, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    if len(x) < SCALARS_LOOP_BELOW:
+        return np.array([center_survival_scalar(a, b, screen_width, edge_penalty)
+                         for a, b in zip(x.tolist(), y.tolist())], dtype=np.float64)
     center = screen_width / 2.0
-    dx = (np.asarray(x, dtype=np.float64) - center).tolist()
-    dy = (np.asarray(y, dtype=np.float64) - center).tolist()
+    dx = (x - center).tolist()
+    dy = (y - center).tolist()
     distance = np.fromiter(map(math.hypot, dx, dy), dtype=np.float64,
                            count=len(dx)) / center
     taper = np.minimum((distance - CENTRE_PLATEAU) / (1.0 - CENTRE_PLATEAU), 1.0)
@@ -539,15 +551,18 @@ class DodgeVecEnv(VecEnv):
         previous = self._previous
         dead = state["dead"]
         lives_spent = now["lives"] - previous["lives"]
+        # A spent life ends the episode too. terminated, never truncated: SB3
+        # bootstraps V=0 at a terminal and V(s') at a truncation, and it is the
+        # zero that keeps the value of surviving the hit from being credited
+        # back to the actions that led into it.
+        terminated = dead | (lives_spent > 0)
         # The frame of a hit earns nothing, as a death frame never has.
-        hit = dead | (lives_spent > 0)
-        survived = np.maximum(frames - hit, 0)
+        survived = np.maximum(frames - terminated, 0)
         # Credited at the decision's end position: exact at one frame per
         # decision, and the plateau makes it nearly so at a few.
         credit = survived * center_survival_scalars(state["player_x"], state["player_y"],
                                                     edge_penalty=weights.edge_penalty)
-        patterns_survived = (previous["pattern"] & ~now["pattern"]
-                             & ~dead).astype(np.int64)
+        patterns_survived = previous["pattern"] & ~(now["pattern"] | dead)
         self._pattern_frames += frames * now["pattern"]
         met = (now["pattern_id"] >= 0) & (now["pattern_id"] != previous["pattern_id"])
         for lane in np.flatnonzero(met).tolist():
@@ -562,20 +577,26 @@ class DodgeVecEnv(VecEnv):
                   + weights.score_weight * (score_delta - uncontrolled)
                   + weights.uncontrolled_score_weight * uncontrolled
                   - weights.death_penalty * (lives_spent + dead))
-        # A spent life ends the episode too. terminated, never truncated: SB3
-        # bootstraps V=0 at a terminal and V(s') at a truncation, and it is the
-        # zero that keeps the value of surviving the hit from being credited
-        # back to the actions that led into it.
-        terminated = dead | (lives_spent > 0)
         # The cap bounds the game, not the episode, so a run that keeps
         # absorbing hits cannot hold one seed forever.
-        truncated = (np.zeros(lanes, dtype=bool) if self.max_episode_frames is None
-                     else (self._run_frames >= self.max_episode_frames) & ~terminated)
-        run_over = dead | truncated
-        done = terminated | truncated
+        if self.max_episode_frames is None:
+            truncated = np.zeros(lanes, dtype=bool)
+            run_over, done = dead, terminated
+        else:
+            truncated = (self._run_frames >= self.max_episode_frames) & ~terminated
+            run_over = dead | truncated
+            done = terminated | truncated
         self._episode_reward += reward
         self._previous = now
 
+        # training_events, columns in EVENT_FIELDS order.
+        event_counts = np.empty((lanes, len(EVENT_FIELDS)), dtype=np.int64)
+        event_counts[:, 0] = kills
+        event_counts[:, 1:4] = pickups
+        event_counts[:, 4] = lives_spent
+        event_counts[:, 5] = survived
+        event_counts[:, 6] = patterns_survived
+        event_counts[:, 7] = dead
         batch = StepBatch(
             # Copies of what the restarts below overwrite in place.
             score=now["score"].copy(),
@@ -586,9 +607,7 @@ class DodgeVecEnv(VecEnv):
             survived_frames=survived,
             survival_reward=survival_reward,
             uncontrolled_score=uncontrolled,
-            # Columns in EVENT_FIELDS order; dead is promoted to int64.
-            event_counts=np.column_stack((kills, pickups, lives_spent, survived,
-                                          patterns_survived, dead)),
+            event_counts=event_counts,
             done=done,
         )
         infos = StepInfos([{} for _ in range(lanes)], batch)
