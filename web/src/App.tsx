@@ -2,14 +2,14 @@ import { useEffect, useRef, type ReactNode } from "react"
 import { ThemeProvider, useTheme } from "next-themes"
 import { toast } from "sonner"
 import {
-  BrainIcon, ClapperboardIcon, FlaskConicalIcon, MoonIcon, PauseIcon, PlayIcon,
+  BrainIcon, ClapperboardIcon, GaugeIcon, FlaskConicalIcon, MoonIcon, PauseIcon, PlayIcon,
   SaveIcon, SlidersHorizontalIcon, SunIcon, Gamepad2Icon, CircleIcon,
 } from "lucide-react"
 
 import { post, useLiveState, type Figures, type SeriesSummary, type State } from "@/lib/api"
 import { VegaChart } from "@/components/vega-chart"
 import { DeathPaths } from "@/components/death-paths"
-import { EvaluateDialog, GameConfigDialog, ModelsDialog, RewardsDialog, run } from "@/components/controls"
+import { EvaluateDialog, GameConfigDialog, ModelsDialog, RewardsDialog, TrainingDialog, run } from "@/components/controls"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -107,6 +107,7 @@ function Header({ state, connected }: { state: State; connected: boolean }) {
           <EvaluateDialog state={state} trigger={<Button size="sm" variant="outline"><FlaskConicalIcon />Evaluate</Button>} />
           <GameConfigDialog state={state} trigger={<Button size="sm" variant="outline"><Gamepad2Icon />Game</Button>} />
           <RewardsDialog state={state} trigger={<Button size="sm" variant="outline"><SlidersHorizontalIcon />Rewards</Button>} />
+          <TrainingDialog state={state} trigger={<Button size="sm" variant="outline"><GaugeIcon />Training</Button>} />
           <ModelsDialog state={state} trigger={<Button size="sm" variant="outline"><SaveIcon />Models</Button>} />
           <ThemeToggle />
           <span title={connected ? "Connected" : "Reconnecting"} className="flex items-center">

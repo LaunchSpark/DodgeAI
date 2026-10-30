@@ -15,7 +15,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import charts, game_settings, metrics, rewards
+from . import charts, game_settings, metrics, rewards, schedule
 from .telemetry import EVENT_KEYS, PROGRESS_ROWS
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "web" / "dist"
@@ -183,6 +183,7 @@ class Dashboard:
     def state(self):
         with self.session.lock:
             data = self.session.data.copy()
+            schedule_status = dict(self.session.schedule_status)
         config = self.session.game_config()
         recent = data.games.recent()
         training_eval = metrics.evaluation(recent) if recent else None
@@ -238,6 +239,13 @@ class Dashboard:
                                  "min": spec.minimum, "max": spec.maximum,
                                  "step": spec.step, "hint": spec.hint}
                                 for spec in rewards.SLIDERS],
+            "training": asdict(schedule.load(self.session.schedule_path)),
+            "training_applied": schedule.exists(self.session.schedule_path),
+            "training_controls": [{"name": spec.name, "label": spec.label,
+                                   "min": spec.minimum, "max": spec.maximum,
+                                   "step": spec.step, "hint": spec.hint}
+                                  for spec in schedule.SLIDERS],
+            "training_status": schedule_status,
             "training_figures": training_eval,
             "evaluation": {**evaluation, "figures": evaluated},
             "death_paths": self.death_paths.snapshot(),
@@ -271,6 +279,11 @@ class Dashboard:
     def set_rewards(self, values):
         config = rewards.RewardConfig(**{**asdict(rewards.load()), **values})
         rewards.save(config)
+
+    def set_training(self, values):
+        config = schedule.TrainingConfig(
+            **{**asdict(schedule.load(self.session.schedule_path)), **values}).clamped()
+        schedule.save(config, self.session.schedule_path)
 
     def run_job(self, kind, games, deterministic):
         """Freeze the live policy at the next safe point and play it in `kind`."""
@@ -343,6 +356,10 @@ def create_app(session):
     @app.post("/api/rewards")
     def set_rewards(body: dict = Body(...)):
         return act(dashboard.set_rewards, body)
+
+    @app.post("/api/training")
+    def set_training(body: dict = Body(...)):
+        return act(dashboard.set_training, body)
 
     def job(kind, body, most):
         games = int(body.get("games", 256))

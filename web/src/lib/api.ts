@@ -65,6 +65,15 @@ export interface DeathPathsState {
   label: string
 }
 
+export interface TrainingStatus {
+  learning_rate?: number
+  gamma?: number
+  since_best?: number
+  next_scoring?: number | null
+  best_mean?: number | null
+  last?: { update: number; mean: number; q1: number; promoted: boolean }
+}
+
 export interface State {
   status: string
   model_name: string
@@ -83,6 +92,10 @@ export interface State {
   game_controls: { sliders: Slider[]; toggles: { name: string; label: string }[] }
   rewards: Record<string, number>
   reward_controls: Slider[]
+  training: Record<string, number>
+  training_applied: boolean
+  training_controls: Slider[]
+  training_status: TrainingStatus
   training_figures: Figures | null
   evaluation: EvaluationState
   death_paths?: DeathPathsState

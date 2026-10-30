@@ -140,6 +140,62 @@ export function RewardsDialog({ state, trigger }: { state: State; trigger: React
   )
 }
 
+function trainingValue(name: string, value: number) {
+  if (name === "learning_rate") return value.toExponential(1)
+  if (name === "gamma") return value.toFixed(3)
+  if (name === "retain_every") return value ? `${value} updates` : "off"
+  if (name === "patience") return value ? String(value) : "never"
+  return String(value)
+}
+
+export function TrainingDialog({ state, trigger }: { state: State; trigger: ReactNode }) {
+  const [open, setOpen] = useState(false)
+  const [draft, setDraft] = useState(state.training)
+  useEffect(() => {
+    if (open) setDraft(state.training)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
+
+  const status = state.training_status
+  const apply = async () => {
+    if (await run(() => post("training", draft), "Training schedule saved; it applies from the next update"))
+      setOpen(false)
+  }
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>{trigger}</DialogTrigger>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Training schedule</DialogTitle>
+          <DialogDescription>
+            {state.training_applied
+              ? "Read at every update boundary."
+              : "Not in use: the architecture's defaults apply until you save."}
+          </DialogDescription>
+        </DialogHeader>
+        {state.training_applied && status.last && (
+          <p className="text-sm text-muted-foreground tabular-nums">
+            Dev cohort at update {status.last.update}: mean {status.last.mean.toFixed(0)},
+            Q1 {status.last.q1.toFixed(0)}. Best {status.best_mean?.toFixed(0) ?? "–"}
+            {status.since_best ? `, ${status.since_best} scoring${status.since_best === 1 ? "" : "s"} since` : ""}.
+          </p>
+        )}
+        <div className="grid gap-5 py-2">
+          {state.training_controls.map((spec) => (
+            <SliderRow key={spec.name} spec={spec} value={Number(draft[spec.name])}
+              format={(value) => trainingValue(spec.name, value)}
+              onChange={(value) => setDraft({ ...draft, [spec.name]: value })} />
+          ))}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
+          <Button onClick={apply}>Save</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 export function ModelsDialog({ state, trigger }: { state: State; trigger: ReactNode }) {
   const [open, setOpen] = useState(false)
   const [models, setModels] = useState<ModelEntry[]>([])

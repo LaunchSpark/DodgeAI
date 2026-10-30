@@ -1,7 +1,7 @@
 """Background Stable-Baselines3 session used by the Pygame dashboard."""
 
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import math
 import operator
 import os
@@ -19,10 +19,13 @@ import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.save_util import load_from_zip_file
-from stable_baselines3.common.utils import get_device
+from stable_baselines3.common.utils import ConstantSchedule, get_device
 
 from .env import EVENT_FIELDS, MAX_ACTION_REPEAT, DodgeVecEnv, validate_spawn_rate_percent
+from . import schedule
 from .resume import CheckpointWriter, read_state, restore_training_state
+from .retention import RetentionGate, best_path_for
+from .seeds import DEV_COHORT_SIZE, dev_cohort
 from .policies import (ARCHITECTURES, COORDINATE_INPUTS, DEFAULT_ARCHITECTURE,
                        architecture_from_kwargs,
                        HYBRID_INPUT_CHANNELS, architecture_name,
@@ -723,6 +726,12 @@ class PPOTrainingSession:
                                / f"live-{os.getpid()}-{id(self):x}")
         self.watchers = []
         self.watch_pending = False
+        # The Training panel's file; see dodge.schedule. Absent, nothing is
+        # applied and the architecture's table stands.
+        self.schedule_path = schedule.CONFIG_PATH
+        self.schedule_status = {}
+        self._scorings_since_best = 0
+        self._game_settings = {}
         if autostart and architecture is not None:
             self.start()
 
@@ -884,6 +893,11 @@ class PPOTrainingSession:
                 self.model = self._load_model(load_path, env) if load_path else self._new_model(env)
                 self.rollout_steps = self.model.n_steps
                 self.model_architecture = architecture_name(self.model)
+                self._game_settings = dict(env.game_settings)
+                self._scorings_since_best = 0
+                # Before the first rollout, so its returns already use the
+                # panel's discount rather than the table's.
+                self._apply_schedule(self.model)
                 self._begin_lineage(load_path)
                 callback = DashboardCallback(self)
                 reset_num_timesteps = load_path is None
@@ -984,7 +998,93 @@ class PPOTrainingSession:
         with self.lock:
             self.data.games.close_update(self._completed_updates(model))
         self._process_save_requests(model)
+        self._apply_schedule(model)
+        self._score_dev_cohort(model)
         self._service_pending_watch(model, publish_for_live_watchers=True)
+
+    def _apply_schedule(self, model):
+        """Bring the learning rate and discount into line with the panel.
+
+        Read at every update boundary, so a change lands on the next update.
+        SB3 re-reads lr_schedule at the start of each train(), and the rollout
+        buffer computes returns with its own copy of gamma, so both are set.
+        """
+        if not schedule.exists(self.schedule_path):
+            with self.lock:
+                self.schedule_status = {}
+            return None
+        config = schedule.load(self.schedule_path)
+        current = model.learning_rate
+        if callable(current) or float(current) != config.learning_rate:
+            model.learning_rate = config.learning_rate
+            model.lr_schedule = ConstantSchedule(config.learning_rate)
+        if model.gamma != config.gamma:
+            model.gamma = config.gamma
+            model.rollout_buffer.gamma = config.gamma
+        update = self._completed_updates(model)
+        with self.lock:
+            self.schedule_status = {
+                **self.schedule_status,
+                "learning_rate": config.learning_rate,
+                "gamma": config.gamma,
+                "since_best": self._scorings_since_best,
+                "next_scoring": ((update // config.retain_every + 1) * config.retain_every
+                                 if config.retain_every else None),
+            }
+        return config
+
+    def _retention_gate(self):
+        name = self.active_model_name or self.model_architecture
+        return RetentionGate(best_path_for(self.model_dir, name),
+                             game_settings=self._game_settings,
+                             seeds=dev_cohort(DEV_COHORT_SIZE))
+
+    def _score_dev_cohort(self, model):
+        """On schedule, score the held-out cohort and keep the best so far.
+
+        The candidate is saved with its sidecars and handed to the retention
+        gate, which promotes it to `<name>-best.zip` only if its dev mean beats
+        every earlier one. Enough scorings in a row without a new best step the
+        learning rate down a stage, by rewriting the panel's file, so the panel
+        shows the rate the run is actually using.
+        """
+        if not schedule.exists(self.schedule_path):
+            return
+        config = schedule.load(self.schedule_path)
+        update = self._completed_updates(model)
+        if not config.retain_every or update % config.retain_every:
+            return
+        name = self.active_model_name or self.model_architecture
+        candidate = self.model_dir / f"{name}-candidate"
+        with self.lock:
+            self.data.progress_phase = "scoring"
+        model.save(candidate)
+        self._write_sidecars(model, candidate)
+        outcome = self._retention_gate().consider(model, candidate, update=update)
+        dev = outcome["dev"]
+        self._scorings_since_best = 0 if outcome["promoted"] else self._scorings_since_best + 1
+        message = (f"Dev cohort at update {update}: mean {dev['mean']:.0f}, "
+                   f"Q1 {dev['q1']:.0f} -- "
+                   + ("new best" if outcome["promoted"]
+                      else f"best is {outcome['best_mean']:.0f}"))
+        if config.patience and self._scorings_since_best >= config.patience:
+            lower = schedule.next_stage(config.learning_rate)
+            if lower is not None:
+                schedule.save(schedule.TrainingConfig(**{**asdict(config),
+                                                         "learning_rate": lower}),
+                              self.schedule_path)
+                self._scorings_since_best = 0
+                message += f"; learning rate stepped down to {lower:g}"
+                self._apply_schedule(model)
+        with self.lock:
+            self.schedule_status = {
+                **self.schedule_status,
+                "best_mean": outcome["best_mean"],
+                "since_best": self._scorings_since_best,
+                "last": {"update": update, "mean": dev["mean"], "q1": dev["q1"],
+                         "promoted": outcome["promoted"]},
+            }
+        self._emit(SessionEvent("schedule", True, message, candidate, update))
 
     def _service_pending_watch(self, model, *, publish_for_live_watchers):
         """Publish a snapshot and open a waiting watcher, if either is due.
