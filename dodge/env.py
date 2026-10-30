@@ -373,14 +373,15 @@ class DodgeVecEnv(VecEnv):
         return [False for _ in self._get_indices(indices)]
 
 
-def play_games(policy, seeds, *, frame_cap=None, **game_settings):
+def play_games(policy, seeds, *, frame_cap=None, progress=None, **game_settings):
     """Play one game per seed, all at once as lanes of one batch.
 
     `policy(observations, lane_state)` returns an action per lane, where
     `lane_state(lane)` reads that lane's raw game state for a scripted
     controller. Each game runs until it dies, or reaches `frame_cap`; lanes
     that have finished keep running throwaway games so the batch stays whole.
-    Returns one dict per seed with frames, score and how the game ended.
+    `progress(finished, total)` is called as games end. Returns one record per
+    seed, in the same shape DodgeVecEnv reports as info["run"].
     """
     seeds = np.asarray(seeds, dtype=np.uint32)
     engine = make_engine(**game_settings)
@@ -388,16 +389,28 @@ def play_games(policy, seeds, *, frame_cap=None, **game_settings):
     count = len(seeds)
     results = [None] * count
     frames = np.zeros(count, dtype=np.int64)
+    pattern_frames = np.zeros(count, dtype=np.int64)
+    encounters = [{} for _ in range(count)]
+    previous_pattern = np.full(count, -1, dtype=np.int64)
     filler = 2**31
-    while any(result is None for result in results):
+    finished_count = 0
+    while finished_count < count:
         state = engine.observe_velocity()
         actions = np.asarray(policy(state["observation"], engine.lane_state),
                              dtype=np.uint8).reshape(count)
         stepped = engine.step_ml_batch(actions)
-        frames += stepped["frames_advanced"]
+        advanced = stepped["frames_advanced"].astype(np.int64)
+        frames += advanced
         state = engine.observe_velocity()
+        pattern = state["pattern_id"].astype(np.int64)
+        pattern_frames += advanced * (pattern >= 0)
+        for lane in np.flatnonzero((pattern >= 0) & (pattern != previous_pattern)):
+            met = encounters[lane]
+            met[int(pattern[lane])] = met.get(int(pattern[lane]), 0) + 1
+        previous_pattern = pattern
         capped = frames >= frame_cap if frame_cap is not None else np.zeros(count, bool)
-        for lane in np.flatnonzero(state["dead"] | capped):
+        ended = np.flatnonzero(state["dead"] | capped)
+        for lane in ended:
             if results[lane] is None:
                 results[lane] = {
                     "seed": int(seeds[lane]),
@@ -407,10 +420,16 @@ def play_games(policy, seeds, *, frame_cap=None, **game_settings):
                     "cause": DEATH_CAUSES.get(int(state["death_cause"][lane])),
                     "pattern": int(state["death_pattern"][lane]),
                     "fyou_triggers": int(state["fyou_triggers"][lane]),
+                    "pattern_frames": int(pattern_frames[lane]),
+                    "encounters": dict(encounters[lane]),
                 }
-        finished = np.flatnonzero(state["dead"] | capped).astype(np.uint32)
-        if len(finished):
-            engine.reset_ml_lanes(finished, np.arange(filler, filler + len(finished),
-                                                      dtype=np.uint32))
-            filler += len(finished)
+                finished_count += 1
+                if progress is not None:
+                    progress(finished_count, count)
+        if len(ended):
+            restart = ended.astype(np.uint32)
+            engine.reset_ml_lanes(restart, np.arange(filler, filler + len(restart),
+                                                     dtype=np.uint32))
+            filler += len(restart)
+            previous_pattern[restart] = -1
     return results
