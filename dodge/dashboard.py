@@ -6,9 +6,11 @@ charts included as Vega-Lite specs; controls arrive as small POSTs.
 """
 
 import asyncio
+import base64
 import contextlib
 import threading
 import time
+import zlib
 from collections import deque
 from dataclasses import asdict
 from pathlib import Path
@@ -25,6 +27,9 @@ PER_UPDATE_ROWS = ("entropy", "explained_variance")
 # The paper's protocol: fixed seeds from here, one game each, frame cap 18,000.
 EVALUATION_FIRST_SEED = 1_000_000
 EVALUATION_FRAME_CAP = 18_000
+# Death-path replays play at the game's own rate.
+REPLAY_FPS = 60
+STALE_RUN = "That sampling run has been replaced; reopen the pattern."
 
 GAME_SLIDERS = (
     {"name": "difficulty", "label": "Difficulty", "min": 1, "max": 3, "step": 1},
@@ -309,7 +314,27 @@ class Dashboard:
         snapshot = self.death_paths.snapshot()
         if snapshot["status"] != "done":
             return {**snapshot, "data": None}
-        return {**snapshot, "data": self.death_paths.result}
+        return {**snapshot, "data": self.death_paths.result.summary()}
+
+    def death_path_recording(self, run_id):
+        """The finished recording, if it is still run `run_id`."""
+        with self.death_paths.lock:
+            recording = self.death_paths.result if self.death_paths.status == "done" else None
+        if recording is None or recording.run_id != run_id:
+            raise LookupError(STALE_RUN)
+        return recording
+
+    def death_path_replay(self, run_id, appearance_id):
+        from . import pattern_replay
+        recording = self.death_path_recording(run_id)
+        if not 0 <= appearance_id < len(recording.appearances):
+            raise IndexError(f"no appearance {appearance_id}")
+        result = pattern_replay.replay(recording, appearance_id)
+        frames = np.ascontiguousarray(result.frames, dtype=np.uint8)
+        return {"fps": REPLAY_FPS, "count": len(frames),
+                "frames": base64.b64encode(zlib.compress(frames.tobytes())).decode("ascii"),
+                "samples": result.samples, "matched": result.matched, "reason": result.reason,
+                "appearance": recording.appearances[appearance_id]}
 
 
 def create_app(session):
@@ -381,12 +406,28 @@ def create_app(session):
 
     @app.post("/api/death-paths")
     def death_paths(body: dict = Body(...)):
-        # Recording reads every lane's full state each frame, so it is slower.
+        # Recording keeps every game's whole trace, so it is capped lower.
         return job("death-paths", body, 1024)
 
     @app.get("/api/death-paths")
     def get_death_paths():
         return _jsonable(dashboard.death_path_data())
+
+    @app.get("/api/death-paths/pattern/{pid}")
+    def get_death_path_pattern(pid: int, run: str):
+        try:
+            return _jsonable(dashboard.death_path_recording(run).pattern(pid))
+        except LookupError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
+
+    @app.get("/api/death-paths/replay/{appearance_id}")
+    def get_death_path_replay(appearance_id: int, run: str):
+        try:
+            return _jsonable(dashboard.death_path_replay(run, appearance_id))
+        except IndexError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from None
+        except LookupError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
 
     @app.websocket("/api/live")
     async def live(socket: WebSocket):

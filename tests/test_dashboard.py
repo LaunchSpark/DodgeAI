@@ -73,3 +73,77 @@ def test_evaluation_size_is_bounded(client):
 def test_the_live_socket_pushes_state(client):
     with client.websocket_connect("/api/live") as socket:
         assert socket.receive_json()["model_name"] == "velocity-flow"
+
+
+def _appearance(index, pid, outcome, seed=1_000_000):
+    died = outcome == "died"
+    return {"id": index, "seed": seed, "pid": pid, "type": "static", "start": 10, "end": 12,
+            "outcome": outcome, "cause": "rect" if died else None,
+            "kind": "static_rect" if died else None, "x": [60.0, 61.0, 62.0],
+            "y": [64.0, 64.0, 64.0], "rects": [[0.0, 0.0, 16.0, 16.0, 1]],
+            "death": ({"frame": 12, "score": 3.0, "since": 2, "alive": [1, 0, 0, 0],
+                       "killer": None} if died else None)}
+
+
+@pytest.fixture
+def recorded(client):
+    import numpy as np
+
+    from dodge.death_paths import Recording
+    recording = Recording(
+        run_id="run-a", settings={"step_frames": 1}, games=2,
+        actions={1_000_000: np.zeros(12, dtype=np.uint8)},
+        appearances=[_appearance(0, 28, "died"), _appearance(1, 28, "survived"),
+                     _appearance(2, 5, "survived")])
+    job = client.app.state.dashboard.death_paths
+    job.status, job.result = "done", recording
+    return recording
+
+
+def test_summary_lists_patterns(client, recorded):
+    body = client.get("/api/death-paths").json()
+    assert body["status"] == "done"
+    assert body["data"]["run_id"] == "run-a"
+    assert [p["pid"] for p in body["data"]["patterns"]] == [28, 5]
+    assert body["data"]["patterns"][0] == {"pid": 28, "type": "static", "encounters": 2,
+                                           "deaths": 1, "rate": 50.0}
+
+
+def test_pattern_returns_its_appearances(client, recorded):
+    body = client.get("/api/death-paths/pattern/28", params={"run": "run-a"}).json()
+    assert [a["id"] for a in body["appearances"]] == [0, 1]
+    assert body["layout"] == [[0.0, 0.0, 16.0, 16.0, 1]]
+
+
+def test_replay_payload_decodes_to_frames(client, recorded, monkeypatch):
+    import base64
+    import zlib
+
+    import numpy as np
+
+    from dodge import pattern_replay
+    frames = np.arange(3 * 128 * 128, dtype=np.uint32).astype(np.uint8).reshape(3, 128, 128)
+    calls = []
+
+    def fake(recording, appearance_id):
+        calls.append((recording.run_id, appearance_id))
+        samples = [{"frame": 10 + i, "st": 2, "enemies": 1, "enemy_gap": None,
+                    "rect_gap": 1.5} for i in range(3)]
+        return pattern_replay.Replay(frames=frames, samples=samples, matched=True, reason=None)
+
+    monkeypatch.setattr(pattern_replay, "replay", fake)
+    body = client.get("/api/death-paths/replay/0", params={"run": "run-a"}).json()
+    assert calls == [("run-a", 0)]
+    assert (body["fps"], body["count"], body["matched"], body["reason"]) == (60, 3, True, None)
+    decoded = zlib.decompress(base64.b64decode(body["frames"]))
+    assert decoded == frames.tobytes()
+    assert len(body["samples"]) == 3
+    assert body["appearance"]["id"] == 0
+
+
+def test_replay_of_stale_run_is_rejected(client, recorded):
+    for path in ("/api/death-paths/replay/0", "/api/death-paths/pattern/28"):
+        response = client.get(path, params={"run": "run-b"})
+        assert response.status_code == 409
+        assert response.json()["detail"] == "That sampling run has been replaced; reopen the pattern."
+    assert client.get("/api/death-paths/replay/99", params={"run": "run-a"}).status_code == 404
