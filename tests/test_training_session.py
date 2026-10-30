@@ -182,12 +182,15 @@ def test_training_continues_after_autosave_boundary(tmp_path, monkeypatch):
 
         def save(self, path):
             self.saved.append(path)
+            Path(path).write_bytes(b"checkpoint")
 
     env = StubEnv()
     session = training.PPOTrainingSession(
         model_dir=tmp_path / "models", logs_dir=tmp_path / "logs",
         total_steps=128, autostart=False, device="cpu",
     )
+    # Not the working directory's training.json, which the stub can't take.
+    session.schedule_path = tmp_path / "training.json"
     model = StubModel(session)
     monkeypatch.setattr(training, "make_training_env", lambda *args, **kwargs: env)
     monkeypatch.setattr(training, "architecture_name", lambda value: "hybrid-cnn")
@@ -197,9 +200,97 @@ def test_training_continues_after_autosave_boundary(tmp_path, monkeypatch):
 
     assert len(model.learn_calls) == 2
     assert [call["reset_num_timesteps"] for call in model.learn_calls] == [True, False]
-    assert model.saved == [tmp_path / "models" / "hybrid-cnn-latest"]
+    assert len(model.saved) == 1
+    name = session.architecture
+    assert sorted(path.name for path in (tmp_path / "models").iterdir()) == [f"{name}.zip"]
+    assert session.active_model_name == name
     assert session.data.status != "complete"
     assert env.closed
+
+
+def _autosaving_session(tmp_path, monkeypatch, *, load=None):
+    """A session whose run autosaves once, then stops."""
+    from dodge import training
+
+    class StubEnv:
+        def close(self):
+            pass
+
+    class StubModel:
+        n_steps = 64
+        completed_updates = 0
+        num_timesteps = 0
+        gamma = 0.99
+
+        def __init__(self, session):
+            self.session = session
+            self.learn_calls = 0
+
+        def learn(self, **kwargs):
+            # The first chunk ends at an autosave; the second stops the run.
+            self.learn_calls += 1
+            if self.learn_calls == 2:
+                self.session.shutdown_event.set()
+
+        def save(self, path):
+            Path(path).write_bytes(b"new weights")
+
+    session = training.PPOTrainingSession(
+        model_dir=tmp_path, logs_dir=tmp_path / "logs",
+        total_steps=128, autostart=False, device="cpu",
+    )
+    session.schedule_path = tmp_path / "training.json"
+    model = StubModel(session)
+    monkeypatch.setattr(training, "make_training_env", lambda *args, **kwargs: StubEnv())
+    monkeypatch.setattr(training, "architecture_name", lambda value: "hybrid-cnn")
+    monkeypatch.setattr(session, "_new_model", lambda value: model)
+    monkeypatch.setattr(session, "_load_model", lambda path, env: model)
+    if load is not None:
+        session.pending_load = load
+        session.active_model_name = load.stem
+        session.active_model_path = load
+    return session, model
+
+
+def test_autosave_overwrites_the_loaded_checkpoint_in_place(tmp_path, monkeypatch):
+    loaded = tmp_path / "mine.zip"
+    loaded.write_bytes(b"old weights")
+    session, _ = _autosaving_session(tmp_path, monkeypatch, load=loaded)
+
+    session._run()
+
+    assert loaded.read_bytes() == b"new weights"
+    assert sorted(path.name for path in tmp_path.glob("*.zip")) == ["mine.zip"]
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+def test_a_fresh_model_never_autosaves_over_an_existing_checkpoint(tmp_path, monkeypatch):
+    session, _ = _autosaving_session(tmp_path, monkeypatch)
+    name = session.architecture
+    (tmp_path / f"{name}.zip").write_bytes(b"someone else's")
+
+    session._run()
+
+    assert (tmp_path / f"{name}.zip").read_bytes() == b"someone else's"
+    assert (tmp_path / f"{name}-2.zip").read_bytes() == b"new weights"
+    assert session.active_model_name == f"{name}-2"
+
+
+def test_each_update_appends_a_metrics_row_beside_the_model(tmp_path, monkeypatch):
+    import json
+
+    loaded = tmp_path / "mine.zip"
+    loaded.write_bytes(b"old weights")
+    session, model = _autosaving_session(tmp_path, monkeypatch, load=loaded)
+    for update in (1, 2):
+        model.completed_updates = update
+        session._record_metrics(model)
+
+    rows = [json.loads(line) for line in
+            (tmp_path / "mine.metrics.jsonl").read_text().splitlines()]
+    assert [row["update"] for row in rows] == [1, 2]
+    assert rows[0]["gamma"] == 0.99
+    assert set(rows[0]["events"]) == set(session.data.events)
 
 
 def test_watch_launches_immediately_from_an_existing_snapshot(tmp_path, monkeypatch):

@@ -2,6 +2,8 @@
 
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+import json
 import math
 import operator
 import os
@@ -212,7 +214,7 @@ SCALE_PRESETS = {
 }
 
 
-# Watchers must never read the mutable *-latest.zip autosave, so snapshots go
+# Watchers must never read the active model's mutable autosave, so snapshots go
 # to their own directory under names that never change once visible.
 SNAPSHOT_RETENTION = 3
 
@@ -734,6 +736,10 @@ class PPOTrainingSession:
         self.pending_config = None
         self.model = None
         self.active_model_name = architecture or ""
+        # The checkpoint autosave overwrites: the one loaded or last saved as,
+        # or None until a fresh model claims one (see _claim_autosave_path).
+        self.active_model_path = None
+        self._metrics_failed = False
         self.last_error = None
         self.last_watch_label = None
         self.worker = None
@@ -883,6 +889,87 @@ class PPOTrainingSession:
         self._checkpoints.write_sidecars(model, path,
                                          ppo_updates=self._completed_updates(model))
 
+    def _claim_autosave_path(self):
+        """Settle the file autosave overwrites, for a model that has none yet.
+
+        A loaded or saved model already has one: its own checkpoint. A fresh
+        model takes its architecture's name, or the first numbered variant
+        free, so a reset never overwrites a checkpoint it did not come from.
+        """
+        with self.lock:
+            if self.active_model_path is not None:
+                return
+            base = self.active_model_name or self.model_architecture
+            path, number = self.model_dir / f"{base}.zip", 1
+            while path.exists():
+                number += 1
+                path = self.model_dir / f"{base}-{number}.zip"
+            self.active_model_path = path
+            self.active_model_name = path.stem
+            self.data.model_name = path.stem
+
+    def _autosave(self, model):
+        """Overwrite the active model's checkpoint with the current weights.
+
+        Saved to a hidden temporary name and renamed over the old file, so a
+        crash mid-save leaves the previous checkpoint intact rather than a
+        truncated zip in its place. The ".tmp" suffix stops SB3 appending
+        ".zip", which would also put the half-written file in the Models list.
+        """
+        with self.lock:
+            path = self.active_model_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
+        model.save(temporary)
+        temporary.replace(path)
+        self._write_sidecars(model, path)
+
+    def _record_metrics(self, model):
+        """Append this update's metrics to `<model>.metrics.jsonl`.
+
+        One line per update beside the single autosaved checkpoint, so a run's
+        history is kept without a checkpoint for every point in it. Game
+        quarters appear only on updates that finished games.
+        """
+        update = self._completed_updates(model)
+        try:
+            learning_rate = float(model.policy.optimizer.param_groups[0]["lr"])
+        except (AttributeError, IndexError, KeyError, TypeError):
+            learning_rate = None
+        with self.lock:
+            path = self.active_model_path
+            data = self.data
+            row = {
+                "update": update,
+                "time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "timesteps": int(getattr(model, "num_timesteps", 0)),
+                "elapsed_seconds": round(data.elapsed_seconds, 1),
+                "steps_per_second": round(data.steps_per_second, 1),
+                "learning_rate": learning_rate,
+                "gamma": getattr(model, "gamma", None),
+                "entropy": data.entropy.latest,
+                "explained_variance": data.explained_variance.latest,
+                "dead_units": data.dead_units,
+                "best_score": data.best_score,
+                "events": {key: event.rollout for key, event in data.events.items()},
+            }
+            quarters = data.games.quarters
+            if quarters and quarters[-1]["update"] == update:
+                row["games"] = {key: quarters[-1][key]
+                                for key in ("q1", "mean", "q4", "games")}
+        if path is None:
+            return
+        try:
+            with open(path.with_suffix(".metrics.jsonl"), "a", encoding="utf-8") as handle:
+                # default=float: numpy scalars from the summaries.
+                handle.write(json.dumps(row, default=float) + "\n")
+        except OSError as error:
+            # Reported once: a toast every update would bury everything else.
+            if not self._metrics_failed:
+                self._metrics_failed = True
+                self._emit(SessionEvent("metrics", False,
+                                        f"Could not record metrics: {error}"))
+
     def _clear_snapshot(self, status="starting"):
         with self.lock:
             self.data = DashboardSnapshot(
@@ -920,6 +1007,7 @@ class PPOTrainingSession:
                 # panel's discount rather than the table's.
                 self._apply_schedule(self.model)
                 self._begin_lineage(load_path)
+                self._claim_autosave_path()
                 callback = DashboardCallback(self)
                 reset_num_timesteps = load_path is None
                 while not self.shutdown_event.is_set() and not self.restart_event.is_set():
@@ -936,9 +1024,7 @@ class PPOTrainingSession:
                     # Training is open-ended. Each completed chunk is only an
                     # autosave boundary; the same model and optimizer continue
                     # immediately into the next chunk.
-                    latest = self.model_dir / f"{self.model_architecture}-latest"
-                    self.model.save(latest)
-                    self._write_sidecars(self.model, latest)
+                    self._autosave(self.model)
             except Exception as error:
                 # Assigned before the status flips to "error": request_save
                 # reads status under self.lock and then last_error outside
@@ -976,6 +1062,7 @@ class PPOTrainingSession:
                 # the active model, the same way save_model used to.
                 with self.lock:
                     self.active_model_name = request.output_path.stem
+                    self.active_model_path = request.output_path
                     self.data.model_name = request.output_path.stem
             if request.kind == "config":
                 self._commit_pending_config(request)
@@ -1025,6 +1112,7 @@ class PPOTrainingSession:
             # NaN when the returns have no variance at all; nothing to chart.
             if explained == explained:
                 self.data.explained_variance.append(explained)
+        self._record_metrics(model)
         self._process_save_requests(model)
         self._apply_schedule(model)
         self._score_dev_cohort(model)
@@ -1308,6 +1396,7 @@ class PPOTrainingSession:
             # checkpoint, quietly discarding the reset.
             self.pending_config = None
             self.active_model_name = self.architecture
+            self.active_model_path = None
             self.data.status = "resetting"
             self.data.model_name = self.active_model_name
         self.restart_event.set()
@@ -1382,6 +1471,7 @@ class PPOTrainingSession:
             # allowed to overwrite this choice once its checkpoint lands.
             self.pending_config = None
             self.active_model_name = entry.name
+            self.active_model_path = entry.path
             self.data.status = "loading"
             self.data.model_name = entry.name
         self.restart_event.set()

@@ -275,7 +275,11 @@ class Dashboard:
         self.session.request_save(self.session.model_dir / f"{safe}.zip", kind="save")
 
     def configure(self, values):
-        changed = self.session.configure_game(**values)
+        # The panel posts back the whole game config, including settings it
+        # has no control for (max_episode_frames); only its own are passed on.
+        owned = {spec["name"] for spec in (*GAME_SLIDERS, *GAME_TOGGLES)}
+        changed = self.session.configure_game(
+            **{name: value for name, value in values.items() if name in owned})
         if changed:
             game_settings.save({**self.session.game_config()})
         return changed

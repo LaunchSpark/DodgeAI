@@ -75,8 +75,10 @@ episode seed, and labels the game window with its exact PPO update and seed. The
 model name is shown in Learning Statistics and carried into the watch snapshot
 filename and window title. Saving names the active in-memory policy; loading changes the
 active policy to the selected model. Training continues until the dashboard is closed;
-`--steps` controls how often the current policy is automatically written to its
-`*-latest.zip` checkpoint, not when the session ends.
+`--steps` controls how often the current policy is automatically saved over the active
+model's own checkpoint (a fresh model takes its architecture's name, numbered if that file
+already exists), not when the session ends. Every PPO update also appends one line of
+training metrics to `<model>.metrics.jsonl` beside it.
 
 Every chart spans the whole run rather than a recent window, so improvement stays visible
 as training goes on. Each draws the raw per-episode values faintly beneath a smoothed

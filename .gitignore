@@ -26,3 +26,6 @@ rewards.json
 # The Game Config panel's settings, likewise per-user. Defaults live in
 # dodge/game_settings.py, and a missing file simply uses them.
 game-config.json
+
+# Brainstorm and plan-execution scratch from the superpowers tools.
+.superpowers/

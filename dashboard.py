@@ -26,7 +26,7 @@ def main(argv=None):
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--steps", type=int, default=250_000,
-                        help="PPO timesteps between automatic latest-model saves")
+                        help="PPO timesteps between automatic saves over the active model")
     parser.add_argument("--device", default="auto",
                         help="torch device for the policy update: auto, cpu or cuda")
     parser.add_argument("--envs", type=int, default=8,

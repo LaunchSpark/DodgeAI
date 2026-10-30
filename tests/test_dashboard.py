@@ -56,6 +56,16 @@ def test_reward_weights_are_saved_from_the_dashboard(client):
     assert client.get("/api/state").json()["rewards"]["death_penalty"] == 3.5
 
 
+def test_game_config_accepts_the_whole_config_the_state_reports(client):
+    config = client.get("/api/state").json()["game_config"]
+    assert "max_episode_frames" in config  # a setting the panel has no control for
+
+    response = client.post("/api/game-config", json={**config, "difficulty": 1})
+
+    assert response.status_code == 200
+    assert client.get("/api/state").json()["game_config"]["difficulty"] == 1
+
+
 def test_evaluation_size_is_bounded(client):
     assert client.post("/api/evaluate", json={"games": 4}).status_code == 400
 
