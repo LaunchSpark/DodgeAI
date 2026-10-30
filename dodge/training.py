@@ -1406,7 +1406,9 @@ class PPOTrainingSession:
         project = Path(__file__).resolve().parents[1]
         difficulty = {1: "easy", 2: "normal", 3: "hard"}[game_config["difficulty"]]
         command = [
-            sys.executable, str(project / "watch_ppo.py"), str(path),
+            # Absolute: the watcher runs in the project directory, and the
+            # model directory is relative to wherever the dashboard started.
+            sys.executable, str(project / "watch_ppo.py"), str(Path(path).resolve()),
             "--difficulty", difficulty,
             "--action-repeat", str(game_config["action_repeat"]),
             "--spawn-rate-percent", str(game_config["spawn_rate_percent"]),
