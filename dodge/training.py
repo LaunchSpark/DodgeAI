@@ -893,7 +893,8 @@ class PPOTrainingSession:
                 self.model = self._load_model(load_path, env) if load_path else self._new_model(env)
                 self.rollout_steps = self.model.n_steps
                 self.model_architecture = architecture_name(self.model)
-                self._game_settings = dict(env.game_settings)
+                # What the dev cohort is scored under; stub envs carry none.
+                self._game_settings = dict(getattr(env, "game_settings", {}))
                 self._scorings_since_best = 0
                 # Before the first rollout, so its returns already use the
                 # panel's discount rather than the table's.
