@@ -206,6 +206,48 @@ def test_cuda_graph_replays_the_eager_forward_and_follows_training():
         assert torch.equal(a, b)
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_cuda_graph_capture_leaves_other_threads_free_to_sync():
+    """The dev cohort is scored on its own thread while training captures."""
+    import threading
+    import warnings
+    from dodge import speed
+
+    capturing, synced = threading.Event(), threading.Event()
+    errors = []
+
+    def scorer():
+        capturing.wait()
+        try:
+            torch.ones(4, device="cuda").sum().item()
+        except Exception as error:
+            errors.append(error)
+        synced.set()
+
+    layer = torch.nn.Linear(16, 4).cuda()
+    calls = []
+
+    def forward(inputs):
+        calls.append(None)
+        if len(calls) == 3:  # two warm-ups, then the capture itself
+            capturing.set()
+            synced.wait(10)
+        return layer(inputs)
+
+    thread = threading.Thread(target=scorer)
+    thread.start()
+    inputs = torch.randn(8, 16, device="cuda")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with torch.no_grad():
+            graph = speed.CapturedForward(forward, inputs)
+            replayed = graph(inputs).clone()
+            eager = layer(inputs)
+    thread.join()
+    assert not errors
+    assert torch.equal(replayed, eager)
+
+
 def test_policy_still_deep_copies_after_capturing():
     import copy
 

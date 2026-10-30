@@ -183,7 +183,13 @@ class CapturedForward:
                 function(self.static_input)
         torch.cuda.current_stream(device).wait_stream(stream)
         self.graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(self.graph):
+        # The dev cohort is scored on its own thread, on the same GPU, while
+        # training captures. The default "global" mode forbids every thread's
+        # syncing calls (an .item(), a copy to the host) for the length of a
+        # capture, failing the scorer and invalidating the capture with it.
+        # This capture's stream is a non-blocking side stream, so no other
+        # thread's work can join it; only this thread needs to hold off.
+        with torch.cuda.graph(self.graph, capture_error_mode="thread_local"):
             self.static_outputs = function(self.static_input)
 
     def __call__(self, inputs):
