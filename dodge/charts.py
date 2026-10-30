@@ -43,18 +43,18 @@ def _hover_line(base, x, y_fields, tooltip):
     return rule, points
 
 
-def training_series(series, title, unit=""):
-    """One run metric over episodes: the raw points faint, the trend solid."""
+def training_series(series, title, unit="", per="Episodes"):
+    """One run metric over its samples: the raw points faint, the trend solid."""
     rows = [{"episode": (index + 1) * series.interval, "value": value, "trend": trend}
             for index, (value, trend) in enumerate(zip(series.values, series.trend))]
     suffix = f" ({unit})" if unit else ""
     base = alt.Chart(alt.Data(values=rows)).encode(
-        x=alt.X("episode:Q", title="Episodes"),
+        x=alt.X("episode:Q", title=per, axis=alt.Axis(format=",d")),
     )
     raw = base.mark_line(strokeWidth=1, opacity=0.3).encode(
         y=alt.Y("value:Q", title=f"{title}{suffix}", scale=alt.Scale(zero=False)))
     trend = base.mark_line(strokeWidth=2).encode(y="trend:Q")
-    tooltip = [alt.Tooltip("episode:Q", title="Episode", format=","),
+    tooltip = [alt.Tooltip("episode:Q", title=per.rstrip("s"), format=","),
                alt.Tooltip("trend:Q", title=f"{title} (trend)", format=",.2f"),
                alt.Tooltip("value:Q", title=title, format=",.2f")]
     rule, points = _hover_line(base.encode(y="trend:Q"), "episode", ["trend"], tooltip)
@@ -69,7 +69,7 @@ def quarters_over_training(rows):
     color = alt.Color("measure:N", title=None, scale=alt.Scale(domain=QUARTERS),
                       legend=alt.Legend(orient="top"))
     base = alt.Chart(alt.Data(values=long)).encode(
-        x=alt.X("update:Q", title="PPO update"),
+        x=alt.X("update:Q", title="PPO update", axis=alt.Axis(format=",d", tickMinStep=1)),
         y=alt.Y("frames:Q", title="Alive frames"),
         color=color,
     )
@@ -96,7 +96,7 @@ def survival_curves(curves):
     rows = [{"source": name, "frames": point["frames"], "alive": point["alive"]}
             for name, points in curves.items() for point in points]
     base = alt.Chart(alt.Data(values=rows)).encode(
-        x=alt.X("frames:Q", title="Gameplay frames survived"),
+        x=alt.X("frames:Q", title="Gameplay frames survived", axis=alt.Axis(format=",d")),
         y=alt.Y("alive:Q", title="Games still alive", axis=alt.Axis(format="%"),
                 scale=alt.Scale(domain=[0, 1])),
         color=alt.Color("source:N", title=None, scale=alt.Scale(domain=names),
@@ -161,13 +161,18 @@ def pattern_hazard(hazard):
             if row[key] is not None and row[key] > 0:
                 long.append({"window": row["window"], "series": label, "rate": row[key]})
     windows = [row["window"] for row in hazard["windows"]]
-    chart = alt.Chart(alt.Data(values=long)).mark_bar(cornerRadiusEnd=4).encode(
+    # Lines with markers rather than bars: on a log scale a bar has no zero to
+    # stand on, and the gap between the two lines is the reading.
+    chart = alt.Chart(alt.Data(values=long)).mark_line(
+        point=alt.OverlayMarkDef(filled=True, size=64)).encode(
         x=alt.X("window:N", title="Gameplay frame window", sort=windows,
                 axis=alt.Axis(labelAngle=0)),
-        xOffset=alt.XOffset("series:N", sort=HAZARD_SERIES),
         y=alt.Y("rate:Q", title="Deaths per 10,000 frames", scale=alt.Scale(type="log")),
         color=alt.Color("series:N", title=None, scale=alt.Scale(domain=HAZARD_SERIES),
                         legend=alt.Legend(orient="top")),
+        strokeDash=alt.StrokeDash("series:N", scale=alt.Scale(domain=HAZARD_SERIES,
+                                                               range=[[1, 0], [6, 4]]),
+                                  legend=None),
         tooltip=[alt.Tooltip("window:N", title="Window"),
                  alt.Tooltip("series:N", title="Pattern"),
                  alt.Tooltip("rate:Q", title="Deaths per 10k frames", format=".2f")],
