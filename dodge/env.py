@@ -124,11 +124,12 @@ MAX_ACTION_REPEAT = 5
 
 def make_engine(*, step_frames=1, difficulty=1, patterns=False, powerups=False,
                 normal_enemies=True, kamikaze_enemies=True, spawn_rate_percent=100,
-                lives=0, pixels=False, execution="parallel"):
+                lives=0, pixels=False, execution="parallel", ml=None):
     """A Rust batch with the game settings applied.
 
     Each step holds the action for `step_frames` frames, stopping a lane early
-    at the frame it dies.
+    at the frame it dies. `ml` (default: not `pixels`) starts games through the
+    ML reset; with `pixels` too, rendered steps replay the ML engine's games.
     """
     if not native_available():
         raise RuntimeError(INSTALL_HINT)
@@ -143,7 +144,7 @@ def make_engine(*, step_frames=1, difficulty=1, patterns=False, powerups=False,
         execution=execution,
         board=False,
         pixels=pixels,
-        ml=not pixels,
+        ml=(not pixels) if ml is None else bool(ml),
         difficulty=int(difficulty),
         patterns_enabled=bool(patterns),
         powerups_enabled=bool(powerups),
