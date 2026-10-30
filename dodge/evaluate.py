@@ -141,7 +141,9 @@ class preserved_rng:
         self._python = random.getstate()
         self._numpy = np.random.get_state()
         self._torch = torch.get_rng_state()
-        self._cuda = (torch.cuda.get_rng_state_all() if torch.cuda.is_available()
+        # Only once initialized: before that nothing can have drawn from it.
+        self._cuda = (torch.cuda.get_rng_state_all()
+                      if torch.cuda.is_available() and torch.cuda.is_initialized()
                       else None)
         return self
 
