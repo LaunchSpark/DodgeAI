@@ -1,7 +1,9 @@
 """Background Stable-Baselines3 session used by the Pygame dashboard."""
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 import math
+import operator
 import os
 from pathlib import Path
 import queue
@@ -19,7 +21,8 @@ from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.save_util import load_from_zip_file
 from stable_baselines3.common.utils import get_device
 
-from .env import MAX_ACTION_REPEAT, DodgeVecEnv, validate_spawn_rate_percent
+from .env import EVENT_FIELDS, MAX_ACTION_REPEAT, DodgeVecEnv, validate_spawn_rate_percent
+from .resume import CheckpointWriter, read_state, restore_training_state
 from .policies import (ARCHITECTURES, COORDINATE_INPUTS, DEFAULT_ARCHITECTURE,
                        architecture_from_kwargs,
                        HYBRID_INPUT_CHANNELS, architecture_name,
@@ -33,11 +36,25 @@ RATE_WINDOW_SECONDS = 0.5
 # Observations drawn from the rollout buffer to judge unit death against.
 DEAD_UNIT_SAMPLES = 512
 
-# Only the convolutional policy is worth moving to a GPU. Measured on a GTX
+# Only the convolutional policies are worth moving to a GPU. Measured on a GTX
 # 1070: the hybrid-cnn update runs 5.1x faster there (7.20s -> 1.40s), while the
-# MLP is unchanged (0.686s -> 0.693s) because its layers are too small to cover
+# MLP was unchanged (0.686s -> 0.693s) because its layers are too small to cover
 # the transfer and launch overhead. Stable-Baselines3 warns about exactly this.
+#
+# The two field policies were added on the strength of being convolutional, and
+# a quick check bears it out (torch 2.13 cu126, one 256-sample optimizer step,
+# rough, with the CPU shared): velocity-flow 1451ms -> 159ms and
+# velocity-flow-v2 791ms -> 69ms, about 9x and 11x. Collection gains too once
+# the batch is wide -- v2's forward pass is ~1.3k frames/s on the CPU at any
+# width against 11.7k at 64 envs and 19.6k at 256 on the GPU.
+#
+# The MLP stays off the list. Its 2048-sample comparison above is the only
+# whole-update measurement there is; the same quick check put its step 6.7x
+# faster on the GPU, but on a CPU another process was saturating, so it is a
+# lead for a quiet-machine benchmark rather than a reason to move it.
 GPU_ARCHITECTURES = ("hybrid-cnn", "velocity-flow", "velocity-flow-v2")
+
+_CPU_POLICY_WARNING = ".*primarily intended to run on the CPU.*"
 
 
 def resolve_device(device, architecture):
@@ -53,8 +70,42 @@ def resolve_device(device, architecture):
     return get_device("cpu")
 
 
+@contextmanager
+def quiet_cpu_policy_warning():
+    """Silence SB3's "PPO is primarily intended to run on the CPU" warning.
+
+    Stable-Baselines3 inspects the policy class, which is ActorCriticPolicy for
+    every architecture here, so it cannot see that the features extractor is
+    convolutional and warns that a GPU "might take longer than on CPU". For the
+    architectures in GPU_ARCHITECTURES that is measured to be wrong, and the
+    warning only obscures real ones.
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=_CPU_POLICY_WARNING,
+                                category=UserWarning)
+        yield
+
+
 MINIBATCHES_PER_EPOCH = 16
 MIN_MINIBATCH = 64
+# The ceiling on a minibatch, whatever the buffer. Without one the
+# minibatches-per-epoch rule grows the minibatch with the buffer and holds the
+# optimizer steps per update flat, which stops being a schedule once envs are
+# scaled up:
+#
+# * At 64 envs x 256 steps v2's rule asked for 2048-sample minibatches -- 32
+#   Adam steps to digest 16k samples, an eighth of the steps per sample the
+#   defaults take -- and at 256 x 256 it asked for 8192, which at v2's ~1.7MiB
+#   of activations a sample (3.5GiB peak measured at 2048) does not fit an
+#   8GiB card at all.
+# * 512 is Turner's minibatch at the same 64 x 256 buffer, and on a GTX 1070
+#   it costs nothing in speed: v2's per-sample optimizer cost was re-measured
+#   flat at ~0.24ms from 256 to 2048 (rough, torch 2.13 cu126).
+#
+# It only binds above 4096 samples for v2 (above 8192 for the others), so the
+# default 8 x 256 buffer trains exactly as before. Larger buffers get more,
+# smaller steps than they used to: a change of dynamics for those runs only.
+MAX_MINIBATCH = 512
 
 
 # PPO settings that vary by architecture. Keyed rather than global so
@@ -68,6 +119,7 @@ DEFAULT_HYPERPARAMETERS = {
     "target_kl": None,
     "ent_coef": 0.01,
     "minibatches_per_epoch": MINIBATCHES_PER_EPOCH,
+    "max_minibatch": MAX_MINIBATCH,
 }
 
 ARCHITECTURE_HYPERPARAMETERS = {
@@ -91,10 +143,12 @@ ARCHITECTURE_HYPERPARAMETERS = {
         # 2048 (0.26-0.28ms a sample per epoch), so minibatch size is not what
         # makes large buffers slow -- epochs are. With eight large minibatches
         # an update takes 32 optimizer steps, target_kl never trips, and all
-        # four epochs run: 16.8s an update at 64 envs. Capping the minibatch at
-        # 256 instead lets target_kl stop the update after about one epoch,
-        # 4.3s at 64 envs -- faster, but a different amount of learning per
-        # update, so it is not applied by default (see README, Simulation speed).
+        # four epochs run: 16.8s an update at 64 envs. MAX_MINIBATCH holds the
+        # minibatch at 512 above a 4,096-sample buffer -- Turner's schedule,
+        # and what keeps 128+ envs inside an 8GiB card -- so a large buffer
+        # takes more, smaller steps and target_kl can stop it early. That is a
+        # different amount of learning per update than the uncapped rule gave
+        # (see README, Simulation speed).
         "minibatches_per_epoch": 8,
     },
 }
@@ -107,9 +161,50 @@ def hyperparameters(architecture=None):
 
 
 def minibatch_size(buffer_samples, architecture=None):
-    """Split a rollout buffer into a workable number of optimizer passes."""
-    per_epoch = hyperparameters(architecture)["minibatches_per_epoch"]
-    return min(max(MIN_MINIBATCH, buffer_samples // per_epoch), buffer_samples)
+    """Split a rollout buffer into a workable number of optimizer passes.
+
+    `minibatches_per_epoch` of the buffer, floored at MIN_MINIBATCH so a
+    small buffer is not cut into gradients too noisy to be worth taking,
+    capped at `max_minibatch` so a large one still gets a real number of
+    steps (and fits in GPU memory), and never larger than the buffer itself.
+    """
+    settings = hyperparameters(architecture)
+    target = buffer_samples // settings["minibatches_per_epoch"]
+    return min(max(MIN_MINIBATCH, min(target, settings["max_minibatch"])),
+               buffer_samples)
+
+
+def update_schedule(n_envs, rollout_steps, architecture=None):
+    """What one PPO update costs at a given env count: for logs and the CLI.
+
+    `optimizer_steps` is the ceiling; target_kl can stop an update early.
+    """
+    settings = hyperparameters(architecture)
+    buffer = n_envs * rollout_steps
+    batch = minibatch_size(buffer, architecture)
+    per_epoch = math.ceil(buffer / batch)
+    return {"buffer": buffer, "minibatch": batch,
+            "minibatches_per_epoch": per_epoch,
+            "epochs": settings["n_epochs"],
+            "optimizer_steps": per_epoch * settings["n_epochs"],
+            "target_kl": settings["target_kl"]}
+
+
+# Env-count presets, so a recommended shape is one flag rather than folklore.
+# Changing --envs changes dynamics (buffer, minibatch, how many games one
+# update sees), so the defaults stay at 8 x 256 and these are opt-in.
+#
+# "gpu" is Turner's reference shape: 64 envs x 256 steps, a 16384-sample
+# buffer, which MAX_MINIBATCH turns into 512-sample minibatches -- 32 an epoch.
+# With v2's 4 epochs and target_kl 0.02 that is Turner's schedule exactly. On
+# a GTX 1070 the v2 policy's forward pass collects ~11.7k frames/s at 64 envs
+# against ~1.7k at 8, so collection stops being a cost; 256 envs is faster
+# still at ~19.6k but needs 64-step rollouts to keep the same buffer, and
+# that leans four times as hard on the bootstrap at the rollout boundary.
+SCALE_PRESETS = {
+    "default": {"n_envs": 8, "rollout_steps": 256},
+    "gpu": {"n_envs": 64, "rollout_steps": 256},
+}
 
 
 # Watchers must never read the mutable *-latest.zip autosave, so snapshots go
@@ -288,6 +383,56 @@ def migrate_widened_inputs(source_params, target, path, device="cpu"):
     return target
 
 
+_EVENT_GETTER = operator.itemgetter(*EVENT_KEYS)
+_KILLS_COLUMN = EVENT_KEYS.index("enemies_destroyed")
+# DodgeVecEnv's batched event_counts columns, reordered into EVENT_KEYS order.
+_BATCH_COLUMNS = [EVENT_FIELDS.index(key) for key in EVENT_KEYS]
+
+
+def _event_counts(infos):
+    """Every lane's training events this step, as a (lanes, EVENT_KEYS) array.
+
+    One C-level itemgetter per lane where the info carries every key, which
+    DodgeVecEnv's always does; the per-key fallback is for partial dicts.
+    DodgeVecEnv's StepInfos carry every lane's counts as one array on
+    `infos.batch`, and only finished lanes get a full dict, so that array is
+    read directly when present.
+    """
+    batch = getattr(infos, "batch", None)
+    if batch is not None:
+        return np.asarray(batch.event_counts, dtype=np.int64)[:, _BATCH_COLUMNS]
+    rows = []
+    for info in infos:
+        events = info.get("training_events")
+        if not events:
+            rows.append((0,) * len(EVENT_KEYS))
+            continue
+        try:
+            rows.append(_EVENT_GETTER(events))
+        except KeyError:
+            rows.append(tuple(events.get(key, 0) for key in EVENT_KEYS))
+    return np.array(rows, dtype=np.int64).reshape(len(rows), len(EVENT_KEYS))
+
+
+def _finished_lanes(infos, dones):
+    """Lanes whose episode ended this step, in lane order.
+
+    Monitor normally supplies info["episode"], but `dones` keeps the Dodge
+    episode boundary when another VecEnv wrapper is in play.
+    """
+    done = np.zeros(len(infos), dtype=bool)
+    flags = np.asarray(dones, dtype=bool).reshape(-1)[:len(infos)]
+    done[:len(flags)] = flags
+    batch = getattr(infos, "batch", None)
+    if batch is not None:
+        # Only finished lanes carry a full dict, and batch.done marks them.
+        return np.flatnonzero(done | np.asarray(batch.done, dtype=bool)).tolist()
+    for index, info in enumerate(infos):
+        if "episode" in info and info["episode"] is not None:
+            done[index] = True
+    return np.flatnonzero(done).tolist()
+
+
 class DashboardCallback(BaseCallback):
     def __init__(self, session):
         super().__init__(verbose=0)
@@ -297,8 +442,13 @@ class DashboardCallback(BaseCallback):
         # here until that env's episode ends and the episode total is known.
         # Accumulating rather than reading Monitor's episode payload keeps this
         # working whichever VecEnv wrappers are in play.
-        self.episode_kills = {}
-        self.episode_reward = {}
+        #
+        # Held as one array per bank, indexed by lane, rather than a dict
+        # updated lane by lane: this runs every step, and at 256 envs the
+        # per-lane Python was ~1.7ms a step, a sixth of the env step itself.
+        # Only lanes whose episode ended get Python attention.
+        self.episode_kills = np.zeros(0, dtype=np.int64)
+        self.episode_reward = np.zeros(0, dtype=np.float64)
         # Each env's finished-episode lengths for the run in progress, banked
         # until the run ends and the whole split is known.
         self.run_segments = {}
@@ -355,61 +505,67 @@ class DashboardCallback(BaseCallback):
                 self._rate_steps = 0
             data.rollout_progress = (self.n_calls % self.session.rollout_steps) / self.session.rollout_steps
 
-            for index, info in enumerate(infos):
-                events = info.get("training_events", {})
-                for key, count in events.items():
-                    if key in self.rollout_events:
-                        self.rollout_events[key] += int(count)
-                        data.events[key].total += int(count)
+            lanes = len(infos)
+            self._fit_banks(lanes)
+            counts = _event_counts(infos)
+            if lanes:
+                totals = counts.sum(axis=0)
+                for column, key in enumerate(EVENT_KEYS):
+                    count = int(totals[column])
+                    if count:
+                        self.rollout_events[key] += count
+                        data.events[key].total += count
+                self.episode_kills += counts[:, _KILLS_COLUMN]
+                rewarded = min(lanes, len(rewards))
+                self.episode_reward[:rewarded] += rewards[:rewarded]
 
-                self.episode_kills[index] = (
-                    self.episode_kills.get(index, 0)
-                    + int(events.get("enemies_destroyed", 0))
-                )
-                if index < len(rewards):
-                    self.episode_reward[index] = (
-                        self.episode_reward.get(index, 0.0) + float(rewards[index])
-                    )
-
+            for index in _finished_lanes(infos, dones):
+                info = infos[index]
                 run = info.get("run")
                 if run is not None:
                     data.games.add(run, data.update)
-
                 episode = info.get("episode")
-                finished = episode is not None or (
-                    # Monitor normally supplies episode, but retain the Dodge
-                    # frame duration if another VecEnv wrapper is used.
-                    index < len(dones) and bool(dones[index])
-                )
-                if finished:
-                    if episode is not None:
-                        data.best_score = max(data.best_score,
-                                              float(info.get("score", 0.0)))
-                    data.reward.append(self.episode_reward.pop(index, 0.0))
-                    data.enemies_killed.append(float(self.episode_kills.pop(index, 0)))
-                    # Survival time follows the cartridge run, not the episode.
-                    # With training lives an episode ends at every absorbed hit,
-                    # and charting those would quietly redefine the dashboard's
-                    # headline metric as time between hits, against curves
-                    # recorded when it meant time alive. Without lives the two
-                    # numbers are identical, so an ordinary run is unaffected.
-                    segments = self.run_segments.setdefault(index, [])
-                    segments.append(float(info.get("frames", 0)) / 60.0)
-                    if info.get("run_over", True):
-                        self.run_segments.pop(index, None)
-                        for band in range(LIFE_BANDS):
-                            # Anything past the last band is folded into it, so
-                            # the stack still totals the run however the lives
-                            # setting was changed mid-run.
-                            value = (sum(segments[band:]) if band == LIFE_BANDS - 1
-                                     else (segments[band] if band < len(segments) else 0.0))
-                            data.life_lengths[band].append(value)
-                        frames = info.get("run_frames", info.get("frames", 0))
-                        data.episode_length.append(float(frames) / 60.0)
+                if episode is not None:
+                    data.best_score = max(data.best_score,
+                                          float(info.get("score", 0.0)))
+                data.reward.append(float(self.episode_reward[index]))
+                data.enemies_killed.append(float(self.episode_kills[index]))
+                self.episode_reward[index] = 0.0
+                self.episode_kills[index] = 0
+                # Survival time follows the cartridge run, not the episode.
+                # With training lives an episode ends at every absorbed hit,
+                # and charting those would quietly redefine the dashboard's
+                # headline metric as time between hits, against curves
+                # recorded when it meant time alive. Without lives the two
+                # numbers are identical, so an ordinary run is unaffected.
+                segments = self.run_segments.setdefault(index, [])
+                segments.append(float(info.get("frames", 0)) / 60.0)
+                if info.get("run_over", True):
+                    self.run_segments.pop(index, None)
+                    for band in range(LIFE_BANDS):
+                        # Anything past the last band is folded into it, so
+                        # the stack still totals the run however the lives
+                        # setting was changed mid-run.
+                        value = (sum(segments[band:]) if band == LIFE_BANDS - 1
+                                 else (segments[band] if band < len(segments) else 0.0))
+                        data.life_lengths[band].append(value)
+                    frames = info.get("run_frames", info.get("frames", 0))
+                    data.episode_length.append(float(frames) / 60.0)
 
         self.last_step_time = now
         self.last_timesteps = self.num_timesteps
         return True
+
+    def _fit_banks(self, lanes):
+        """Size the per-lane banks to the env count, keeping what they hold."""
+        if len(self.episode_reward) == lanes:
+            return
+        kept = min(lanes, len(self.episode_reward))
+        reward = np.zeros(lanes, dtype=np.float64)
+        kills = np.zeros(lanes, dtype=np.int64)
+        reward[:kept] = self.episode_reward[:kept]
+        kills[:kept] = self.episode_kills[:kept]
+        self.episode_reward, self.episode_kills = reward, kills
 
     def _on_rollout_end(self):
         try:
@@ -519,6 +675,9 @@ class PPOTrainingSession:
         self.rollout_steps = rollout_steps
         self.architecture = architecture
         self.model_architecture = architecture
+        # The request is kept as well as its resolution: a loaded checkpoint
+        # re-resolves "auto" against its own architecture (see _load_model).
+        self.requested_device = device
         self.device = resolve_device(device, architecture)
         self.env_kwargs = {
             "difficulty": difficulty,
@@ -580,18 +739,8 @@ class PPOTrainingSession:
 
     def _new_model(self, env, architecture=None):
         architecture = architecture or self.architecture
-        with warnings.catch_warnings():
-            # Stable-Baselines3 inspects the policy class, which is
-            # ActorCriticPolicy for every architecture here, so it cannot see
-            # that hybrid-cnn's features extractor is convolutional. It then
-            # warns that a GPU "might take longer than on CPU". Measured on this
-            # project that update is 5.1x faster on a GPU, so the warning is
-            # wrong for us and only obscures real ones.
-            warnings.filterwarnings(
-                "ignore",
-                message=".*primarily intended to run on the CPU.*",
-                category=UserWarning,
-            )
+        self.device = resolve_device(self.requested_device, architecture)
+        with quiet_cpu_policy_warning():
             return self._build_model(env, architecture)
 
     def _build_model(self, env, architecture):
@@ -603,8 +752,9 @@ class PPOTrainingSession:
             env,
             learning_rate=3e-4,
             n_steps=self.rollout_steps,
-            # Sixteen minibatches an epoch, floored at 64 samples and capped by
-            # the buffer itself.
+            # The architecture's minibatches an epoch (sixteen by default),
+            # floored at 64 samples and capped at MAX_MINIBATCH and by the
+            # buffer itself.
             #
             # The minibatch has to track the buffer, not sit at a constant: the
             # buffer is n_envs * rollout_steps, and a fixed 64 would have put 32
@@ -635,7 +785,13 @@ class PPOTrainingSession:
         # channels or the derived senses has narrower first layers, and building
         # the policy around it raises a shape error rather than something
         # recoverable.
-        data, params, _ = load_from_zip_file(path, device=self.device)
+        #
+        # Read onto the CPU, because the device is not known yet: "auto" is
+        # decided by the checkpoint's architecture, not the session's. The
+        # dashboard starts with no architecture at all and waits for the Models
+        # panel, so resolving once in __init__ sent every loaded run -- v2
+        # included -- to the CPU, at about a tenth of the GPU's update speed.
+        data, params, _ = load_from_zip_file(path, device="cpu")
         if needs_input_migration(params):
             model = self._new_model(env, architecture="hybrid-cnn")
             return migrate_widened_inputs(params["policy"], model, path,
@@ -660,23 +816,43 @@ class PPOTrainingSession:
         # no entropy bonus and no tensorboard log.
         architecture = architecture_from_kwargs(data.get("policy_kwargs"))
         settings = hyperparameters(architecture)
-        model = DashboardPPO.load(
-            path, env=env, device=self.device,
-            custom_objects={
-                "n_steps": self.rollout_steps,
-                "batch_size": minibatch_size(self.n_envs * self.rollout_steps,
-                                             architecture),
-                "n_epochs": settings["n_epochs"],
-                "gamma": settings["gamma"],
-                "vf_coef": settings["vf_coef"],
-                "target_kl": settings["target_kl"],
-                "ent_coef": settings["ent_coef"],
-                "tensorboard_log": str(self.logs_dir),
-            },
-        )
+        self.device = resolve_device(self.requested_device, architecture)
+        with quiet_cpu_policy_warning():
+            model = DashboardPPO.load(
+                path, env=env, device=self.device,
+                custom_objects={
+                    "n_steps": self.rollout_steps,
+                    "batch_size": minibatch_size(self.n_envs * self.rollout_steps,
+                                                 architecture),
+                    "n_epochs": settings["n_epochs"],
+                    "gamma": settings["gamma"],
+                    "vf_coef": settings["vf_coef"],
+                    "target_kl": settings["target_kl"],
+                    "ent_coef": settings["ent_coef"],
+                    "tensorboard_log": str(self.logs_dir),
+                },
+            )
         model.set_learning_tracker(self._track_learning)
         model.set_post_update(self._on_post_update)
+        # Seed stream, generators and games from the state sidecar, if any.
+        state = read_state(path)
+        if state is not None:
+            restore_training_state(model, env, state, strict=False)
         return model
+
+    def _begin_lineage(self, parent=None):
+        """Checkpoints saved from here on descend from `parent`, if given."""
+        self._checkpoints = (CheckpointWriter.resuming(parent) if parent
+                             else CheckpointWriter())
+
+    def _write_sidecars(self, model, path):
+        """The state sidecar and provenance manifest of a checkpoint just saved."""
+        if getattr(self, "_checkpoints", None) is None:
+            self._begin_lineage()
+        self._checkpoints.extra_config = {"source": "dashboard",
+                                          "architecture": self.model_architecture}
+        self._checkpoints.write_sidecars(model, path,
+                                         ppo_updates=self._completed_updates(model))
 
     def _clear_snapshot(self, status="starting"):
         with self.lock:
@@ -708,6 +884,7 @@ class PPOTrainingSession:
                 self.model = self._load_model(load_path, env) if load_path else self._new_model(env)
                 self.rollout_steps = self.model.n_steps
                 self.model_architecture = architecture_name(self.model)
+                self._begin_lineage(load_path)
                 callback = DashboardCallback(self)
                 reset_num_timesteps = load_path is None
                 while not self.shutdown_event.is_set() and not self.restart_event.is_set():
@@ -726,6 +903,7 @@ class PPOTrainingSession:
                     # immediately into the next chunk.
                     latest = self.model_dir / f"{self.model_architecture}-latest"
                     self.model.save(latest)
+                    self._write_sidecars(self.model, latest)
             except Exception as error:
                 # Assigned before the status flips to "error": request_save
                 # reads status under self.lock and then last_error outside
@@ -750,6 +928,7 @@ class PPOTrainingSession:
                 return
             try:
                 model.save(request.path)
+                self._write_sidecars(model, request.output_path)
                 request.completed_update = self._completed_updates(model)
             except Exception as error:
                 request.error = error

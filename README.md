@@ -233,6 +233,13 @@ then degrades badly -- 0.32 ms/sample at 256 against 0.41 at 512 and 2.88 at
 2048, which is memory pressure, not compute. 256 is the floor of that curve,
 and anything larger makes the learning phase slower rather than faster.
 
+*Re-measured on torch 2.13 cu126 (rough, one optimizer step on random
+observations):* ~0.24 ms/sample, flat from 256 to 2048, peaking at 3.5GiB of
+GPU memory at 2048. The degradation above did not reproduce, so 256 stays as
+the value every v2 curve was trained under at the default buffer, but it is
+no reason to keep larger buffers below 512 -- see
+[Many envs on a GPU](#many-envs-on-a-gpu).
+
 | | batch | ms/step | steps/rollout | learning per rollout |
 | --- | --- | --- | --- | --- |
 | velocity-flow | 128 | 40.6 | 160 | 6.50s |
@@ -426,10 +433,22 @@ samples an update. Those numbers are superseded: different architecture,
 different buffer, and `velocity-flow-v2` cut its own update further with
 `n_epochs=4` and `target_kl`.
 
-`auto` only reaches for a GPU where it measurably helps. The MLP update is
-unchanged on a GPU (0.686s against 0.693s) because its layers are too small to
-cover transfer and launch overhead, so `auto` keeps `mlp` on the CPU. An
-explicit `--device cuda` is always honoured.
+`auto` only reaches for a GPU where it measurably helps: `hybrid-cnn`,
+`velocity-flow` and `velocity-flow-v2`. A quick check of one 256-sample
+optimizer step (rough, CPU shared with other work) put the two field policies
+at about 9x and 11x faster on the GPU. The MLP update is unchanged on a GPU
+(0.686s against 0.693s) because its layers are too small to cover transfer and
+launch overhead, so `auto` keeps `mlp` on the CPU; the same quick check hinted
+otherwise on a saturated CPU, which is worth a quiet-machine benchmark before
+anything moves. An explicit `--device cuda` is always honoured.
+
+`auto` is resolved against the architecture actually being trained. The
+dashboard starts with no architecture and waits for the Models panel, and it
+used to resolve `auto` once at startup, so every run loaded from a checkpoint
+-- v2 included -- trained on the CPU. A loaded checkpoint now resolves it by
+its own architecture, and `train_ppo.py` uses the same rule (previously it
+handed `auto` straight to Stable-Baselines3, which picks any GPU for any
+architecture).
 
 Stable-Baselines3 warns that a non-CNN policy on a GPU may be slower. It reads
 the policy class, which is `ActorCriticPolicy` for both architectures here, so
@@ -475,7 +494,8 @@ is roughly flat and mainly the update cadence changes:
 | 8 x 256 | 64 | 1.90s | 5.02s | 6.92s | 296 steps/s |
 | 8 x 256 | **128** | 1.96s | 3.18s | 5.14s | **399 steps/s** |
 
-The minibatch is `buffer / 16`, floored at 64 — see `minibatch_size()`. Holding
+The minibatch is `buffer / 16`, floored at 64 and capped at 512 (v2: `buffer
+/ 8`) — see `minibatch_size()`. Holding
 it at a constant 64 would have put 32 minibatches in every epoch at this buffer
 size, and the update is already most of the cycle; letting it grow keeps the
 optimizer at 16 passes an epoch and is *faster than the old default* despite
@@ -529,17 +549,56 @@ Collection is about fourteen times faster per sample, so the gradient update is
 the cycle. Its cost is set by how many samples it processes, not by the
 minibatch size: a sample costs 0.26-0.28 ms per epoch from 256 to 2,048.
 
-The default minibatch is an eighth of the buffer, so an update always takes 32
-optimizer steps. Steps that large never reach `target_kl`, so every update runs
+Uncapped, the minibatch is an eighth of the buffer, so an update always takes
+32 optimizer steps. Steps that large never reach `target_kl`, so every update runs
 all four epochs and the update grows with the env count. The "capped" rows hold
 the minibatch at 256 instead: more, smaller steps reach the KL target after
 about one epoch and the update stops there. That is three times the throughput
 at 64 envs, but each update does about a quarter of the optimization, so whether
 it learns as much per hour has to be measured on a learning curve, not a stopwatch.
+The default cap (below) is 512, not 256: it binds above a 4,096-sample buffer,
+so 8 x 256 is unchanged and 32 x 256 or more trains on Turner's schedule.
 
 Uncapped, 128 envs means a 4,096-sample minibatch, which ran at about 100
 steps/s, so keep to 64 or fewer without the cap. The env count also sets the
 buffer size.
+
+### Many envs on a GPU
+
+The recommended shape for a GPU run is Turner's: 64 envs x 256 steps.
+
+    python train_ppo.py --architecture velocity-flow-v2 --preset gpu
+
+`--preset gpu` is 64 x 256 and `--preset default` (the default) is 8 x 256;
+`--envs` and `--rollout-steps` override either. The defaults stay at 8 x 256
+because the env count is a dynamics change -- it sets the buffer, the
+minibatch and how many games one update sees -- and every curve so far was
+trained there. The run prints its schedule on startup:
+
+    velocity-flow-v2 on cuda: 64 envs x 256 steps = 16384 samples an update,
+    minibatch 512, up to 128 optimizer steps (4 epochs, target_kl 0.02)
+
+which is Turner's schedule exactly: minibatch 512, 4 epochs, `target_kl`
+early stop.
+
+**Minibatch cap.** The minibatches-per-epoch rule used to grow the minibatch
+with the buffer and hold optimizer steps flat: v2 at 64 x 256 took 2048-sample
+minibatches, 32 Adam steps per 16k samples (an eighth of the steps per sample
+the default buffer takes), and at 256 x 256 it asked for 8192, which does not
+fit an 8GiB card. `MAX_MINIBATCH = 512` (`max_minibatch` in the hyperparameter
+table) bounds it. It only binds above 4,096 samples for v2 and 8,192 for the
+other architectures, so the default buffer trains exactly as before; a run at
+a larger buffer gets more, smaller steps than it used to, and with
+`target_kl` that can also mean an earlier stop. Per-sample cost on the GPU is
+flat across the range, but more steps means more epochs before `target_kl`
+can stop the update, so it is a dynamics change, not a free one.
+
+**Periodic checkpoints** are counted in PPO updates (`--checkpoint-updates`,
+default 5) and land just after an update. They used to be every ~10k env
+steps, which is every five updates at 8 envs but more than once an update at
+64, each landing mid-rollout. The dashboard callback banks per-lane reward and
+kills in arrays rather than per-lane dicts, ~1.7ms down to ~0.3ms a step at
+256 envs.
 
 ## PPO bots
 
