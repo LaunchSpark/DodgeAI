@@ -87,14 +87,6 @@ def optimizer_steps(model):
     return 0
 
 
-def ppo_updates_of(model):
-    """Completed PPO updates of a model that was not counted by a callback."""
-    counted = getattr(model, "completed_updates", None)
-    if counted is not None:
-        return int(counted)
-    return int(getattr(model, "_n_updates", 0)) // max(int(getattr(model, "n_epochs", 1)), 1)
-
-
 def counters(model, env, ppo_updates):
     return {
         "ppo_updates": int(ppo_updates),
