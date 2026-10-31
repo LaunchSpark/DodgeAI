@@ -79,6 +79,7 @@ export interface PatternSummary {
 export interface DeathPathsSummary {
   run_id: string
   games: number
+  cut_short: number
   patterns: PatternSummary[]
 }
 

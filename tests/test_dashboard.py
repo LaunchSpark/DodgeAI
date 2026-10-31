@@ -155,3 +155,24 @@ def test_the_last_run_stays_open_while_the_next_one_records(client, recorded):
     response = client.get("/api/death-paths/pattern/28", params={"run": "run-a"})
     assert response.status_code == 200
     assert [a["id"] for a in response.json()["appearances"]] == [0, 1]
+
+
+def test_death_paths_take_a_time_limit(client):
+    dashboard = client.app.state.dashboard
+    assert client.post("/api/death-paths", json={"games": 16, "minutes": 0}).status_code == 400
+    assert client.post("/api/death-paths", json={"games": 16, "minutes": 2}).status_code == 200
+    assert dashboard._pending["death-paths"]["options"] == {"time_limit": 120.0}
+
+
+def test_training_is_paused_while_death_paths_record(client):
+    dashboard = client.app.state.dashboard
+    session = dashboard.session
+    session.pause_event.clear()
+    with dashboard.training_paused():
+        assert session.pause_event.is_set()
+    assert not session.pause_event.is_set()
+    # A run that was already paused stays paused.
+    session.pause_event.set()
+    with dashboard.training_paused():
+        pass
+    assert session.pause_event.is_set()

@@ -18,7 +18,7 @@ function shown(appearance: Appearance, filter: Filter) {
   return (appearance.outcome === "died") === (filter === "died")
 }
 
-export function DeathPaths({ state }: { state: State }) {
+export function DeathPaths({ state, focus }: { state: State; focus?: { pid: number; at: number } | null }) {
   const job = state.death_paths
   const [response, setResponse] = useState<DeathPathsResponse | null>(null)
   const [pid, setPid] = useState<number | null>(null)
@@ -28,19 +28,37 @@ export function DeathPaths({ state }: { state: State }) {
   const [hover, setHover] = useState<number | null>(null)
   const [open, setOpen] = useState<Appearance | null>(null)
   const [games, setGames] = useState("256")
+  const [minutes, setMinutes] = useState("5")
+  // The pattern asked for from another tab, until a recording can show it.
+  const [wanted, setWanted] = useState<number | null>(null)
 
   // Fetch the summary each time a sampling run finishes.
   const label = job?.status === "done" ? job.label : null
   useEffect(() => {
     if (!label) return
-    get<DeathPathsResponse>("death-paths").then((next) => {
-      setResponse(next)
-      setPid(next.data?.patterns[0]?.pid ?? null)
-      setOpen(null)
-    })
+    get<DeathPathsResponse>("death-paths")
+      .then((next) => {
+        setResponse(next)
+        setPid(next.data?.patterns[0]?.pid ?? null)
+        setOpen(null)
+      })
+      .catch((error: Error) => setProblem(error.message))
   }, [label, job?.total])
 
   const summary = response?.data ?? null
+
+  useEffect(() => {
+    if (focus) {
+      setWanted(focus.pid)
+      setOpen(null)
+    }
+  }, [focus])
+  useEffect(() => {
+    if (wanted !== null && summary?.patterns.some((p) => p.pid === wanted)) {
+      setPid(wanted)
+      setWanted(null)
+    }
+  }, [wanted, summary])
   const runId = summary?.run_id ?? null
   useEffect(() => {
     if (runId === null || pid === null) return
@@ -66,7 +84,7 @@ export function DeathPaths({ state }: { state: State }) {
         <CardDescription>
           {summary
             ? `${response?.label}: ${summary.games.toLocaleString()} fixed seeds. Every appearance of the chosen pattern, the ones it survived and the ones that killed it.`
-            : "Plays the live policy on fixed seeds and records every pattern appearance, survived or died, with the engine's own record of each death."}
+            : "Pauses training, plays the live policy on fixed seeds until every game ends or the time limit runs out, and records every pattern appearance, survived or died. Training resumes afterwards."}
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-4">
@@ -75,8 +93,12 @@ export function DeathPaths({ state }: { state: State }) {
             onValueChange={(value) => value && setGames(value)}>
             {["128", "256", "512"].map((value) => <ToggleGroupItem key={value} value={value}>{value} games</ToggleGroupItem>)}
           </ToggleGroup>
+          <ToggleGroup type="single" variant="outline" size="sm" value={minutes} aria-label="Time limit"
+            onValueChange={(value) => value && setMinutes(value)}>
+            {["2", "5", "10"].map((value) => <ToggleGroupItem key={value} value={value}>{value} min</ToggleGroupItem>)}
+          </ToggleGroup>
           <Button size="sm" disabled={running}
-            onClick={() => run(() => post("death-paths", { games: Number(games), mode: "argmax" }))}>
+            onClick={() => run(() => post("death-paths", { games: Number(games), mode: "argmax", minutes: Number(minutes) }))}>
             <RouteIcon />{running ? "Recording…" : summary ? "Record again" : "Record pattern appearances"}
           </Button>
           {running && job && (
@@ -117,6 +139,18 @@ export function DeathPaths({ state }: { state: State }) {
           </div>
         )}
 
+        {wanted !== null && (
+          <p className="text-sm text-muted-foreground">
+            {summary
+              ? `Pattern ${wanted} did not appear in the last sampling run; record again to look for it.`
+              : `Record pattern appearances to see pattern ${wanted}.`}
+          </p>
+        )}
+        {summary && summary.cut_short > 0 && !open && (
+          <p className="text-sm text-muted-foreground">
+            The time limit stopped {summary.cut_short} of {summary.games} games before they ended; their patterns still on screen are listed as unfinished.
+          </p>
+        )}
         {problem && <p className="text-sm text-destructive">{problem}</p>}
         {summary && runId && open && <Replay runId={runId} appearance={open} onBack={back} />}
         {summary && view && !open && (

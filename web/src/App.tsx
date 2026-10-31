@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react"
+import { useEffect, useRef, useState, type ReactNode } from "react"
 import { ThemeProvider, useTheme } from "next-themes"
 import { toast } from "sonner"
 import {
@@ -168,7 +168,7 @@ function SummaryTiles({ figures }: { figures: Figures | null }) {
   )
 }
 
-function EvaluationTab({ state }: { state: State }) {
+function EvaluationTab({ state, onPattern }: { state: State; onPattern: (pid: number) => void }) {
   const evaluation = state.evaluation
   const fromEvaluation = evaluation.status === "done" && evaluation.figures
   const figures = fromEvaluation ? evaluation.figures : state.training_figures
@@ -200,7 +200,8 @@ function EvaluationTab({ state }: { state: State }) {
         </ChartCard>
         <ChartCard title="Deadliest patterns" description="Share of encounters ending in death, with 95% Wilson intervals (patterns met 10+ times).">
           <VegaChart spec={state.charts.patterns}
-            empty={figures?.summary ? "No pattern met 10 times yet" : "Waiting for games to finish"} />
+            empty={figures?.summary ? "No pattern met 10 times yet" : "Waiting for games to finish"}
+            onSelect={(row) => row.pattern !== undefined && onPattern(Number(row.pattern))} />
         </ChartCard>
       </div>
     </div>
@@ -237,6 +238,9 @@ function Toasts({ state }: { state: State | null }) {
 
 function Dashboard() {
   const { state, connected } = useLiveState()
+  const [tab, setTab] = useState("training")
+  // A pattern clicked on the Evaluation chart, for the Death paths tab to open.
+  const [focus, setFocus] = useState<{ pid: number; at: number } | null>(null)
   if (!state) {
     return (
       <div className="flex min-h-svh items-center justify-center text-muted-foreground">
@@ -249,7 +253,7 @@ function Dashboard() {
       <Header state={state} connected={connected} />
       <Toasts state={state} />
       <main className="mx-auto max-w-7xl px-4 py-4">
-        <Tabs defaultValue="training">
+        <Tabs value={tab} onValueChange={setTab}>
           <TabsList>
             <TabsTrigger value="training">Training</TabsTrigger>
             <TabsTrigger value="evaluation">Evaluation</TabsTrigger>
@@ -257,8 +261,10 @@ function Dashboard() {
             <TabsTrigger value="system">System</TabsTrigger>
           </TabsList>
           <TabsContent value="training"><TrainingTab state={state} /></TabsContent>
-          <TabsContent value="evaluation"><EvaluationTab state={state} /></TabsContent>
-          <TabsContent value="death-paths"><DeathPaths state={state} /></TabsContent>
+          <TabsContent value="evaluation">
+            <EvaluationTab state={state} onPattern={(pid) => { setFocus({ pid, at: Date.now() }); setTab("death-paths") }} />
+          </TabsContent>
+          <TabsContent value="death-paths"><DeathPaths state={state} focus={focus} /></TabsContent>
           <TabsContent value="system"><SystemTab state={state} /></TabsContent>
         </Tabs>
       </main>

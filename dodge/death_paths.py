@@ -11,6 +11,7 @@ Every decision each game took is kept, so any appearance can be replayed
 (`dodge.pattern_replay`).
 """
 
+import time
 import uuid
 from dataclasses import dataclass, field
 
@@ -116,6 +117,8 @@ class Recording:
     games: int
     actions: dict = field(repr=False)
     appearances: list = field(repr=False)
+    # Games still running when the time limit stopped the run.
+    cut_short: int = 0
 
     def summary(self):
         stats = {}
@@ -133,7 +136,7 @@ class Recording:
         # meaningless rate, so those follow the rest; no pattern comes last.
         order = sorted(stats.values(), key=lambda p: (p["encounters"] < MIN_RANKED,
                                                       -p["rate"], -p["encounters"], p["pid"]))
-        return {"run_id": self.run_id, "games": self.games,
+        return {"run_id": self.run_id, "games": self.games, "cut_short": self.cut_short,
                 "patterns": order + ([loose] if loose is not None else [])}
 
     def appearance(self, appearance_id):
@@ -150,8 +153,13 @@ class Recording:
                 "appearances": [_public(a) for a in appearances]}
 
 
-def record(policy, seeds, *, frame_cap=18_000, progress=None, **game_settings):
-    """Play one game per seed with the trace on and return the Recording."""
+def record(policy, seeds, *, frame_cap=18_000, progress=None, time_limit=None,
+           clock=time.monotonic, **game_settings):
+    """Play one game per seed with the trace on and return the Recording.
+
+    After `time_limit` seconds, games still running stop where they are: they
+    keep what they recorded, and a pattern still on screen is "unfinished".
+    """
     seeds = np.asarray(seeds, dtype=np.uint32)
     count = len(seeds)
     engine = make_engine(**game_settings)
@@ -163,7 +171,16 @@ def record(policy, seeds, *, frame_cap=18_000, progress=None, **game_settings):
     appearances = []
     finished = 0
     filler = 2**31
+    started = clock()
+    cut_short = 0
     while finished < count:
+        if time_limit is not None and clock() - started >= time_limit:
+            scores = engine.observe_velocity()["score"]
+            for lane in np.flatnonzero(~done):
+                trace = engine.lane_trace(int(lane))
+                appearances.extend(_appearances(int(seeds[lane]), trace, float(scores[lane])))
+                cut_short += 1
+            break
         observations = engine.observe_velocity()["observation"]
         actions = np.asarray(policy(observations, engine.lane_state),
                              dtype=np.uint8).reshape(count)
@@ -197,4 +214,5 @@ def record(policy, seeds, *, frame_cap=18_000, progress=None, **game_settings):
         games=count,
         actions={int(seed): np.frombuffer(bytes(decisions[lane]), dtype=np.uint8)
                  for lane, seed in enumerate(seeds)},
-        appearances=appearances)
+        appearances=appearances,
+        cut_short=cut_short)

@@ -105,3 +105,15 @@ def test_actions_are_recorded_per_seed(recording):
             # One decision per frame at action repeat 1.
             assert len(actions) == appearance["end"]
     assert recording.settings["step_frames"] == 1
+
+
+def test_time_limit_cuts_unfinished_games_short():
+    ticks = iter(range(10**9))
+    cut = record(dodge, SEEDS[:8], time_limit=30, clock=lambda: next(ticks), step_frames=1,
+                 difficulty=1, patterns=True, powerups=True)
+    assert cut.games == 8
+    assert cut.cut_short == 8
+    assert cut.summary()["cut_short"] == 8
+    assert not [a for a in cut.appearances if a["outcome"] == "died"]
+    # Each game kept the decisions it took before the limit.
+    assert all(0 < len(actions) <= 31 for actions in cut.actions.values())

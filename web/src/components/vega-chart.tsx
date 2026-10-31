@@ -51,11 +51,15 @@ function DataTable({ rows }: { rows: Row[] }) {
 }
 
 /** A Vega-Lite spec rendered with the dashboard theme, with a table view. */
-export function VegaChart({ spec, height = 220, empty = "Waiting for games to finish" }: {
+export function VegaChart({ spec, height = 220, empty = "Waiting for games to finish", onSelect }: {
   spec?: VegaSpec; height?: number; empty?: string
+  /** Called with the data row of a clicked mark; marks with a row show a pointer. */
+  onSelect?: (row: Row) => void
 }) {
   const container = useRef<HTMLDivElement>(null)
   const view = useRef<Result | null>(null)
+  const select = useRef(onSelect)
+  select.current = onSelect
   const [table, setTable] = useState(false)
   const { resolvedTheme } = useTheme()
   const mode = resolvedTheme === "dark" ? "dark" : "light"
@@ -73,6 +77,15 @@ export function VegaChart({ spec, height = 220, empty = "Waiting for games to fi
       else {
         view.current?.finalize()
         view.current = result
+        const row = (item: unknown) =>
+          (item as { datum?: Row } | null)?.datum
+        result.view.addEventListener("click", (_event, item) => {
+          const datum = row(item)
+          if (datum && select.current) select.current(datum)
+        })
+        result.view.addEventListener("mousemove", (_event, item) => {
+          if (container.current) container.current.style.cursor = select.current && row(item) ? "pointer" : ""
+        })
       }
     })
     return () => {

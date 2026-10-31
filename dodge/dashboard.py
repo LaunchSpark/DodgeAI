@@ -29,6 +29,7 @@ EVALUATION_FIRST_SEED = 1_000_000
 EVALUATION_FRAME_CAP = 18_000
 # Death-path replays play at the game's own rate.
 REPLAY_FPS = 60
+DEATH_PATH_MINUTES = 5
 STALE_RUN = "That sampling run has been replaced; reopen the pattern."
 
 GAME_SLIDERS = (
@@ -80,23 +81,25 @@ def evaluate_games(policy, games, settings, progress):
                       **_game_settings(settings))
 
 
-def record_death_paths(policy, games, settings, progress):
+def record_death_paths(policy, games, settings, progress, time_limit=None):
     from .death_paths import record
     seeds = range(EVALUATION_FIRST_SEED, EVALUATION_FIRST_SEED + games)
     return record(policy, seeds, frame_cap=EVALUATION_FRAME_CAP, progress=progress,
-                  **_game_settings(settings))
+                  time_limit=time_limit, **_game_settings(settings))
 
 
 class PolicyJob:
     """A frozen checkpoint playing the paper's fixed seeds, in a thread.
 
-    `work(policy, games, settings, progress)` does the playing; its return
-    value is kept as the job's result.
+    `work(policy, games, settings, progress, **options)` does the playing;
+    its return value is kept as the job's result. `hold`, if given, is a
+    context manager factory the playing runs inside (to pause training).
     """
 
-    def __init__(self, name, work):
+    def __init__(self, name, work, hold=None):
         self.name = name
         self.work = work
+        self.hold = hold or contextlib.nullcontext
         self.lock = threading.Lock()
         self.status = "idle"
         self.message = ""
@@ -116,14 +119,14 @@ class PolicyJob:
         with self.lock:
             return self.status == "running"
 
-    def start(self, path, games, deterministic, settings, label):
+    def start(self, path, games, deterministic, settings, label, options=None):
         with self.lock:
             if self.status == "running":
                 return False
             self.status, self.finished, self.total = "running", 0, games
             self.message, self.label, self.settings = "", label, dict(settings)
         thread = threading.Thread(target=self._run, name=f"dodge-{self.name}", daemon=True,
-                                  args=(path, games, deterministic, settings))
+                                  args=(path, games, deterministic, settings, options or {}))
         thread.start()
         return True
 
@@ -131,7 +134,7 @@ class PolicyJob:
         with self.lock:
             self.finished = finished
 
-    def _run(self, path, games, deterministic, settings):
+    def _run(self, path, games, deterministic, settings, options):
         try:
             import torch
             from stable_baselines3 import PPO
@@ -144,7 +147,8 @@ class PolicyJob:
                 actions, _ = model.predict(observations, deterministic=deterministic)
                 return actions
 
-            result = self.work(policy, games, settings, self._progress)
+            with self.hold():
+                result = self.work(policy, games, settings, self._progress, **options)
             with self.lock:
                 self.result, self.status = result, "done"
         except Exception as error:  # surfaced in the dashboard, not raised
@@ -156,7 +160,8 @@ class Dashboard:
     def __init__(self, session):
         self.session = session
         self.jobs = {"evaluate": PolicyJob("evaluate", evaluate_games),
-                     "death-paths": PolicyJob("death-paths", record_death_paths)}
+                     "death-paths": PolicyJob("death-paths", record_death_paths,
+                                              hold=self.training_paused)}
         self.evaluation = self.jobs["evaluate"]
         self.death_paths = self.jobs["death-paths"]
         self.toasts = deque(maxlen=20)
@@ -298,7 +303,24 @@ class Dashboard:
             **{**asdict(schedule.load(self.session.schedule_path)), **values}).clamped()
         schedule.save(config, self.session.schedule_path)
 
-    def run_job(self, kind, games, deterministic):
+    @contextlib.contextmanager
+    def training_paused(self):
+        """Pause training while the block runs, resuming it only if it was ours.
+
+        Recording plays long games on the same CPU and GPU; pausing lets it
+        finish sooner. A run the user paused stays paused.
+        """
+        # The training loop shows itself paused, and resumed, from this event.
+        event = self.session.pause_event
+        ours = not event.is_set()
+        event.set()
+        try:
+            yield
+        finally:
+            if ours:
+                event.clear()
+
+    def run_job(self, kind, games, deterministic, options=None):
         """Freeze the live policy at the next safe point and play it in `kind`."""
         if self.jobs[kind].running() or kind in self._pending:
             raise ValueError(f"{kind} is already running")
@@ -306,7 +328,7 @@ class Dashboard:
         with self.session.lock:
             label = f"{self.session.data.model_name} @ update {self.session.data.update}"
         self._pending[kind] = {"games": games, "deterministic": deterministic,
-                               "settings": config, "label": label}
+                               "settings": config, "label": label, "options": options or {}}
         self.session.request_save(self.session.model_dir / "runtime" / f"{kind}.zip",
                                   kind=kind)
 
@@ -398,11 +420,12 @@ def create_app(session):
     def set_training(body: dict = Body(...)):
         return act(dashboard.set_training, body)
 
-    def job(kind, body, most):
+    def job(kind, body, most, options=None):
         games = int(body.get("games", 256))
         if not 16 <= games <= most:
             raise HTTPException(status_code=400, detail=f"games must be 16..{most}")
-        return act(dashboard.run_job, kind, games, body.get("mode", "argmax") == "argmax")
+        return act(dashboard.run_job, kind, games, body.get("mode", "argmax") == "argmax",
+                   options)
 
     @app.post("/api/evaluate")
     def evaluate(body: dict = Body(...)):
@@ -410,8 +433,12 @@ def create_app(session):
 
     @app.post("/api/death-paths")
     def death_paths(body: dict = Body(...)):
-        # Recording keeps every game's whole trace, so it is capped lower.
-        return job("death-paths", body, 1024)
+        # Recording keeps every game's whole trace, so it is capped lower, and
+        # long games stop at the time limit rather than running on and on.
+        minutes = float(body.get("minutes", DEATH_PATH_MINUTES))
+        if not 1 <= minutes <= 60:
+            raise HTTPException(status_code=400, detail="minutes must be 1..60")
+        return job("death-paths", body, 1024, {"time_limit": minutes * 60})
 
     @app.get("/api/death-paths")
     def get_death_paths():
