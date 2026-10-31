@@ -192,10 +192,10 @@ function EvaluationTab({ state, onPattern }: { state: State; onPattern: (pid: nu
         <ChartCard title="Games still alive" description="Share of games still alive at each milestone.">
           <VegaChart spec={state.charts.survival} />
         </ChartCard>
-        <ChartCard title="What ended each game" description="First lethal contact, by the window the game ended in.">
+        <ChartCard title="What ended each game" description="First lethal contact: the shortest 10% of games, the early side of normal, the middle 20%, the late side, the longest 10%.">
           <VegaChart spec={state.charts.causes} />
         </ChartCard>
-        <ChartCard title="Deaths with and without a pattern" description="Deaths per 10,000 frames lived, log scale.">
+        <ChartCard title="Deaths with and without a pattern" description="Deaths per 10,000 frames lived, log scale, over the same five windows.">
           <VegaChart spec={state.charts.hazard} />
         </ChartCard>
         <ChartCard title="Deadliest patterns" description="Share of encounters ending in death, with 95% Wilson intervals (patterns met 10+ times).">

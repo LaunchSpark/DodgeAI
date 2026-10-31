@@ -12,6 +12,12 @@ import numpy as np
 
 # Where in a game it ended, the paper's windows.
 WINDOWS = ((0, 1000), (1000, 2000), (2000, 3000), (3000, 5000), (5000, None))
+# The dashboard's windows instead follow the policy: cut at these percentiles
+# of when its games died, they separate the abnormally early deaths, the
+# normal ones and those of games that outlived normal, however long that is.
+DEATH_PERCENTILES = (10, 40, 60, 90)
+BUCKETS = ("Shortest 10%", "Early side of normal", "Middle 20%",
+           "Late side of normal", "Longest 10%")
 CAUSES = ("normal", "kamikaze", "static_rect", "moving_rect")
 # Explosions are kamikaze deaths; the paper reports them together.
 CAUSE_GROUP = {"kamikaze_blast": "kamikaze"}
@@ -19,8 +25,47 @@ CAUSE_GROUP = {"kamikaze_blast": "kamikaze"}
 
 def window_label(low, high):
     def k(value):
-        return f"{value // 1000}k" if value else "0"
+        return f"{value / 1000:g}k" if value >= 1000 else str(value)
     return f"{k(low)}-{k(high)}" if high is not None else f"{k(low)}+"
+
+
+def _round_edges(cuts):
+    """The fewest significant figures, two at least, that keep cuts distinct.
+
+    So the axis reads 5.4k rather than 5,437 unless games are bunched so
+    tightly that 5.4k would merge two windows.
+    """
+    def rounded(value, figures):
+        if value < 1:
+            return int(round(value))
+        step = max(1, 10 ** (int(math.log10(value)) - figures + 1))
+        return int(round(value / step) * step)
+
+    for figures in range(2, 7):
+        edges = [rounded(cut, figures) for cut in cuts]
+        if all(low < high for low, high in zip([0] + edges, edges)):
+            break
+    return edges
+
+
+def death_windows(games):
+    """The five windows cut at DEATH_PERCENTILES, as (low, high, bucket) triples.
+
+    The last window is open-ended. Where tied games put two cuts on one frame
+    count, the bucket below is dropped rather than left as an empty window.
+    With no deaths yet the paper's windows stand in.
+    """
+    frames = [game["frames"] for game in games if game.get("died")]
+    if not frames:
+        return tuple((low, high, None) for low, high in WINDOWS)
+    windows, low = [], 0
+    edges = _round_edges(np.percentile(frames, DEATH_PERCENTILES))
+    for high, bucket in zip(edges, BUCKETS):
+        if high > low:
+            windows.append((low, high, bucket))
+            low = high
+    windows.append((low, None, BUCKETS[-1]))
+    return tuple(windows)
 
 
 def quarter_means(frames):
@@ -72,11 +117,14 @@ def _in_window(frames, low, high):
     return frames >= low and (high is None or frames < high)
 
 
-def causes_by_window(games):
-    """For each window: its share of all deaths, and what killed those games."""
+def causes_by_window(games, windows=None):
+    """For each window: its share of all deaths, and what killed those games.
+
+    Windows are (low, high, bucket) triples, death_windows(games) by default.
+    """
     deaths = [game for game in games if game.get("died")]
     rows = []
-    for low, high in WINDOWS:
+    for low, high, bucket in windows or death_windows(games):
         ended = [game for game in deaths if _in_window(game["frames"], low, high)]
         causes = {cause: 0 for cause in CAUSES}
         for game in ended:
@@ -85,6 +133,7 @@ def causes_by_window(games):
                 causes[cause] += 1
         rows.append({
             "window": window_label(low, high),
+            "bucket": bucket,
             "games": len(ended),
             "share_of_games": len(ended) / len(deaths) if deaths else 0.0,
             "causes": {cause: count / len(ended) if ended else 0.0
@@ -93,12 +142,12 @@ def causes_by_window(games):
     return rows
 
 
-def pattern_hazard(games):
+def pattern_hazard(games, windows=None):
     """Deaths per 10,000 frames lived with a pattern active, and without.
 
-    Overall, and per window. A game's pattern exposure is only known in total,
-    so within a window it is apportioned uniformly over the frames the game
-    lived there.
+    Overall, and per window (death_windows(games) by default). A game's
+    pattern exposure is only known in total, so within a window it is
+    apportioned uniformly over the frames the game lived there.
     """
     def rates(rows):
         on_frames = sum(row[0] for row in rows)
@@ -112,8 +161,9 @@ def pattern_hazard(games):
             if on_frames + off_frames else 0.0,
         }
 
+    windows = windows or death_windows(games)
     overall = []
-    windows = {window_label(low, high): [] for low, high in WINDOWS}
+    lived_in = [[] for _ in windows]
     for game in games:
         frames = max(game["frames"], 1)
         share = game.get("pattern_frames", 0) / frames
@@ -121,17 +171,17 @@ def pattern_hazard(games):
         during = died and game.get("pattern", -1) >= 0
         overall.append((frames * share, frames * (1 - share),
                         int(during), int(died and not during)))
-        for low, high in WINDOWS:
+        for rows, (low, high, _) in zip(lived_in, windows):
             lived = max(0, min(game["frames"], high or game["frames"]) - low)
             if lived <= 0:
                 continue
             ended = died and _in_window(game["frames"], low, high)
-            windows[window_label(low, high)].append(
-                (lived * share, lived * (1 - share),
-                 int(ended and during), int(ended and not during)))
+            rows.append((lived * share, lived * (1 - share),
+                         int(ended and during), int(ended and not during)))
     return {
         "overall": rates(overall),
-        "windows": [{"window": label, **rates(rows)} for label, rows in windows.items()],
+        "windows": [{"window": window_label(low, high), "bucket": bucket, **rates(rows)}
+                    for rows, (low, high, bucket) in zip(lived_in, windows)],
     }
 
 
@@ -181,11 +231,12 @@ def anti_camping(games):
 
 def evaluation(games):
     """Every figure at once, as the dashboard sends it."""
+    windows = death_windows(games)
     return {
         "summary": summary(games),
         "survival": survival_curve(games),
-        "causes": causes_by_window(games),
-        "hazard": pattern_hazard(games),
+        "causes": causes_by_window(games, windows),
+        "hazard": pattern_hazard(games, windows),
         "patterns": pattern_lethality(games),
         "anti_camping": anti_camping(games),
     }

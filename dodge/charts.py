@@ -115,13 +115,14 @@ def causes_by_window(rows):
     long = []
     for row in rows:
         for cause in CAUSES:
-            long.append({"window": row["window"], "cause": CAUSE_LABELS[cause],
+            long.append({"window": row["window"], "bucket": row.get("bucket"),
+                         "cause": CAUSE_LABELS[cause],
                          "share": row["causes"][cause], "games": row["games"],
                          "window_share": row["share_of_games"],
                          "order": CAUSES.index(cause)})
     windows = [row["window"] for row in rows]
     base = alt.Chart(alt.Data(values=long)).encode(
-        x=alt.X("window:N", title="Window in which the game ended",
+        x=alt.X("window:N", title="Frames at death (shortest 10% … longest 10%)",
                 sort=windows, axis=alt.Axis(labelAngle=0)),
         y=alt.Y("share:Q", title="Deaths in window", stack="zero",
                 axis=alt.Axis(format="%"), scale=alt.Scale(domain=[0, 1])),
@@ -130,7 +131,8 @@ def causes_by_window(rows):
     bars = base.mark_bar(width={"band": 0.6}).encode(
         color=alt.Color("cause:N", title=None, scale=alt.Scale(domain=CAUSE_ORDER),
                         legend=alt.Legend(orient="top", columns=2)),
-        tooltip=[alt.Tooltip("window:N", title="Window"),
+        tooltip=[alt.Tooltip("window:N", title="Frames"),
+                 alt.Tooltip("bucket:N", title="Deaths"),
                  alt.Tooltip("cause:N", title="Cause"),
                  alt.Tooltip("share:Q", title="Share of deaths", format=".0%"),
                  alt.Tooltip("games:Q", title="Deaths in window", format=","),
@@ -159,21 +161,23 @@ def pattern_hazard(hazard):
     for row in hazard["windows"]:
         for key, label in (("active", HAZARD_SERIES[0]), ("inactive", HAZARD_SERIES[1])):
             if row[key] is not None and row[key] > 0:
-                long.append({"window": row["window"], "series": label, "rate": row[key]})
+                long.append({"window": row["window"], "bucket": row.get("bucket"),
+                             "series": label, "rate": row[key]})
     windows = [row["window"] for row in hazard["windows"]]
     # Lines with markers rather than bars: on a log scale a bar has no zero to
     # stand on, and the gap between the two lines is the reading.
     chart = alt.Chart(alt.Data(values=long)).mark_line(
         point=alt.OverlayMarkDef(filled=True, size=64)).encode(
-        x=alt.X("window:N", title="Gameplay frame window", sort=windows,
-                axis=alt.Axis(labelAngle=0)),
+        x=alt.X("window:N", title="Frames (shortest 10% … longest 10% of deaths)",
+                sort=windows, axis=alt.Axis(labelAngle=0)),
         y=alt.Y("rate:Q", title="Deaths per 10,000 frames", scale=alt.Scale(type="log")),
         color=alt.Color("series:N", title=None, scale=alt.Scale(domain=HAZARD_SERIES),
                         legend=alt.Legend(orient="top")),
         strokeDash=alt.StrokeDash("series:N", scale=alt.Scale(domain=HAZARD_SERIES,
                                                                range=[[1, 0], [6, 4]]),
                                   legend=None),
-        tooltip=[alt.Tooltip("window:N", title="Window"),
+        tooltip=[alt.Tooltip("window:N", title="Frames"),
+                 alt.Tooltip("bucket:N", title="Deaths"),
                  alt.Tooltip("series:N", title="Pattern"),
                  alt.Tooltip("rate:Q", title="Deaths per 10k frames", format=".2f")],
     )
