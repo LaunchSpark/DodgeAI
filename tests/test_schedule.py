@@ -109,7 +109,7 @@ def test_a_plateau_steps_the_rate_down_and_a_new_best_resets_it(tmp_path, monkey
         # The next boundary applies the stepped rate.
         session._apply_schedule(model)
         assert model.lr_schedule(1.0) == pytest.approx(3e-5)
-        assert (tmp_path / "models" / "mlp-candidate.zip").exists()
+        assert (tmp_path / "models" / "retained" / "mlp-candidate.zip").exists()
         assert "steps down to 0.0001" in events[2].message
         assert session.schedule_status["last"]["mean"] == 200.0
     finally:

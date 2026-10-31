@@ -74,11 +74,11 @@ def test_retention_keeps_the_best_and_training_restarts_from_it(tmp_path):
     models = tmp_path / "models"
     train(tmp_path, "--steps", "64", "--name", "kept", "--retain-every", "2",
           "--dev-seeds", "2", "--dev-frame-cap", "100")
-    best = models / "kept-best.zip"
+    best = models / "retained" / "kept-best.zip"
     assert best.exists() and all(path.exists() for path in sidecar_paths(best))
-    history = (models / "kept-best.history.jsonl").read_text().splitlines()
+    history = (models / "retained" / "kept-best.history.jsonl").read_text().splitlines()
     assert len(history) == 2  # updates 2 and 4
-    record = json.loads((models / "kept-best.retention.json").read_text())
+    record = json.loads((models / "retained" / "kept-best.retention.json").read_text())
     from pathlib import Path
     assert best.read_bytes() == Path(record["candidate"]).read_bytes()
 

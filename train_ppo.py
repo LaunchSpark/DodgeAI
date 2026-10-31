@@ -17,7 +17,8 @@ from dodge.policies import (ARCHITECTURES, DEFAULT_ARCHITECTURE,
                             architecture_from_kwargs, policy_class, policy_kwargs)
 from dodge.resume import (DEFAULT_SEGMENT_UPDATES, CheckpointWriter,
                           SegmentCallback, load_checkpoint)
-from dodge.retention import DEV_FRAME_CAP, RetentionGate, best_path_for
+from dodge.retention import (DEV_FRAME_CAP, RetentionGate, best_path_for,
+                             move_legacy_retention)
 from dodge.seeds import DEV_COHORT_SIZE, dev_cohort
 from dodge.training import (GPU_ARCHITECTURES, SCALE_PRESETS, hyperparameters,
                             make_training_env, minibatch_size,
@@ -141,11 +142,11 @@ def parse_args(argv=None):
                         help="carry on from a checkpoint: model, Adam, RNG and seed "
                              "stream (exact from a segment-boundary checkpoint)")
     resume.add_argument("--from-best", action="store_true",
-                        help="carry on from the retained best, <name>-best.zip")
+                        help="carry on from the retained best, retained/<name>-best.zip")
     parser.add_argument("--retain-every", type=int, default=0, metavar="N",
                         help="every N PPO updates (a multiple of --segment-updates), "
                              "score the checkpoint on the dev cohort and keep it as "
-                             "<name>-best.zip if its mean improves (default off)")
+                             "retained/<name>-best.zip if its mean improves (default off)")
     parser.add_argument("--dev-seeds", type=int, default=DEV_COHORT_SIZE,
                         help=f"dev cohort size for --retain-every (default {DEV_COHORT_SIZE})")
     parser.add_argument("--dev-frame-cap", type=int, default=DEV_FRAME_CAP,
@@ -187,6 +188,7 @@ def main(argv=None):
     parser, args = parse_args(argv)
     model_name = args.name or args.architecture
     resume_path = args.resume
+    move_legacy_retention(args.models_dir, model_name)
     if args.from_best:
         resume_path = best_path_for(args.models_dir, model_name)
         if not resume_path.exists():

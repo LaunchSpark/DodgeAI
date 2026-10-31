@@ -28,7 +28,8 @@ from .env import EVENT_FIELDS, MAX_ACTION_REPEAT, DodgeVecEnv, validate_spawn_ra
 from . import schedule
 from .resume import CheckpointWriter, read_state, restore_training_state
 from .evaluate import evaluate_policy
-from .retention import RetentionGate, best_path_for
+from .retention import (DEV_FRAME_CAP, RETAINED_DIR, RetentionGate, best_path_for,
+                        candidate_path_for, move_legacy_retention)
 from .seeds import DEV_COHORT_SIZE, dev_cohort
 from .policies import (ARCHITECTURES, COORDINATE_INPUTS, DEFAULT_ARCHITECTURE,
                        architecture_from_kwargs,
@@ -42,6 +43,14 @@ RATE_WINDOW_SECONDS = 0.5
 
 # Observations drawn from the rollout buffer to judge unit death against.
 DEAD_UNIT_SAMPLES = 512
+
+# Games each lane plays before a loaded model trains; see _warm_up. Without
+# them a load charts low for its first dozen updates: every lane starts a game
+# on the same step, so the first games to finish are the short ones.
+WARMUP_GAMES = 4
+# Steps the warm-up waits for its slowest lane, four dev-cohort caps. A lane
+# still short of its games by then has them dropped, not charted half-played.
+WARMUP_MAX_STEPS = 4 * DEV_FRAME_CAP
 
 # Only the convolutional policies are worth moving to a GPU. Measured on a GTX
 # 1070: the hybrid-cnn update runs 5.1x faster there (7.20s -> 1.40s), while the
@@ -526,23 +535,40 @@ class DashboardCallback(BaseCallback):
                 self._rate_started = now
                 self._rate_steps = 0
             data.rollout_progress = (self.n_calls % self.session.rollout_steps) / self.session.rollout_steps
+            self.bank(data, infos, dones, rewards)
 
-            lanes = len(infos)
-            self._fit_banks(lanes)
-            counts = _event_counts(infos)
-            if lanes:
+        self.last_step_time = now
+        self.last_timesteps = self.num_timesteps
+        return True
+
+    def bank(self, data, infos, dones, rewards, *, charted=None, events=True):
+        """Bank one step's rewards and kills, and chart the games it finished.
+
+        `charted`, if given, marks the lanes whose finished games go on the
+        charts; any other lane's are dropped with their banks. `events` False
+        leaves the events panel alone. Returns the finished lanes. Called with
+        the session's lock held.
+        """
+        lanes = len(infos)
+        self._fit_banks(lanes)
+        counts = _event_counts(infos)
+        if lanes:
+            if events:
                 totals = counts.sum(axis=0)
                 for column, key in enumerate(EVENT_KEYS):
                     count = int(totals[column])
                     if count:
                         self.rollout_events[key] += count
                         data.events[key].total += count
-                self.episode_kills += counts[:, _KILLS_COLUMN]
-                rewarded = min(lanes, len(rewards))
-                self.episode_reward[:rewarded] += rewards[:rewarded]
+            self.episode_kills += counts[:, _KILLS_COLUMN]
+            rewarded = min(lanes, len(rewards))
+            self.episode_reward[:rewarded] += rewards[:rewarded]
 
-            for index in _finished_lanes(infos, dones):
-                info = infos[index]
+        finished = _finished_lanes(infos, dones)
+        for index in finished:
+            info = infos[index]
+            chart = charted is None or bool(charted[index])
+            if chart:
                 run = info.get("run")
                 if run is not None:
                     data.games.add(run, data.update)
@@ -552,31 +578,30 @@ class DashboardCallback(BaseCallback):
                                           float(info.get("score", 0.0)))
                 data.reward.append(float(self.episode_reward[index]))
                 data.enemies_killed.append(float(self.episode_kills[index]))
-                self.episode_reward[index] = 0.0
-                self.episode_kills[index] = 0
-                # Survival time follows the cartridge run, not the episode.
-                # With training lives an episode ends at every absorbed hit,
-                # and charting those would quietly redefine the dashboard's
-                # headline metric as time between hits, against curves
-                # recorded when it meant time alive. Without lives the two
-                # numbers are identical, so an ordinary run is unaffected.
-                segments = self.run_segments.setdefault(index, [])
-                segments.append(float(info.get("frames", 0)) / 60.0)
-                if info.get("run_over", True):
-                    self.run_segments.pop(index, None)
-                    for band in range(LIFE_BANDS):
-                        # Anything past the last band is folded into it, so
-                        # the stack still totals the run however the lives
-                        # setting was changed mid-run.
-                        value = (sum(segments[band:]) if band == LIFE_BANDS - 1
-                                 else (segments[band] if band < len(segments) else 0.0))
-                        data.life_lengths[band].append(value)
-                    frames = info.get("run_frames", info.get("frames", 0))
-                    data.episode_length.append(float(frames) / 60.0)
-
-        self.last_step_time = now
-        self.last_timesteps = self.num_timesteps
-        return True
+            self.episode_reward[index] = 0.0
+            self.episode_kills[index] = 0
+            # Survival time follows the cartridge run, not the episode.
+            # With training lives an episode ends at every absorbed hit,
+            # and charting those would quietly redefine the dashboard's
+            # headline metric as time between hits, against curves
+            # recorded when it meant time alive. Without lives the two
+            # numbers are identical, so an ordinary run is unaffected.
+            segments = self.run_segments.setdefault(index, [])
+            segments.append(float(info.get("frames", 0)) / 60.0)
+            if info.get("run_over", True):
+                self.run_segments.pop(index, None)
+                if not chart:
+                    continue
+                for band in range(LIFE_BANDS):
+                    # Anything past the last band is folded into it, so
+                    # the stack still totals the run however the lives
+                    # setting was changed mid-run.
+                    value = (sum(segments[band:]) if band == LIFE_BANDS - 1
+                             else (segments[band] if band < len(segments) else 0.0))
+                    data.life_lengths[band].append(value)
+                frames = info.get("run_frames", info.get("frames", 0))
+                data.episode_length.append(float(frames) / 60.0)
+        return finished
 
     def _fit_banks(self, lanes):
         """Size the per-lane banks to the env count, keeping what they hold."""
@@ -978,6 +1003,57 @@ class PPOTrainingSession:
                 seed=self.seed,
             )
 
+    def _warm_up(self, model, env, callback):
+        """Play each lane's next WARMUP_GAMES games before a loaded model trains.
+
+        A load starts every lane on a fresh game at the same step, so the first
+        games to finish are the short ones and the charts open well below what
+        the model plays; and every rollout for about a game's length after is
+        drawn from early-game states alone. Each lane's next games, taken in
+        full, are a fair sample of the model however long they run, and they
+        are charted at the loaded update. Lanes that finish theirs keep
+        playing, unrecorded, so training opens on games at every stage.
+
+        Played as training plays -- sampled actions, the same env -- but
+        nothing learns: the weights, the timestep count and the events panel
+        are untouched, and training carries on from the last observation.
+        """
+        update = self._completed_updates(model)
+        observation = model._last_obs
+        dones = model._last_episode_starts
+        if observation is None:
+            observation = env.reset()
+        if model._last_obs is None or dones is None:
+            dones = np.ones(env.num_envs, dtype=bool)
+        played = np.zeros(env.num_envs, dtype=np.int64)
+        total = WARMUP_GAMES * env.num_envs
+        with self.lock:
+            self.data.status = "warming up"
+            self.data.update = update
+            self.data.progress_phase = "rollout"
+            self.data.rollout_progress = 0.0
+        for _ in range(WARMUP_MAX_STEPS):
+            if (played >= WARMUP_GAMES).all() or self._should_stop(model):
+                break
+            # Watch works during the warm-up too; the weights are a load's.
+            self._service_pending_watch(model, publish_for_live_watchers=False)
+            actions, _ = model.predict(observation, deterministic=False)
+            observation, rewards, dones, infos = env.step(actions)
+            charted = played < WARMUP_GAMES
+            with self.lock:
+                data = self.data
+                finished = callback.bank(data, infos, dones, np.atleast_1d(rewards),
+                                         charted=charted, events=False)
+                for index in finished:
+                    if infos[index].get("run_over", True):
+                        played[index] += 1
+                data.status = "warming up"
+                data.rollout_progress = float(np.minimum(played, WARMUP_GAMES).sum()) / total
+        with self.lock:
+            self.data.games.close_update(update)
+        model._last_obs = observation
+        model._last_episode_starts = np.asarray(dones, dtype=bool)
+
     def _run(self):
         while not self.shutdown_event.is_set():
             self.restart_event.clear()
@@ -1009,6 +1085,8 @@ class PPOTrainingSession:
                 self._begin_lineage(load_path)
                 self._claim_autosave_path()
                 callback = DashboardCallback(self)
+                if load_path:
+                    self._warm_up(self.model, env, callback)
                 reset_num_timesteps = load_path is None
                 while not self.shutdown_event.is_set() and not self.restart_event.is_set():
                     self.model.learn(
@@ -1175,7 +1253,11 @@ class PPOTrainingSession:
         if self._scoring is not None and self._scoring.is_alive():
             return
         name = self.active_model_name or self.model_architecture
-        candidate = self.model_dir / f"{name}-candidate"
+        # Before the candidate is saved, so the gate scores against the best
+        # it already has rather than promoting this one for want of a record.
+        move_legacy_retention(self.model_dir, name)
+        candidate = candidate_path_for(self.model_dir, name)
+        candidate.parent.mkdir(parents=True, exist_ok=True)
         model.save(candidate)
         self._write_sidecars(model, candidate)
         with self.lock:
@@ -1406,8 +1488,9 @@ class PPOTrainingSession:
             return []
         # User-organised subdirectories are valid model libraries. Runtime and
         # Watch hold ephemeral implementation checkpoints and would otherwise
-        # flood the picker with internal snapshots.
-        internal = {"runtime", "watch", "recovery"}
+        # flood the picker with internal snapshots; the retention gate's best
+        # and candidate are its own working files.
+        internal = {"runtime", "watch", "recovery", RETAINED_DIR}
         paths = (
             path for path in self.model_dir.rglob("*.zip")
             if path.relative_to(self.model_dir).parts[0].lower() not in internal

@@ -8,7 +8,7 @@ What it holds is the plan for continuing a trained model rather than starting
 one: a learning rate that steps down in stages when the dev cohort stops
 improving, a discount, and how often to score that cohort. Each scoring runs
 through the retention gate, so the best checkpoint so far is always on disk as
-`<name>-best.zip` whatever the latest weights do.
+`retained/<name>-best.zip` whatever the latest weights do.
 
 A missing file means "the architecture's table": nothing is applied, so a run
 that never opens the Training panel trains exactly as it did before.

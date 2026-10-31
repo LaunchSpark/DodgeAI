@@ -245,6 +245,8 @@ def _autosaving_session(tmp_path, monkeypatch, *, load=None):
     monkeypatch.setattr(training, "architecture_name", lambda value: "hybrid-cnn")
     monkeypatch.setattr(session, "_new_model", lambda value: model)
     monkeypatch.setattr(session, "_load_model", lambda path, env: model)
+    # The stubs have no games to warm up on.
+    monkeypatch.setattr(session, "_warm_up", lambda *args: None)
     if load is not None:
         session.pending_load = load
         session.active_model_name = load.stem

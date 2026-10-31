@@ -2,7 +2,7 @@
 
 Every candidate is scored on the fixed dev cohort (dodge.seeds.dev_cohort,
 held out of training) with argmax actions, by the no-replacement evaluator.
-It is promoted to the retained best -- `<name>-best.zip` with its state
+It is promoted to the retained best -- `retained/<name>-best.zip` with its state
 sidecar and manifest, byte-for-byte copies of the candidate's -- only if its
 dev mean beats the best so far. Training can restart from the retained best
 like any other checkpoint, with model, Adam and every generator restored.
@@ -13,6 +13,7 @@ candidate's dev scores, promoted or not).
 """
 
 from datetime import datetime, timezone
+import glob
 import json
 import os
 from pathlib import Path
@@ -26,8 +27,37 @@ from .seeds import dev_cohort
 DEV_FRAME_CAP = 18_000
 
 
+# The best and the candidate are the gate's working files, not models anyone
+# picks, so they live a folder down: the dashboard lists every checkpoint at
+# the top of the models folder, and had been offering them beside the model
+# itself.
+RETAINED_DIR = "retained"
+
+
 def best_path_for(models_dir, name):
-    return Path(models_dir) / f"{name}-best.zip"
+    return Path(models_dir) / RETAINED_DIR / f"{name}-best.zip"
+
+
+def candidate_path_for(models_dir, name):
+    # No ".zip": SB3 appends it when saving.
+    return Path(models_dir) / RETAINED_DIR / f"{name}-candidate"
+
+
+def move_legacy_retention(models_dir, name):
+    """Move `<name>-best.*` and `<name>-candidate.*` into RETAINED_DIR.
+
+    They used to sit at the top of the models folder. Moved rather than left,
+    since a gate that finds no record promotes whatever it scores first, and
+    a file already in the folder is never overwritten.
+    """
+    models_dir = Path(models_dir)
+    target = models_dir / RETAINED_DIR
+    for suffix in ("best", "candidate"):
+        for source in models_dir.glob(f"{glob.escape(name)}-{suffix}.*"):
+            moved = target / source.name
+            if source.is_file() and not moved.exists():
+                target.mkdir(parents=True, exist_ok=True)
+                os.replace(source, moved)
 
 
 def _stem(path):
