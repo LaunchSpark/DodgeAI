@@ -45,14 +45,35 @@ def discounted_returns(rewards, dones, gamma):
     return g
 
 
+def gae_returns(rewards, dones, values, last_values, gamma, lam):
+    """GAE lambda-return V + A per step; last_values bootstraps past the record."""
+    rewards = np.asarray(rewards, dtype=np.float64)
+    dones = np.asarray(dones).astype(bool)
+    values = np.asarray(values, dtype=np.float64)
+    adv = np.zeros_like(rewards)
+    nxt_adv = np.zeros(rewards.shape[1:])
+    nxt_v = np.asarray(last_values, dtype=np.float64)
+    for t in range(rewards.shape[0] - 1, -1, -1):
+        alive = ~dones[t]
+        delta = rewards[t] + gamma * nxt_v * alive - values[t]
+        nxt_adv = delta + gamma * lam * alive * nxt_adv
+        adv[t] = nxt_adv
+        nxt_v = values[t]
+    return values + adv
+
+
 def explained_variance(g, pred):
     return float(1 - np.var(g - pred) / np.var(g))
 
 
 def _standardise(train_x, *others):
-    mu, sd = train_x.mean(0), train_x.std(0)
+    """Standardise columns with more than 2 distinct fit values, then clip to +-5."""
+    train_x = np.asarray(train_x, dtype=np.float64)
+    continuous = np.array([len(np.unique(c)) > 2 for c in train_x.T])
+    mu = np.where(continuous, train_x.mean(0), 0.0)
+    sd = np.where(continuous, train_x.std(0), 1.0)
     sd = np.where(sd == 0, 1.0, sd)
-    return [((x - mu) / sd).astype(np.float32) for x in (train_x, *others)]
+    return [np.clip((np.asarray(x, dtype=np.float64) - mu) / sd, -5, 5).astype(np.float32) for x in (train_x, *others)]
 
 
 def _inputs(d, columns):
@@ -164,38 +185,54 @@ def collect(model, steps, envs, seed):
         feats[t] = obs[:, OBSERVATION_SIZE:]
         obs, r, d, _ = env.step(actions.cpu().numpy())
         rewards[t], dones[t] = r, d
-    return values, rewards, dones, feats
+    actor = torch.as_tensor(obs[:, :OBSERVATION_SIZE], dtype=torch.float32, device=model.device)
+    with torch.no_grad():
+        _, last, _ = model.policy(actor)
+    return values, rewards, dones, feats, last.cpu().numpy().reshape(-1)
 
 
-def report(values, rewards, dones, feats, gamma, args):
-    g = discounted_returns(rewards, dones, gamma)
+def report(values, rewards, dones, feats, last_values, gamma, args):
+    lam = args.lam
+    targets = [
+        (f"GAE lambda-return (gamma {gamma}, lambda {lam})", gae_returns(rewards, dones, values, last_values, gamma, lam)),
+        (f"Monte Carlo return (gamma {gamma}, NaN tail dropped)", discounted_returns(rewards, dones, gamma)),
+    ]
     split = args.envs * 3 // 4
+    print(
+        f"gamma {gamma}  train lanes {split}  test lanes {args.envs - split}  "
+        f"games ended in record {int(dones.sum())}  stride {args.stride}"
+    )
+    for title, g in targets:
 
-    def part(lanes):
-        keep = ~np.isnan(g[:, lanes])
-        lane_ids = np.broadcast_to(np.arange(args.envs)[lanes], keep.shape)[keep]
-        return dict(v=values[:, lanes][keep], g=g[:, lanes][keep], x=feats[:, lanes][keep], lane=lane_ids)
+        def part(lanes):
+            keep = ~np.isnan(g[:, lanes])
+            lane_ids = np.broadcast_to(np.arange(args.envs)[lanes], keep.shape)[keep]
+            return dict(v=values[:, lanes][keep], g=g[:, lanes][keep], x=feats[:, lanes][keep], lane=lane_ids)
 
-    train, test = part(slice(0, split)), part(slice(split, None))
-    raw = explained_variance(test["g"], test["v"])
-    base_mlp, base_ridge = fit_probes(train, test, None, args.stride)
-    print(f"gamma {gamma}  train samples {len(train['g'])} (stride {args.stride})  test samples {len(test['g'])}")
-    print(f"{'group':<18}{'raw-V EV':>10}{'MLP(V)':>9}{'MLP(V+g)':>10}{'gain':>8}{'ridge(V+g)':>12}{'r.gain':>8}")
-    rows = [("all", slice(0, CRITIC_FEATURE_COUNT))] + [(n, slice(*c)) for n, c in CRITIC_GROUPS.items()]
-    for name, cols in rows:
-        mlp, ridge = fit_probes(train, test, cols, args.stride)
+        train, test = part(slice(0, split)), part(slice(split, None))
+        raw = explained_variance(test["g"], test["v"])
+        base_mlp, base_ridge = fit_probes(train, test, None, args.stride)
+        print(f"\n{title}: train samples {len(train['g'])}  test samples {len(test['g'])}")
+        print(f"{'group':<18}{'raw-V EV':>10}{'MLP(V)':>9}{'MLP(V+g)':>10}{'gain':>8}{'ridge(V+g)':>12}{'r.gain':>8}")
+        rows = [("all", slice(0, CRITIC_FEATURE_COUNT))] + [(n, slice(*c)) for n, c in CRITIC_GROUPS.items()]
+        for name, cols in rows:
+            mlp, ridge = fit_probes(train, test, cols, args.stride)
+            print(
+                f"{name:<18}{raw:>10.4f}{base_mlp:>9.4f}{mlp:>10.4f}{mlp - base_mlp:>+8.4f}"
+                f"{ridge:>12.4f}{ridge - base_ridge:>+8.4f}"
+            )
         print(
-            f"{name:<18}{raw:>10.4f}{base_mlp:>9.4f}{mlp:>10.4f}{mlp - base_mlp:>+8.4f}"
-            f"{ridge:>12.4f}{ridge - base_ridge:>+8.4f}"
+            f"{'baseline (V only)':<18}{raw:>10.4f}{base_mlp:>9.4f}{base_mlp:>10.4f}{0:>+8.4f}"
+            f"{base_ridge:>12.4f}{0:>+8.4f}"
         )
-    print(f"{'baseline (V only)':<18}{raw:>10.4f}{base_mlp:>9.4f}{base_mlp:>10.4f}{0:>+8.4f}{base_ridge:>12.4f}{0:>+8.4f}")
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("model")
-    ap.add_argument("--steps", type=int, default=4000)
-    ap.add_argument("--envs", type=int, default=256)
+    ap.add_argument("--steps", type=int, default=1500)
+    ap.add_argument("--envs", type=int, default=1024)
+    ap.add_argument("--lam", type=float, default=0.95)
     ap.add_argument("--stride", type=int, default=8)
     ap.add_argument("--gamma", type=float, default=None)
     ap.add_argument("--seed", type=int, default=0)

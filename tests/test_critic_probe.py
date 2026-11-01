@@ -1,6 +1,6 @@
 import numpy as np
 
-from tools.critic_probe import discounted_returns, explained_variance, fit_probes, probe_r2
+from tools.critic_probe import discounted_returns, gae_returns, explained_variance, fit_probes, probe_r2
 
 
 def test_discounted_returns_stop_at_terminals():
@@ -35,3 +35,13 @@ def test_planted_signal_survives_standardisation_and_early_stopping():
     base = explained_variance(test["g"], test["v"])
     mlp, ridge = fit_probes(train, test, slice(8, 14), stride=2)
     assert mlp - base > 0.5 and ridge - base > 0.5
+
+
+def test_gae_returns_hand_computed():
+    r = np.array([[1.0], [1.0], [1.0]])
+    d = np.array([[0], [1], [0]])
+    v = np.full((3, 1), 0.5)
+    g = gae_returns(r, d, v, np.array([2.0]), 0.5, 0.5)
+    # adv2 = 1 + 0.5*2 - 0.5 = 1.5; adv1 = 1 - 0.5 = 0.5 (terminal);
+    # adv0 = (1 + 0.5*0.5 - 0.5) + 0.5*0.5*0.5 = 0.875
+    assert np.allclose(g[:, 0], [1.375, 1.0, 2.0])
