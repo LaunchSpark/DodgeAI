@@ -26,8 +26,16 @@ WIDTH = "container"
 HEIGHT = 220
 
 
-def _spec(chart):
-    return chart.properties(width=WIDTH, height=HEIGHT).to_dict()
+def _spec(chart, table=None):
+    """The chart's spec; `table` replaces the plotted rows in the table view."""
+    spec = chart.properties(width=WIDTH, height=HEIGHT).to_dict()
+    if table is not None:
+        spec["usermeta"] = {"table": table}
+    return spec
+
+
+def _percent(share):
+    return None if share is None else round(share * 100, 1)
 
 
 def _hover_line(base, x, y_fields, tooltip):
@@ -58,7 +66,9 @@ def training_series(series, title, unit="", per="Episodes"):
                alt.Tooltip("trend:Q", title=f"{title} (trend)", format=",.2f"),
                alt.Tooltip("value:Q", title=title, format=",.2f")]
     rule, points = _hover_line(base.encode(y="trend:Q"), "episode", ["trend"], tooltip)
-    return _spec(alt.layer(raw, trend, rule, points))
+    table = [{per.rstrip("s"): row["episode"], title: row["value"],
+              f"{title} (trend)": row["trend"]} for row in rows]
+    return _spec(alt.layer(raw, trend, rule, points), table)
 
 
 def quarters_over_training(rows):
@@ -87,7 +97,9 @@ def quarters_over_training(rows):
     ).add_params(nearest)
     points = base.mark_point(filled=True, size=64).encode(
         opacity=alt.condition(nearest, alt.value(1), alt.value(0)))
-    return _spec(alt.layer(lines, wide, points))
+    table = [{"Update": row["update"], QUARTERS[0]: row["q1"], QUARTERS[1]: row["mean"],
+              QUARTERS[2]: row["q4"], "Games": row["games"]} for row in rows]
+    return _spec(alt.layer(lines, wide, points), table)
 
 
 def survival_curves(curves):
@@ -107,7 +119,13 @@ def survival_curves(curves):
                alt.Tooltip("frames:Q", title="Frames", format=","),
                alt.Tooltip("alive:Q", title="Still alive", format=".1%")]
     rule, points = _hover_line(base, "frames", ["alive"], tooltip)
-    return _spec(alt.layer(lines, rule.encode(color=alt.value("#898781")), points))
+    # Sources can step at different frame counts, so rows join on frames.
+    table = {}
+    for row in rows:
+        table.setdefault(row["frames"], {"Frames": row["frames"]})[
+            f"{row['source']} (% alive)"] = _percent(row["alive"])
+    table = [table[frames] for frames in sorted(table)]
+    return _spec(alt.layer(lines, rule.encode(color=alt.value("#898781")), points), table)
 
 
 def causes_by_window(rows):
@@ -152,7 +170,11 @@ def causes_by_window(rows):
         color=alt.condition(f"datum.cause === '{CAUSE_ORDER[3]}'",
                             alt.value("#0b0b0b"), alt.value("#ffffff")),
     )
-    return _spec(alt.layer(bars, labels))
+    table = [{"Window": row.get("bucket"), "Frames": row["window"], "Deaths": row["games"],
+              "% of all deaths": _percent(row["share_of_games"]),
+              **{f"{CAUSE_LABELS[cause]} %": _percent(row["causes"][cause])
+                 for cause in CAUSES}} for row in rows]
+    return _spec(alt.layer(bars, labels), table)
 
 
 def pattern_hazard(hazard):
@@ -181,7 +203,11 @@ def pattern_hazard(hazard):
                  alt.Tooltip("series:N", title="Pattern"),
                  alt.Tooltip("rate:Q", title="Deaths per 10k frames", format=".2f")],
     )
-    return _spec(chart)
+    table = [{"Window": row.get("bucket"), "Frames": row["window"],
+              f"{HAZARD_SERIES[0]} (deaths per 10k frames)": row["active"],
+              f"{HAZARD_SERIES[1]} (deaths per 10k frames)": row["inactive"]}
+             for row in hazard["windows"]]
+    return _spec(chart, table)
 
 
 def pattern_lethality(rows):
@@ -206,4 +232,8 @@ def pattern_lethality(rows):
                  alt.Tooltip("low:Q", title="95% CI low", format=".0%"),
                  alt.Tooltip("high:Q", title="95% CI high", format=".0%")],
     )
-    return _spec(alt.layer(interval, dots))
+    table = [{"Pattern": row["pattern"], "Encounters": row["encounters"],
+              "Deaths": row["deaths"], "Lethality %": _percent(row["lethality"]),
+              "95% CI low %": _percent(row["low"]), "95% CI high %": _percent(row["high"])}
+             for row in rows]
+    return _spec(alt.layer(interval, dots), table)

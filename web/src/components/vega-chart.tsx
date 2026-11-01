@@ -9,8 +9,10 @@ import { Button } from "@/components/ui/button"
 
 type Row = Record<string, unknown>
 
-/** The data rows of a layered or single spec, for the table view. */
+/** The rows for the table view: the spec's own table if it has one, else its data. */
 function rowsOf(spec: VegaSpec): Row[] {
+  const table = (spec.usermeta as { table?: Row[] } | undefined)?.table
+  if (table) return table
   const data = spec.data as { values?: Row[] } | undefined
   if (data?.values) return data.values
   const layers = (spec.layer as VegaSpec[] | undefined) ?? []
