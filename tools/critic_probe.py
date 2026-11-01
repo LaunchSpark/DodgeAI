@@ -1,10 +1,18 @@
 """Probe whether critic-only game state predicts what the critic gets wrong.
 
-Plays a model on the wide env, records its values V and the realised
-discounted returns G, then fits a small MLP on [V, features] to predict G - V
-and reports held-out explained variance of G with and without it.
+Plays a model on the wide env, recording its values V, rewards, dones and the
+critic-only features. Two targets are scored, each in its own table: the GAE
+lambda-return (V + A, gamma and lambda 0.95, bootstrapped past the record; the
+target the critic trains on) and the Monte Carlo return (tail without a full
+horizon dropped). For each feature group (and all of them) two probes predict
+target - V from the standardised [V, features], fitted on a random 1/stride
+subset of 3/4 of the lanes and scored on the other lanes: a 2-layer MLP with
+early stopping, and a closed-form ridge regression (alpha chosen on held-out
+training lanes). Gains are measured against the same probes on V alone.
 
-    python tools/critic_probe.py MODEL.zip --steps 20000 --envs 32 --gamma 0.997
+    python tools/critic_probe.py MODEL.zip --gamma 0.997
+
+Defaults: --envs 1024 --steps 1500 --stride 8 --lam 0.95.
 """
 
 import argparse
@@ -93,8 +101,9 @@ def _split_fit_val(train, stride, seed=0):
         is_val = np.isin(train["lane"], val_lanes)
     else:
         is_val = rng.random(n) < 0.2
-    thin = np.zeros(n, dtype=bool)
-    thin[::stride] = True
+    # A seeded random 1/stride subset: striding the flat time-major rows would
+    # keep only every stride-th lane when the lane count divides by stride.
+    thin = rng.random(n) < 1.0 / stride
     return np.flatnonzero(~is_val & thin), np.flatnonzero(is_val & thin)
 
 

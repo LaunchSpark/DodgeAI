@@ -1,6 +1,6 @@
 import numpy as np
 
-from tools.critic_probe import discounted_returns, gae_returns, explained_variance, fit_probes, probe_r2
+from tools.critic_probe import discounted_returns, gae_returns, explained_variance, _split_fit_val, fit_probes, probe_r2
 
 
 def test_discounted_returns_stop_at_terminals():
@@ -45,3 +45,12 @@ def test_gae_returns_hand_computed():
     # adv2 = 1 + 0.5*2 - 0.5 = 1.5; adv1 = 1 - 0.5 = 0.5 (terminal);
     # adv0 = (1 + 0.5*0.5 - 0.5) + 0.5*0.5*0.5 = 0.875
     assert np.allclose(g[:, 0], [1.375, 1.0, 2.0])
+
+
+def test_stride_thinning_keeps_every_lane():
+    lanes, steps = 16, 400
+    lane = np.tile(np.arange(lanes), steps)  # time-major, like the real record
+    train = dict(g=np.zeros(len(lane)), lane=lane)
+    fit, val = _split_fit_val(train, 8)
+    assert set(lane[np.concatenate([fit, val])]) == set(range(lanes))
+    assert len(set(lane[fit])) > lanes // 2
