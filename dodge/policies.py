@@ -31,11 +31,13 @@ from .observe import (
 # motion from a history frame. It sees the whole arena rather than a 44px
 # window, carries a sixth of hybrid-cnn parameters, has no dense layer to die
 # in, and its internal state is a picture you can watch.
-ARCHITECTURES = ("velocity-flow", "velocity-flow-v2", "hybrid-cnn", "mlp")
+ARCHITECTURES = ("velocity-flow", "velocity-flow-v2", "hybrid-cnn", "mlp",
+                 "velocity-flow-v3")
 
 # Exact class names, not isinstance: v2 subclasses v1, so isinstance would
 # report every v2 checkpoint as a v1 one.
 EXTRACTOR_ARCHITECTURE = {
+    "VelocityFlowV3Extractor": "velocity-flow-v3",
     "VelocityFlowV2Extractor": "velocity-flow-v2",
     "VelocityFlowExtractor": "velocity-flow",
     "DodgeHybridExtractor": "hybrid-cnn",
@@ -264,6 +266,9 @@ def policy_class(architecture):
     of a danger field rather than a learned projection -- so it needs its own
     ActorCriticPolicy subclass, not just a features extractor.
     """
+    if architecture == "velocity-flow-v3":
+        from .velocity import VelocityFlowV3Policy
+        return VelocityFlowV3Policy
     if architecture in ("velocity-flow", "velocity-flow-v2"):
         from .velocity import VelocityFlowPolicy
         return VelocityFlowPolicy
@@ -273,12 +278,14 @@ def policy_class(architecture):
 def policy_kwargs(architecture):
     if architecture == "mlp":
         return {}
-    if architecture in ("velocity-flow", "velocity-flow-v2"):
-        from .velocity import VelocityFlowExtractor, VelocityFlowV2Extractor
+    if architecture in ("velocity-flow", "velocity-flow-v2", "velocity-flow-v3"):
+        from .velocity import (VelocityFlowExtractor, VelocityFlowV2Extractor,
+                               VelocityFlowV3Extractor)
+        extractors = {"velocity-flow": VelocityFlowExtractor,
+                      "velocity-flow-v2": VelocityFlowV2Extractor,
+                      "velocity-flow-v3": VelocityFlowV3Extractor}
         return {
-            "features_extractor_class": (VelocityFlowExtractor
-                                         if architecture == "velocity-flow"
-                                         else VelocityFlowV2Extractor),
+            "features_extractor_class": extractors[architecture],
             # No policy trunk: the field readings are the logits, so anything
             # between them and the distribution would be a head learning to
             # second-guess the controller.

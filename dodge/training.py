@@ -59,7 +59,8 @@ DEAD_UNIT_SAMPLES = 512
 # whole-update measurement there is; the same quick check put its step 6.7x
 # faster on the GPU, but on a CPU another process was saturating, so it is a
 # lead for a quiet-machine benchmark rather than a reason to move it.
-GPU_ARCHITECTURES = ("hybrid-cnn", "velocity-flow", "velocity-flow-v2")
+GPU_ARCHITECTURES = ("hybrid-cnn", "velocity-flow", "velocity-flow-v2",
+                     "velocity-flow-v3")
 
 _CPU_POLICY_WARNING = ".*primarily intended to run on the CPU.*"
 
@@ -159,6 +160,8 @@ ARCHITECTURE_HYPERPARAMETERS = {
         "minibatches_per_epoch": 8,
     },
 }
+# v3 differs from v2 in what the critic reads, not in how it should train.
+ARCHITECTURE_HYPERPARAMETERS["velocity-flow-v3"] =     ARCHITECTURE_HYPERPARAMETERS["velocity-flow-v2"]
 
 
 def hyperparameters(architecture=None):

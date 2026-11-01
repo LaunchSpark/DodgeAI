@@ -932,11 +932,14 @@ def test_every_architecture_saves_and_loads_through_the_session(tmp_path, archit
     """
     from stable_baselines3 import PPO
 
+    from dodge.critic import CRITIC_ARCHITECTURES
     from dodge.env import DodgeVecEnv
     from dodge.policies import architecture_name, policy_class, policy_kwargs
     from dodge.training import PPOTrainingSession
 
-    saved = PPO(policy_class(architecture), DodgeVecEnv(n_envs=1, max_episode_frames=20),
+    wide = architecture in CRITIC_ARCHITECTURES
+    saved = PPO(policy_class(architecture),
+                DodgeVecEnv(n_envs=1, max_episode_frames=20, critic_features=wide),
                 n_steps=16, batch_size=8, seed=0, device="cpu",
                 policy_kwargs=policy_kwargs(architecture))
     saved.save(tmp_path / architecture)
@@ -946,7 +949,7 @@ def test_every_architecture_saves_and_loads_through_the_session(tmp_path, archit
                                  rollout_steps=16)
     assert architecture in [entry.name for entry in session.available_models()]
 
-    env = DodgeVecEnv(n_envs=1, max_episode_frames=20)
+    env = DodgeVecEnv(n_envs=1, max_episode_frames=20, critic_features=wide)
     try:
         loaded = session._load_model(tmp_path / f"{architecture}.zip", env)
         assert architecture_name(loaded) == architecture

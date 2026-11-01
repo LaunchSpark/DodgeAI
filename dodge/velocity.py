@@ -48,7 +48,8 @@ from stable_baselines3.common.policies import ActorCriticPolicy
 from . import speed
 from .actions import ACTION_MASKS
 from .gradient import simulate_player
-from .observe import ARENA_SIZE, CELL_SIZE, GRID_SIZE
+from .critic import CRITIC_FEATURE_COUNT, WIDE_OBSERVATION_SIZE
+from .observe import ARENA_SIZE, CELL_SIZE, GRID_SIZE, OBSERVATION_SIZE
 from .policies import (HYBRID_INPUT_CHANNELS, NEGATIVE_SLOPE, COORDINATE_INPUTS,
                        DodgeHybridExtractor, _sense_features, activation)
 
@@ -461,9 +462,13 @@ class VelocityFlowV2Extractor(VelocityFlowExtractor):
                   + self.field_head.bias[:, None])
         return (paired * self.sample_weights[:, None]).sum(dim=1)
 
-    def forward(self, observations):
-        if not self.half_resolution:
-            return super().forward(observations)
+    def _danger_and_value_inputs(self, observations):
+        """The half-resolution forward pass, up to the critic's first layer.
+
+        Returns the path danger (batch, actions) and what value_net reads.
+        Split out so a subclass can widen the critic's input without touching
+        the actor.
+        """
         coordinates, grids = DodgeHybridExtractor.policy_inputs(observations)
         body = self.field_net.half(speed.trunk_layout(grids))
         # adaptive_avg_pool2d(trunk, 4), for the context and the critic alike.
@@ -475,10 +480,49 @@ class VelocityFlowV2Extractor(VelocityFlowExtractor):
         senses = _sense_features(coordinates, grids)
         # The trunk's mean is the mean of its sixteen equal 8x8 bins, and
         # value_pool, being 1x1, commutes with pooling them.
-        value = self.value_net(torch.cat(
+        inputs = torch.cat(
             (pooled.mean(dim=(2, 3)), self.value_pool(pooled).flatten(1),
-             coordinates, senses), dim=1))
-        return torch.cat((-danger, value), dim=1)
+             coordinates, senses), dim=1)
+        return danger, inputs
+
+    def forward(self, observations):
+        if not self.half_resolution:
+            return super().forward(observations)
+        danger, inputs = self._danger_and_value_inputs(observations)
+        return torch.cat((-danger, self.value_net(inputs)), dim=1)
+
+
+class VelocityFlowV3Extractor(VelocityFlowV2Extractor):
+    """v2's actor, with a critic that also reads hidden game state.
+
+    The observation is the actor's OBSERVATION_SIZE values followed by
+    CRITIC_FEATURE_COUNT the actor must never see. The actor path slices the
+    first block off before anything else: policy_inputs reads the velocity
+    planes to the end of the vector, so the extra columns would otherwise be
+    folded into them.
+    """
+
+    def __init__(self, observation_space, action_repeat=4):
+        assert observation_space.shape == (WIDE_OBSERVATION_SIZE,),             "v3 observes the actor's values and the critic's"
+        super().__init__(observation_space, action_repeat=action_repeat,
+                         half_resolution=True)
+        first = self.value_net[0]
+        wide = nn.Linear(first.in_features + CRITIC_FEATURE_COUNT, first.out_features)
+        with torch.no_grad():
+            # Zero, so a network starts out computing exactly what v2's does
+            # and learns to use the new columns rather than being thrown by them.
+            wide.weight.zero_()
+            wide.weight[:, :first.in_features] = first.weight
+            wide.bias.copy_(first.bias)
+        self.value_net[0] = wide
+
+    def _danger_and_value_inputs(self, observations):
+        danger, inputs = super()._danger_and_value_inputs(
+            observations[:, :OBSERVATION_SIZE])
+        return danger, torch.cat((inputs, observations[:, OBSERVATION_SIZE:]), dim=1)
+
+    def field(self, observations):
+        return super().field(observations[:, :OBSERVATION_SIZE])
 
 
 def _axis_map(operation, size):
@@ -604,3 +648,25 @@ class VelocityFlowPolicy(ActorCriticPolicy):
         clamped = torch.clamp(log_pmf, min=torch.finfo(log_pmf.dtype).min)
         entropy = -(clamped * F.softmax(log_pmf, dim=-1)).sum(-1)
         return values, log_prob, entropy
+
+
+class VelocityFlowV3Policy(VelocityFlowPolicy):
+    """The v2 policy, which also takes the actor-only observation.
+
+    Evaluation and the watch tools hold observations without the critic's
+    columns, so they are padded with zeros here, where SB3 checks the shape.
+    """
+
+    def _build(self, lr_schedule):
+        super()._build(lr_schedule)
+        # SB3 re-initialises every Linear in the extractor once it is built,
+        # which undoes the zeros the extractor started the new columns with.
+        with torch.no_grad():
+            self.features_extractor.value_net[0].weight[:, -CRITIC_FEATURE_COUNT:] = 0
+
+    def obs_to_tensor(self, observation):
+        if (isinstance(observation, np.ndarray)
+                and observation.shape[-1:] == (OBSERVATION_SIZE,)):
+            pad = [(0, 0)] * (observation.ndim - 1) + [(0, CRITIC_FEATURE_COUNT)]
+            observation = np.pad(observation, pad)
+        return super().obs_to_tensor(observation)
