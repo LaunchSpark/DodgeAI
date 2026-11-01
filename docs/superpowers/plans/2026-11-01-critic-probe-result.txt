@@ -1,0 +1,11 @@
+model D:/projects/DodgeAI/artifacts/models/velocity-flow-v2.zip  gamma 0.997  steps 20000  envs 32
+train samples 447859  test samples 146672
+features           EV(V+probe)     gain
+baseline (V only)       0.1459   0.0000
+all                    -0.4779  -0.6238
+clock                   0.1670  +0.0211
+timers                 -0.0280  -0.1739
+active_pattern         -0.0146  -0.1605
+next_pattern           -0.4447  -0.5906
+next_enemy              0.1441  -0.0018
+nearest_enemies        -0.1025  -0.2484
