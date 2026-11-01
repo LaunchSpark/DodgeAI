@@ -17,6 +17,7 @@ from stable_baselines3.common.vec_env.base_vec_env import VecEnv
 
 from . import rewards
 from .actions import ACTION_MASKS
+from .critic import WIDE_OBSERVATION_SIZE
 from .seeds import ExplicitSeeds, SeedStream
 from .observe import ARENA_SIZE, OBSERVATION_SIZE
 
@@ -262,16 +263,21 @@ class DodgeVecEnv(VecEnv):
         execution="parallel",
         seeds=None,
         seed_stream="train",
+        critic_features=False,
     ):
         if max_episode_frames is not None and max_episode_frames < 1:
             raise ValueError("max_episode_frames must be positive or None")
         self.render_mode = None
         super().__init__(
             n_envs,
-            # Velocities are signed, so the box is not the unit interval.
-            spaces.Box(low=-1.0, high=1.0, shape=(OBSERVATION_SIZE,), dtype=np.float32),
+            # Velocities are signed, so the box is not the unit interval. The
+            # critic's hidden state, when asked for, follows the actor's
+            # columns.
+            spaces.Box(low=-1.0, high=1.0, dtype=np.float32, shape=(
+                WIDE_OBSERVATION_SIZE if critic_features else OBSERVATION_SIZE,)),
             spaces.Discrete(len(ACTION_MASKS)),
         )
+        self.critic_features = bool(critic_features)
         self._engine_settings = dict(
             step_frames=action_repeat,
             difficulty=difficulty, patterns=patterns, powerups=powerups,
@@ -304,6 +310,7 @@ class DodgeVecEnv(VecEnv):
             "spawn_rate_percent": int(spawn_rate_percent),
             "action_repeat": int(action_repeat), "lives": int(lives),
             "max_episode_frames": max_episode_frames, "execution": execution,
+            "critic_features": self.critic_features,
         }
         if seeds is not None:
             self._stream = ExplicitSeeds(seeds, n_slots=n_envs)
@@ -471,12 +478,12 @@ class DodgeVecEnv(VecEnv):
         self.reward_config = rewards.load(self.reward_config_path)
         self._game_seeds[:] = seeds
         self.engine.reset_ml_batch(self._game_seeds)
-        state = self.engine.observe_velocity()
+        state = self.engine.observe_velocity(critic=self.critic_features)
         self._previous = None
         self._start_runs(np.arange(self.num_envs), self._counters(state))
         self.reset_infos = [{"seed": int(seed), "score": 0.0, "frames": 0, "run_frames": 0}
                             for seed in self._game_seeds]
-        return state["observation"]
+        return self._observation(state)
 
     def step_async(self, actions):
         self._actions = np.asarray(actions, dtype=np.uint8).reshape(self.num_envs)
@@ -487,10 +494,16 @@ class DodgeVecEnv(VecEnv):
         step = getattr(self.engine, "step_ml_positions_batch", None)
         return (step or self.engine.step_ml_batch)(actions)
 
+    def _observation(self, state):
+        """The env's observation rows: the actor's, then the critic's if asked."""
+        if not self.critic_features:
+            return state["observation"]
+        return np.hstack([state["observation"], state["critic"]])
+
     def _observe(self):
         """observe_velocity, timed for _fresh_games' choice."""
         started = time.perf_counter()
-        state = self.engine.observe_velocity()
+        state = self.engine.observe_velocity(critic=self.critic_features)
         elapsed = time.perf_counter() - started
         self._observe_seconds = (elapsed if self._observe_seconds is None
                                  else 0.9 * self._observe_seconds + 0.1 * elapsed)
@@ -522,7 +535,7 @@ class DodgeVecEnv(VecEnv):
                 self._nursery_lane_seconds = (0.9 * self._nursery_lane_seconds
                                               + 0.1 * reset_lane)
             fresh = self._observe()
-            observation = fresh["observation"][lanes]
+            observation = self._observation(fresh)[lanes]
             counters = {key: values[lanes] for key, values in self._counters(fresh).items()}
             return observation, counters
         if self._nursery is None:
@@ -530,11 +543,11 @@ class DodgeVecEnv(VecEnv):
             self._nursery = make_engine(**self._engine_settings, execution="serial")
         started = time.perf_counter()
         self._nursery.reset_ml_batch(seeds)
-        fresh = self._nursery.observe_velocity()
+        fresh = self._nursery.observe_velocity(critic=self.critic_features)
         elapsed = (time.perf_counter() - started) / len(lanes)
         self._nursery_lane_seconds = (elapsed if self._nursery_lane_seconds is None
                                       else 0.9 * self._nursery_lane_seconds + 0.1 * elapsed)
-        return fresh["observation"], self._counters(fresh)
+        return self._observation(fresh), self._counters(fresh)
 
     def step_wait(self):
         lanes = self.num_envs
@@ -612,7 +625,7 @@ class DodgeVecEnv(VecEnv):
             done=done,
         )
         infos = StepInfos([{} for _ in range(lanes)], batch)
-        observation = state["observation"]
+        observation = self._observation(state)
         ended = np.flatnonzero(done)
         for lane in ended.tolist():
             info = batch.lane_info(lane)
