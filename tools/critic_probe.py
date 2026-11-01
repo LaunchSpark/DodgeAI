@@ -49,34 +49,61 @@ def explained_variance(g, pred):
     return float(1 - np.var(g - pred) / np.var(g))
 
 
-def probe_r2(train, test, columns):
-    """Test-set explained variance of G from V plus an MLP's guess at G - V.
+def _standardise(train_x, *others):
+    mu, sd = train_x.mean(0), train_x.std(0)
+    sd = np.where(sd == 0, 1.0, sd)
+    return [((x - mu) / sd).astype(np.float32) for x in (train_x, *others)]
 
-    train/test hold flat arrays: v (n,), g (n,), x (n, features).
-    columns None means V alone goes into the MLP.
+
+def _inputs(d, columns):
+    parts = [d["v"][:, None]]
+    if columns is not None:
+        parts.append(d["x"][:, columns])
+    return np.concatenate(parts, axis=1)
+
+
+def _split_fit_val(train, stride, seed=0):
+    """Hold out 20% of the training lanes (or rows, with no lane ids) as validation."""
+    n = len(train["g"])
+    rng = np.random.default_rng(seed)
+    if "lane" in train:
+        lanes = np.unique(train["lane"])
+        val_lanes = rng.choice(lanes, max(1, len(lanes) // 5), replace=False)
+        is_val = np.isin(train["lane"], val_lanes)
+    else:
+        is_val = rng.random(n) < 0.2
+    thin = np.zeros(n, dtype=bool)
+    thin[::stride] = True
+    return np.flatnonzero(~is_val & thin), np.flatnonzero(is_val & thin)
+
+
+def fit_probes(train, test, columns, stride=1):
+    """Test explained variance of G for (MLP, ridge) fitted to G - V.
+
+    train/test hold flat arrays v (n,), g (n,), x (n, features), and for train
+    optionally lane (n,) so validation is held out by lane. columns None means
+    V alone. The probes train on every `stride`th row only.
     """
-    def inputs(d):
-        parts = [d["v"][:, None]]
-        if columns is not None:
-            parts.append(d["x"][:, columns])
-        return np.concatenate(parts, axis=1).astype(np.float32)
-
-    xtr, xte = inputs(train), inputs(test)
-    mu, sd = xtr.mean(0), xtr.std(0) + 1e-6
-    xtr, xte = (xtr - mu) / sd, (xte - mu) / sd
-    ytr = (train["g"] - train["v"]).astype(np.float32)
-    ymu, ysd = ytr.mean(), ytr.std() + 1e-6
-    ytr = (ytr - ymu) / ysd
+    fit, val = _split_fit_val(train, stride)
+    xall = _inputs(train, columns)
+    xfit, xval, xte = _standardise(xall[fit], xall[val], _inputs(test, columns))
+    resid = (train["g"] - train["v"]).astype(np.float64)
+    rfit, rval = resid[fit], resid[val]
+    ymu, ysd = rfit.mean(), rfit.std() + 1e-6
 
     torch.manual_seed(0)
     np.random.seed(0)
     net = nn.Sequential(
-        nn.Linear(xtr.shape[1], 64), nn.LeakyReLU(), nn.Linear(64, 64), nn.LeakyReLU(), nn.Linear(64, 1)
+        nn.Linear(xfit.shape[1], 64), nn.LeakyReLU(), nn.Linear(64, 64), nn.LeakyReLU(), nn.Linear(64, 1)
     )
-    opt = torch.optim.Adam(net.parameters(), lr=1e-3)
-    xt, yt = torch.from_numpy(xtr), torch.from_numpy(ytr)
+    opt = torch.optim.Adam(net.parameters(), lr=1e-3, weight_decay=1e-4)
+    xt = torch.from_numpy(xfit)
+    yt = torch.from_numpy(((rfit - ymu) / ysd).astype(np.float32))
+    xv = torch.from_numpy(xval)
+    yv = torch.from_numpy(((rval - ymu) / ysd).astype(np.float32))
     rng = np.random.default_rng(0)
-    for _ in range(30):
+    best, best_state, stale = float("inf"), None, 0
+    for _ in range(50):
         order = torch.from_numpy(rng.permutation(len(xt)))
         for i in range(0, len(order), 256):
             idx = order[i : i + 256]
@@ -84,9 +111,40 @@ def probe_r2(train, test, columns):
             opt.zero_grad()
             loss.backward()
             opt.step()
+        with torch.no_grad():
+            vloss = float(((net(xv).squeeze(-1) - yv) ** 2).mean())
+        if vloss < best:
+            best, stale = vloss, 0
+            best_state = {k: t.clone() for k, t in net.state_dict().items()}
+        else:
+            stale += 1
+            if stale >= 5:
+                break
+    net.load_state_dict(best_state)
     with torch.no_grad():
-        resid = net(torch.from_numpy(xte)).squeeze(-1).numpy() * ysd + ymu
-    return explained_variance(test["g"], test["v"] + resid)
+        mlp_resid = net(torch.from_numpy(xte)).squeeze(-1).numpy() * ysd + ymu
+    mlp_ev = explained_variance(test["g"], test["v"] + mlp_resid)
+
+    # Ridge on the same standardised inputs, alpha picked on the validation lanes.
+    aug = lambda x: np.concatenate([x, np.ones((len(x), 1), np.float32)], axis=1).astype(np.float64)
+    a, av, ate = aug(xfit), aug(xval), aug(xte)
+    gram, rhs = a.T @ a, a.T @ rfit
+    penalty = np.eye(a.shape[1])
+    penalty[-1, -1] = 0
+    gval = train["g"][val]
+    best_ev, best_w = -np.inf, None
+    for alpha in (0.1, 1, 10, 100, 1000):
+        w = np.linalg.solve(gram + alpha * penalty, rhs)
+        ev = explained_variance(gval, train["v"][val] + av @ w)
+        if ev > best_ev:
+            best_ev, best_w = ev, w
+    ridge_ev = explained_variance(test["g"], test["v"] + ate @ best_w)
+    return mlp_ev, ridge_ev
+
+
+def probe_r2(train, test, columns, stride=1):
+    """Test explained variance of G from V plus an MLP's guess at G - V."""
+    return fit_probes(train, test, columns, stride)[0]
 
 
 def collect(model, steps, envs, seed):
@@ -109,38 +167,49 @@ def collect(model, steps, envs, seed):
     return values, rewards, dones, feats
 
 
+def report(values, rewards, dones, feats, gamma, args):
+    g = discounted_returns(rewards, dones, gamma)
+    split = args.envs * 3 // 4
+
+    def part(lanes):
+        keep = ~np.isnan(g[:, lanes])
+        lane_ids = np.broadcast_to(np.arange(args.envs)[lanes], keep.shape)[keep]
+        return dict(v=values[:, lanes][keep], g=g[:, lanes][keep], x=feats[:, lanes][keep], lane=lane_ids)
+
+    train, test = part(slice(0, split)), part(slice(split, None))
+    raw = explained_variance(test["g"], test["v"])
+    base_mlp, base_ridge = fit_probes(train, test, None, args.stride)
+    print(f"gamma {gamma}  train samples {len(train['g'])} (stride {args.stride})  test samples {len(test['g'])}")
+    print(f"{'group':<18}{'raw-V EV':>10}{'MLP(V)':>9}{'MLP(V+g)':>10}{'gain':>8}{'ridge(V+g)':>12}{'r.gain':>8}")
+    rows = [("all", slice(0, CRITIC_FEATURE_COUNT))] + [(n, slice(*c)) for n, c in CRITIC_GROUPS.items()]
+    for name, cols in rows:
+        mlp, ridge = fit_probes(train, test, cols, args.stride)
+        print(
+            f"{name:<18}{raw:>10.4f}{base_mlp:>9.4f}{mlp:>10.4f}{mlp - base_mlp:>+8.4f}"
+            f"{ridge:>12.4f}{ridge - base_ridge:>+8.4f}"
+        )
+    print(f"{'baseline (V only)':<18}{raw:>10.4f}{base_mlp:>9.4f}{base_mlp:>10.4f}{0:>+8.4f}{base_ridge:>12.4f}{0:>+8.4f}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("model")
-    ap.add_argument("--steps", type=int, default=20000)
-    ap.add_argument("--envs", type=int, default=32)
+    ap.add_argument("--steps", type=int, default=4000)
+    ap.add_argument("--envs", type=int, default=256)
+    ap.add_argument("--stride", type=int, default=8)
     ap.add_argument("--gamma", type=float, default=None)
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
     model = DashboardPPO.load(args.model, device="auto")
-    gamma = model.gamma if args.gamma is None else args.gamma
-    values, rewards, dones, feats = collect(model, args.steps, args.envs, args.seed)
-    g = discounted_returns(rewards, dones, gamma)
-
-    split = args.envs * 3 // 4
-
-    def part(lanes):
-        v, gg, x = values[:, lanes], g[:, lanes], feats[:, lanes]
-        keep = ~np.isnan(gg)
-        return dict(v=v[keep], g=gg[keep], x=x[keep])
-
-    train, test = part(slice(0, split)), part(slice(split, None))
-    base = explained_variance(test["g"], test["v"])
-    print(f"model {args.model}  gamma {gamma}  steps {args.steps}  envs {args.envs}")
-    print(f"train samples {len(train['g'])}  test samples {len(test['g'])}")
-    print(f"{'features':<18}{'EV(V+probe)':>12}{'gain':>9}")
-    print(f"{'baseline (V only)':<18}{base:>12.4f}{0.0:>9.4f}")
-    rows = [("all", slice(0, CRITIC_FEATURE_COUNT))] + list(CRITIC_GROUPS.items())
-    for name, (cols) in rows:
-        columns = cols if isinstance(cols, slice) else slice(*cols)
-        ev = probe_r2(train, test, columns)
-        print(f"{name:<18}{ev:>12.4f}{ev - base:>+9.4f}")
+    print(f"model {args.model}  model.gamma {model.gamma}  steps {args.steps}  envs {args.envs}")
+    data = collect(model, args.steps, args.envs, args.seed)
+    gammas = [model.gamma if args.gamma is None else args.gamma]
+    if args.gamma is not None and model.gamma != args.gamma:
+        gammas.append(model.gamma)
+    for gamma in gammas:
+        report(*data, gamma, args)
+        print()
 
 
 if __name__ == "__main__":

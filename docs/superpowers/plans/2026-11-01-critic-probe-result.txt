@@ -1,11 +1,12 @@
-model D:/projects/DodgeAI/artifacts/models/velocity-flow-v2.zip  gamma 0.997  steps 20000  envs 32
-train samples 447859  test samples 146672
-features           EV(V+probe)     gain
-baseline (V only)       0.1459   0.0000
-all                    -0.4779  -0.6238
-clock                   0.1670  +0.0211
-timers                 -0.0280  -0.1739
-active_pattern         -0.0146  -0.1605
-next_pattern           -0.4447  -0.5906
-next_enemy              0.1441  -0.0018
-nearest_enemies        -0.1025  -0.2484
+model D:/projects/DodgeAI/artifacts/models/velocity-flow-v2.zip  model.gamma 0.997  steps 4000  envs 256
+gamma 0.997  train samples 489537 (stride 8)  test samples 162343
+group               raw-V EV   MLP(V)  MLP(V+g)    gain  ridge(V+g)  r.gain
+all                   0.0908   0.0672   -0.3835 -0.4507     -0.3275 -0.4174
+clock                 0.0908   0.0672    0.1557 +0.0884      0.1523 +0.0623
+timers                0.0908   0.0672    0.0367 -0.0306      0.0679 -0.0221
+active_pattern        0.0908   0.0672   -0.2088 -0.2760     -0.1869 -0.2769
+next_pattern          0.0908   0.0672   -0.0864 -0.1537     -0.0507 -0.1407
+next_enemy            0.0908   0.0672    0.0802 +0.0129      0.0897 -0.0002
+nearest_enemies       0.0908   0.0672   -0.0234 -0.0907      0.0619 -0.0281
+baseline (V only)     0.0908   0.0672    0.0672 +0.0000      0.0900 +0.0000
+
