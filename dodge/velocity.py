@@ -503,7 +503,11 @@ class VelocityFlowV3Extractor(VelocityFlowV2Extractor):
     """
 
     def __init__(self, observation_space, action_repeat=4):
-        assert observation_space.shape == (WIDE_OBSERVATION_SIZE,),             "v3 observes the actor's values and the critic's"
+        if observation_space.shape != (WIDE_OBSERVATION_SIZE,):
+            raise ValueError(
+                f"VelocityFlowV3Extractor expects {WIDE_OBSERVATION_SIZE} values "
+                f"(the actor's and the critic's), got {observation_space.shape}; "
+                "build the environment with critic_features=True")
         super().__init__(observation_space, action_repeat=action_repeat,
                          half_resolution=True)
         first = self.value_net[0]

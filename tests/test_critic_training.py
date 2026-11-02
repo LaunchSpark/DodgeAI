@@ -9,10 +9,11 @@ pytest.importorskip("stable_baselines3")
 from dodge.critic import CRITIC_FEATURE_COUNT, WIDE_OBSERVATION_SIZE
 from dodge.env import DodgeVecEnv, native_available
 from dodge.observe import OBSERVATION_SIZE
-from dodge.policies import architecture_name, policy_class, policy_kwargs
+from dodge.policies import ARCHITECTURES, architecture_name, policy_class, policy_kwargs
 from dodge.training import (DashboardPPO, PPOTrainingSession,
                             checkpoint_architecture)
 from tools.continue_with_critic import continue_with_critic
+from tools.new_policy import main as new_policy_main
 
 pytestmark = [
     pytest.mark.skipif(not native_available(), reason="dodge_native not installed"),
@@ -87,3 +88,12 @@ def test_v2_checkpoint_still_gets_a_plain_env(tmp_path):
         assert env.observation_space.shape == (OBSERVATION_SIZE,)
     finally:
         env.close()
+
+
+@pytest.mark.parametrize("architecture", ARCHITECTURES)
+def test_new_policy_writes_a_loadable_checkpoint(tmp_path, architecture):
+    assert new_policy_main([architecture, "--models-dir", str(tmp_path)]) == 0
+    path = tmp_path / f"{architecture}.zip"
+    assert checkpoint_architecture(path) == architecture
+    model = DashboardPPO.load(path, device="cpu")
+    assert architecture_name(model) == architecture
