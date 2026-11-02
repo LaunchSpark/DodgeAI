@@ -24,8 +24,10 @@ from stable_baselines3.common.save_util import load_from_zip_file
 from stable_baselines3.common.utils import (ConstantSchedule, explained_variance,
                                             get_device)
 
+from .critic import CRITIC_ARCHITECTURES
 from .env import EVENT_FIELDS, MAX_ACTION_REPEAT, DodgeVecEnv, validate_spawn_rate_percent
 from . import schedule
+from .lineage import checkpoint_path
 from .resume import CheckpointWriter, read_state, restore_training_state
 from .evaluate import evaluate_policy
 from .retention import RetentionGate, best_path_for
@@ -639,6 +641,12 @@ def make_training_env(n_envs, seed, env_kwargs):
     return DodgeVecEnv(n_envs=n_envs, seed=seed, **env_kwargs)
 
 
+def checkpoint_architecture(path):
+    """The architecture a checkpoint holds, read before it is built."""
+    data, _, _ = load_from_zip_file(checkpoint_path(path), device="cpu")
+    return architecture_from_kwargs(data.get("policy_kwargs"))
+
+
 class PPOTrainingSession:
     """Own a PPO model and train it without blocking the Pygame event loop."""
 
@@ -981,16 +989,35 @@ class PPOTrainingSession:
                 seed=self.seed,
             )
 
+    def _env_for(self, load_path):
+        """The training env, wide only if the architecture's critic wants it.
+
+        Chosen before the env exists because the policy is built, or loaded,
+        around the env's observation space: a loaded run follows its
+        checkpoint, a fresh one the session's architecture.
+        """
+        with self.lock:
+            env_kwargs = dict(self.env_kwargs)
+        architecture = self.architecture
+        if load_path:
+            try:
+                architecture = checkpoint_architecture(load_path)
+            except Exception:
+                # Unreadable here means unreadable to _load_model, which
+                # reports it with the model's own error rather than ours.
+                architecture = None
+        env_kwargs["critic_features"] = architecture in CRITIC_ARCHITECTURES
+        return make_training_env(self.n_envs, self.seed, env_kwargs)
+
     def _run(self):
         while not self.shutdown_event.is_set():
             self.restart_event.clear()
             with self.lock:
                 load_path = self.pending_load
                 self.pending_load = None
-                env_kwargs = dict(self.env_kwargs)
             self._clear_snapshot("loading" if load_path else "starting")
             try:
-                env = make_training_env(self.n_envs, self.seed, env_kwargs)
+                env = self._env_for(load_path)
             except Exception as error:
                 self.last_error = error
                 with self.lock:

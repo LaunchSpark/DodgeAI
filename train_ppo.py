@@ -10,16 +10,17 @@ import math
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
-from stable_baselines3.common.save_util import load_from_zip_file
 
-from dodge.lineage import checkpoint_path, jsonable, sidecar_paths
+from dodge.critic import CRITIC_ARCHITECTURES
+from dodge.lineage import jsonable, sidecar_paths
 from dodge.policies import (ARCHITECTURES, DEFAULT_ARCHITECTURE,
-                            architecture_from_kwargs, policy_class, policy_kwargs)
+                            policy_class, policy_kwargs)
 from dodge.resume import (DEFAULT_SEGMENT_UPDATES, CheckpointWriter,
                           SegmentCallback, load_checkpoint)
 from dodge.retention import DEV_FRAME_CAP, RetentionGate, best_path_for
 from dodge.seeds import DEV_COHORT_SIZE, dev_cohort
-from dodge.training import (GPU_ARCHITECTURES, SCALE_PRESETS, hyperparameters,
+from dodge.training import (GPU_ARCHITECTURES, SCALE_PRESETS, checkpoint_architecture,
+                            hyperparameters,
                             make_training_env, minibatch_size,
                             quiet_cpu_policy_warning, resolve_device)
 
@@ -72,12 +73,6 @@ class ProvenanceCheckpointCallback(BaseCallback):
 
     def _on_step(self):
         return True
-
-
-def checkpoint_architecture(path):
-    """The architecture a checkpoint holds, read before it is built."""
-    data, _, _ = load_from_zip_file(checkpoint_path(path), device="cpu")
-    return architecture_from_kwargs(data.get("policy_kwargs"))
 
 
 def describe_schedule(model, architecture):
@@ -211,6 +206,8 @@ def main(argv=None):
     device = resolve_device(args.device, architecture)
     quiet = (quiet_cpu_policy_warning if architecture in GPU_ARCHITECTURES
              else nullcontext)
+    # Wide only where the critic reads the extra columns, as the dashboard's is.
+    env_kwargs["critic_features"] = architecture in CRITIC_ARCHITECTURES
     env = make_training_env(args.envs, args.seed, env_kwargs)
     state = None
     if resume_path is not None:
