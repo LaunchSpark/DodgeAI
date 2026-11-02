@@ -281,6 +281,12 @@ def policy_kwargs(architecture):
     if architecture in ("velocity-flow", "velocity-flow-v2", "velocity-flow-v3"):
         from .velocity import (VelocityFlowExtractor, VelocityFlowV2Extractor,
                                VelocityFlowV3Extractor)
+        extra = {}
+        if architecture == "velocity-flow-v3":
+            # Stored in the checkpoint, so a reload can tell the layout it was
+            # trained on from the one the engine now produces.
+            from .critic import critic_layout
+            extra["features_extractor_kwargs"] = {"critic_layout": critic_layout()}
         extractors = {"velocity-flow": VelocityFlowExtractor,
                       "velocity-flow-v2": VelocityFlowV2Extractor,
                       "velocity-flow-v3": VelocityFlowV3Extractor}
@@ -293,6 +299,7 @@ def policy_kwargs(architecture):
             # partial, not a lambda: checkpoints pickle this, and a lambda
             # is stored by value -- tying every saved policy to this file.
             "activation_fn": partial(nn.LeakyReLU, NEGATIVE_SLOPE),
+            **extra,
         }
     if architecture == "hybrid-cnn":
         return {

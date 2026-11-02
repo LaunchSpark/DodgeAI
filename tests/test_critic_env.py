@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from dodge.critic import WIDE_OBSERVATION_SIZE
+from dodge.critic import CRITIC_FEATURE_VERSION, WIDE_OBSERVATION_SIZE
 from dodge.env import DodgeVecEnv, make_engine, native_available
 from dodge.observe import OBSERVATION_SIZE
 
@@ -51,3 +51,8 @@ def test_observation_space_is_wide():
     env = DodgeVecEnv(n_envs=2, critic_features=True, **SETTINGS)
     assert env.observation_space.shape == (WIDE_OBSERVATION_SIZE,)
     assert env.game_settings["critic_features"] is True
+
+
+def test_the_engine_reports_its_critic_layout_version():
+    import dodge_native
+    assert dodge_native.CRITIC_FEATURE_VERSION == CRITIC_FEATURE_VERSION >= 1

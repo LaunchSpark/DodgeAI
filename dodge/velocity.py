@@ -49,6 +49,7 @@ from . import speed
 from .actions import ACTION_MASKS
 from .gradient import simulate_player
 from .critic import CRITIC_FEATURE_COUNT, WIDE_OBSERVATION_SIZE
+from .critic import critic_layout as current_layout
 from .observe import ARENA_SIZE, CELL_SIZE, GRID_SIZE, OBSERVATION_SIZE
 from .policies import (HYBRID_INPUT_CHANNELS, NEGATIVE_SLOPE, COORDINATE_INPUTS,
                        DodgeHybridExtractor, _sense_features, activation)
@@ -502,7 +503,14 @@ class VelocityFlowV3Extractor(VelocityFlowV2Extractor):
     folded into them.
     """
 
-    def __init__(self, observation_space, action_repeat=4):
+    def __init__(self, observation_space, action_repeat=4, critic_layout=None):
+        # The layout the checkpoint was trained with; None for a fresh network.
+        # Same width with a different meaning would otherwise load silently.
+        if critic_layout is not None and critic_layout != current_layout():
+            raise ValueError(
+                "this checkpoint was trained with a different critic feature "
+                f"layout ({critic_layout}) than the engine now produces "
+                f"({current_layout()})")
         if observation_space.shape != (WIDE_OBSERVATION_SIZE,):
             raise ValueError(
                 f"VelocityFlowV3Extractor expects {WIDE_OBSERVATION_SIZE} values "

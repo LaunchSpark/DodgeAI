@@ -9,12 +9,14 @@ pytest.importorskip("stable_baselines3")
 
 from gymnasium import spaces
 
-from dodge.critic import CRITIC_FEATURE_COUNT, WIDE_OBSERVATION_SIZE
+from dodge.critic import (CRITIC_FEATURE_COUNT, CRITIC_FEATURE_VERSION, CRITIC_GROUPS,
+                          WIDE_OBSERVATION_SIZE)
 from dodge.observe import OBSERVATION_SIZE
 from dodge.policies import (ARCHITECTURES, EXTRACTOR_ARCHITECTURE,
                             architecture_from_kwargs, policy_class, policy_kwargs)
 from dodge.training import GPU_ARCHITECTURES, hyperparameters
-from dodge.velocity import VelocityFlowV2Extractor, VelocityFlowV3Policy
+from dodge.velocity import (VelocityFlowV2Extractor, VelocityFlowV3Extractor,
+                            VelocityFlowV3Policy)
 
 pytestmark = pytest.mark.skipif(CRITIC_FEATURE_COUNT == 0,
                                 reason="the native engine has no critic features")
@@ -77,3 +79,52 @@ def test_v3_is_registered():
     assert policy_class("velocity-flow-v3") is VelocityFlowV3Policy
     assert architecture_from_kwargs(policy_kwargs("velocity-flow-v3")) == "velocity-flow-v3"
     assert EXTRACTOR_ARCHITECTURE["VelocityFlowV3Extractor"] == "velocity-flow-v3"
+
+
+def _layout():
+    return policy_kwargs("velocity-flow-v3")["features_extractor_kwargs"]["critic_layout"]
+
+
+def test_policy_kwargs_record_the_critic_layout():
+    assert _layout() == {
+        "version": CRITIC_FEATURE_VERSION, "count": CRITIC_FEATURE_COUNT,
+        "groups": {name: list(span) for name, span in CRITIC_GROUPS.items()}}
+    assert CRITIC_FEATURE_VERSION >= 1
+
+
+def test_extractor_rejects_a_different_critic_layout():
+    space = spaces.Box(-1, 1, (WIDE_OBSERVATION_SIZE,), np.float32)
+    VelocityFlowV3Extractor(space, critic_layout=_layout())
+    for change in ({"version": CRITIC_FEATURE_VERSION + 1},
+                   {"groups": {**_layout()["groups"], "clock": [1, 12]}}):
+        with pytest.raises(ValueError, match="different critic feature layout"):
+            VelocityFlowV3Extractor(space, critic_layout={**_layout(), **change})
+
+
+def _saved_model(path, version=None):
+    from dodge.env import DodgeVecEnv
+    from dodge.training import DashboardPPO
+    env = DodgeVecEnv(n_envs=1, max_episode_frames=20, critic_features=True)
+    try:
+        model = DashboardPPO(policy_class("velocity-flow-v3"), env, n_steps=32,
+                             batch_size=32, seed=0, device="cpu",
+                             policy_kwargs=policy_kwargs("velocity-flow-v3"))
+    finally:
+        env.close()
+    if version is not None:
+        model.policy_kwargs["features_extractor_kwargs"]["critic_layout"]["version"] = version
+    model.save(path)
+
+
+def test_saved_v3_reloads_with_its_layout(tmp_path):
+    from dodge.training import DashboardPPO
+    _saved_model(tmp_path / "v3.zip")
+    model = DashboardPPO.load(tmp_path / "v3.zip", device="cpu")
+    assert model.policy_kwargs["features_extractor_kwargs"]["critic_layout"] == _layout()
+
+
+def test_v3_checkpoint_with_another_layout_fails_to_load(tmp_path):
+    from dodge.training import DashboardPPO
+    _saved_model(tmp_path / "v3.zip", version=CRITIC_FEATURE_VERSION + 1)
+    with pytest.raises(ValueError, match="different critic feature layout"):
+        DashboardPPO.load(tmp_path / "v3.zip", device="cpu")
