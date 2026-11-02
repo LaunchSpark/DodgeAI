@@ -97,3 +97,46 @@ def test_new_policy_writes_a_loadable_checkpoint(tmp_path, architecture):
     assert checkpoint_architecture(path) == architecture
     model = DashboardPPO.load(path, device="cpu")
     assert architecture_name(model) == architecture
+
+
+def test_continuation_carries_the_optimizer_and_zero_columns(tmp_path):
+    env = DodgeVecEnv(n_envs=2, max_episode_frames=20)
+    v2 = DashboardPPO(policy_class("velocity-flow-v2"), env, n_steps=32,
+                      batch_size=32, seed=0, device="cpu",
+                      policy_kwargs=policy_kwargs("velocity-flow-v2"))
+    try:
+        v2.learn(64)
+    finally:
+        env.close()
+    v2.save(tmp_path / "v2.zip")
+    continue_with_critic(tmp_path / "v2.zip", tmp_path / "v3.zip")
+
+    old = DashboardPPO.load(tmp_path / "v2.zip", device="cpu")
+    new = DashboardPPO.load(tmp_path / "v3.zip", device="cpu")
+    old_params = dict(old.policy.named_parameters())
+    new_params = dict(new.policy.named_parameters())
+    assert old_params.keys() == new_params.keys()
+    assert old.policy.optimizer.state, "the v2 optimizer should have trained state"
+
+    widened = 0
+    for name, old_param in old_params.items():
+        old_state = old.policy.optimizer.state[old_param]
+        new_state = new.policy.optimizer.state[new_params[name]]
+        assert new_state["step"] == old_state["step"]
+        for key in ("exp_avg", "exp_avg_sq"):
+            if new_state[key].shape == old_state[key].shape:
+                assert torch.equal(new_state[key], old_state[key]), (name, key)
+            else:
+                widened += 1
+                width = old_state[key].shape[1]
+                assert torch.equal(new_state[key][:, :width], old_state[key]), (name, key)
+                assert not new_state[key][:, width:].any(), (name, key)
+                assert new_state[key].shape[1] - width == CRITIC_FEATURE_COUNT
+    assert widened == 2
+
+    for name, new_param in new_params.items():
+        if name.endswith("features_extractor.value_net.0.weight"):
+            assert not new_param[:, -CRITIC_FEATURE_COUNT:].any()
+    old_group, new_group = old.policy.optimizer.param_groups[0], new.policy.optimizer.param_groups[0]
+    for key in ("lr", "betas", "eps"):
+        assert new_group[key] == old_group[key]

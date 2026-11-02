@@ -6,8 +6,9 @@
 v3 is v2 with a critic that also reads hidden game state. Every tensor v2 has
 is copied across and the critic's new input columns start at zero, so the
 result plays and values exactly as v2 did until training moves those columns.
-The optimizer is not carried over: its moments are for v2's shapes, and a
-fresh Adam is the safe start for a network that has grown.
+Adam's moments are carried over too, zero-padded where a weight grew, so the
+actor keeps stepping as v2 was. A fresh Adam takes larger normalised steps for
+its first thousand updates, which would skew a comparison against v2.
 """
 
 import argparse
@@ -30,6 +31,28 @@ from dodge.training import (DashboardPPO, checkpoint_architecture, hyperparamete
 # SB3 registers the shared extractor under several names (features_extractor,
 # pi_features_extractor, vf_features_extractor), so this matches by suffix.
 WIDENED = "features_extractor.value_net.0.weight"
+
+
+def _carry_optimizer(old, new):
+    """Copy Adam's state and hyperparameters from v2's optimizer to v3's."""
+    old_params = dict(old.policy.named_parameters())
+    old_optimizer, new_optimizer = old.policy.optimizer, new.policy.optimizer
+    for name, parameter in new.policy.named_parameters():
+        state = old_optimizer.state.get(old_params[name])
+        if not state:
+            continue
+        carried = {"step": state["step"].clone()}
+        for key in ("exp_avg", "exp_avg_sq"):
+            moment = torch.zeros_like(parameter)
+            if name.endswith(WIDENED):
+                moment[:, :state[key].shape[1]] = state[key]
+            else:
+                moment.copy_(state[key])
+            carried[key] = moment
+        new_optimizer.state[parameter] = carried
+    for key, value in old_optimizer.param_groups[0].items():
+        if key != "params":
+            new_optimizer.param_groups[0][key] = value
 
 
 def continue_with_critic(source, dest):
@@ -77,6 +100,7 @@ def continue_with_critic(source, dest):
             else:
                 state[name].copy_(tensor)
 
+    _carry_optimizer(old, model)
     model.num_timesteps = old.num_timesteps
     model._n_updates = old._n_updates
     model.completed_updates = getattr(old, "completed_updates", None)
