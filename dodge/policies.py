@@ -34,6 +34,11 @@ from .observe import (
 ARCHITECTURES = ("velocity-flow", "velocity-flow-v2", "hybrid-cnn", "mlp",
                  "velocity-flow-v3")
 
+# velocity-flow-v3's actor changes, each a policy_kwargs flag so an ablation
+# can turn it off; all on by default. See VelocityFlowV3Extractor and
+# VelocityFlowV3Policy.
+V3_ACTOR_FLAGS = ("carry_velocity", "graduated_holds", "centred_logits")
+
 # Exact class names, not isinstance: v2 subclasses v1, so isinstance would
 # report every v2 checkpoint as a v1 one.
 EXTRACTOR_ARCHITECTURE = {
@@ -275,18 +280,35 @@ def policy_class(architecture):
     return "MlpPolicy"
 
 
-def policy_kwargs(architecture):
+def policy_kwargs(architecture, **actor_flags):
+    """SB3 policy_kwargs for an architecture.
+
+    `actor_flags` turns velocity-flow-v3's actor changes on or off (see
+    V3_ACTOR_FLAGS); any other architecture takes none. They are stored in the
+    checkpoint, so a run loaded from one keeps its ablation.
+    """
+    allowed = V3_ACTOR_FLAGS if architecture == "velocity-flow-v3" else ()
+    unknown = sorted(set(actor_flags) - set(allowed))
+    if unknown:
+        raise TypeError(f"{architecture} takes no actor flag {', '.join(unknown)}")
     if architecture == "mlp":
         return {}
     if architecture in ("velocity-flow", "velocity-flow-v2", "velocity-flow-v3"):
-        from .velocity import (VelocityFlowExtractor, VelocityFlowV2Extractor,
-                               VelocityFlowV3Extractor)
+        from .velocity import (V3_CRITIC_GROUPS, VelocityFlowExtractor,
+                               VelocityFlowV2Extractor, VelocityFlowV3Extractor)
         extra = {}
         if architecture == "velocity-flow-v3":
-            # Stored in the checkpoint, so a reload can tell the layout it was
-            # trained on from the one the engine now produces.
             from .critic import critic_layout
-            extra["features_extractor_kwargs"] = {"critic_layout": critic_layout()}
+            flags = {name: bool(actor_flags.get(name, True)) for name in V3_ACTOR_FLAGS}
+            extra["features_extractor_kwargs"] = {
+                # Stored in the checkpoint, so a reload can tell the layout it
+                # was trained on from the one the engine now produces.
+                "critic_layout": critic_layout(),
+                "critic_groups": list(V3_CRITIC_GROUPS),
+                "carry_velocity": flags["carry_velocity"],
+                "graduated_holds": flags["graduated_holds"],
+            }
+            extra["centred_logits"] = flags["centred_logits"]
         extractors = {"velocity-flow": VelocityFlowExtractor,
                       "velocity-flow-v2": VelocityFlowV2Extractor,
                       "velocity-flow-v3": VelocityFlowV3Extractor}

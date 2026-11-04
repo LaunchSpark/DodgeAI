@@ -1195,10 +1195,23 @@ def test_v2_carries_its_own_hyperparameters():
 
     v1, v2 = hyperparameters("velocity-flow"), hyperparameters("velocity-flow-v2")
 
-    assert (v1["gamma"], v1["n_epochs"], v1["vf_coef"], v1["target_kl"]) \
-        == (0.995, 10, 0.5, None)
-    assert (v2["gamma"], v2["n_epochs"], v2["vf_coef"], v2["target_kl"]) \
-        == (0.99, 4, 1.0, 0.02)
+    assert (v1["gamma"], v1["n_epochs"], v1["vf_coef"], v1["target_kl"],
+            v1["max_grad_norm"]) == (0.995, 10, 0.5, None, 0.5)
+    assert (v2["gamma"], v2["n_epochs"], v2["vf_coef"], v2["target_kl"],
+            v2["max_grad_norm"]) == (0.997, 4, 1.0, 0.02, 2.0)
+
+
+def test_a_new_model_takes_the_tables_gradient_clip(tmp_path):
+    """SB3 clips at 0.5 unless told otherwise, and v2 was never told."""
+    from dodge.env import DodgeVecEnv
+
+    env = DodgeVecEnv(n_envs=1, max_episode_frames=20)
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu",
+                                 architecture="velocity-flow-v2", n_envs=1,
+                                 rollout_steps=64)
+    model = session._new_model(env)
+    env.close()
+    assert model.max_grad_norm == 2.0
 
 
 def test_v2_splits_the_buffer_into_larger_minibatches():
@@ -1782,6 +1795,7 @@ def test_loading_applies_the_architectures_hyperparameters(tmp_path):
     # Exactly the shape found on disk: v2's network, v1's schedule and worse.
     seeded.n_epochs, seeded.batch_size = 10, 64
     seeded.target_kl, seeded.vf_coef, seeded.ent_coef = None, 0.5, 0.0
+    seeded.max_grad_norm, seeded.gamma = 0.5, 0.99
     seeded.save(stale)
 
     loaded = session._load_model(stale, env)
@@ -1793,7 +1807,8 @@ def test_loading_applies_the_architectures_hyperparameters(tmp_path):
     assert loaded.vf_coef == want["vf_coef"] == 1.0
     assert loaded.batch_size == minibatch_size(1 * 64, "velocity-flow-v2")
     assert loaded.ent_coef == want["ent_coef"]
-    assert loaded.gamma == want["gamma"]
+    assert loaded.gamma == want["gamma"] == 0.997
+    assert loaded.max_grad_norm == want["max_grad_norm"] == 2.0
 
 
 def test_a_loaded_checkpoint_logs_to_tensorboard(tmp_path):
@@ -1868,7 +1883,8 @@ def test_the_cli_trainer_uses_the_architecture_table(tmp_path, monkeypatch):
 
     want = hyperparameters("velocity-flow-v2")
     assert captured["n_epochs"] == want["n_epochs"] == 4
-    assert captured["gamma"] == want["gamma"] == 0.99
+    assert captured["gamma"] == want["gamma"] == 0.997
+    assert captured["max_grad_norm"] == want["max_grad_norm"] == 2.0
     assert captured["target_kl"] == want["target_kl"] == 0.02
     assert captured["vf_coef"] == want["vf_coef"] == 1.0
     assert captured["batch_size"] == minibatch_size(8 * 256, "velocity-flow-v2") == 256

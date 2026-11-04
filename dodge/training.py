@@ -1,5 +1,6 @@
 """Background Stable-Baselines3 session used by the Pygame dashboard."""
 
+from collections import deque
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -128,18 +129,21 @@ DEFAULT_HYPERPARAMETERS = {
     "vf_coef": 0.5,
     "target_kl": None,
     "ent_coef": 0.01,
+    # SB3's default, made explicit so an architecture can change it.
+    "max_grad_norm": 0.5,
     "minibatches_per_epoch": MINIBATCHES_PER_EPOCH,
     "max_minibatch": MAX_MINIBATCH,
 }
 
 ARCHITECTURE_HYPERPARAMETERS = {
     "velocity-flow-v2": {
-        # 0.995 is an effective horizon of ~200 decisions, about 13 seconds.
-        # Most of that is unpredictable from the current frame -- which enemies
-        # spawn, at what size, which pattern comes next -- so it is noise
-        # sitting in the value target, capping explained variance no matter how
-        # good the critic is. 0.99 is ~6.7s, still far longer than a dodge.
-        "gamma": 0.99,
+        # Per frame at a decision interval of 1: ~330 frames, five and a half
+        # seconds. 0.99 was chosen when a decision was four frames, and at one
+        # it is ~100 frames -- shorter than the 125-frame warning a pattern
+        # gives before it turns lethal, so the critic could not see a pattern
+        # coming. Every v2 run that mattered was trained at 0.997 from the
+        # Training panel; this makes the table say so.
+        "gamma": 0.997,
         # Learning is about five seconds of a six-second cycle, and ten epochs
         # is the multiplier. The late ones run on stale data and are mostly
         # clipped anyway; target_kl makes the cut adaptive rather than flat, so
@@ -148,6 +152,10 @@ ARCHITECTURE_HYPERPARAMETERS = {
         "target_kl": 0.02,
         # The critic is the weak half, so its loss gets equal weight.
         "vf_coef": 1.0,
+        # 0.5 clipped every step, by 3-8x, and 87% of the norm was the value
+        # loss: a surprise death in the batch shrank the policy's share of the
+        # step with it (r = -0.82). 2.0 still catches the spikes.
+        "max_grad_norm": 2.0,
         # Eight minibatches an epoch: 256 samples at 8 envs. Re-measured on the
         # GTX 1070 with the native env, per-sample cost is flat from 256 to
         # 2048 (0.26-0.28ms a sample per epoch), so minibatch size is not what
@@ -162,8 +170,9 @@ ARCHITECTURE_HYPERPARAMETERS = {
         "minibatches_per_epoch": 8,
     },
 }
-# v3 differs from v2 in what the critic reads, not in how it should train.
-ARCHITECTURE_HYPERPARAMETERS["velocity-flow-v3"] =     ARCHITECTURE_HYPERPARAMETERS["velocity-flow-v2"]
+# v3 differs from v2 in how the actor reads the field and in what the critic
+# reads, not in how it should train.
+ARCHITECTURE_HYPERPARAMETERS["velocity-flow-v3"] = ARCHITECTURE_HYPERPARAMETERS["velocity-flow-v2"]
 
 
 def hyperparameters(architecture=None):
@@ -336,6 +345,12 @@ class DashboardPPO(PPO):
             result = super().train()
         finally:
             optimizer.step = original_step
+        # State the policy holds still for a whole update -- v3's logit scale
+        # -- moves now, before post_update saves or scores the model, so the
+        # checkpoint and the next rollout read the same policy.
+        end_update = getattr(self.policy, "end_update", None)
+        if end_update is not None:
+            end_update()
         # Only after train() returned and the hook is off: a raised exception
         # is not a completed update.
         self.completed_updates = (self.completed_updates or 0) + 1
@@ -764,7 +779,7 @@ class PPOTrainingSession:
         # applied and the architecture's table stands.
         self.schedule_path = schedule.CONFIG_PATH
         self.schedule_status = {}
-        self._scorings_since_best = 0
+        self._reset_plateau()
         self._game_settings = {}
         # The dev-cohort scoring in flight, if any; see _score_dev_cohort.
         self._scoring = None
@@ -817,6 +832,7 @@ class PPOTrainingSession:
             gae_lambda=0.95,
             clip_range=0.2,
             ent_coef=settings["ent_coef"],
+            max_grad_norm=settings["max_grad_norm"],
             verbose=0,
             tensorboard_log=str(self.logs_dir),
             seed=self.seed,
@@ -875,6 +891,7 @@ class PPOTrainingSession:
                     "vf_coef": settings["vf_coef"],
                     "target_kl": settings["target_kl"],
                     "ent_coef": settings["ent_coef"],
+                    "max_grad_norm": settings["max_grad_norm"],
                     "tensorboard_log": str(self.logs_dir),
                 },
             )
@@ -1032,7 +1049,7 @@ class PPOTrainingSession:
                 self.model_architecture = architecture_name(self.model)
                 # What the dev cohort is scored under; stub envs carry none.
                 self._game_settings = dict(getattr(env, "game_settings", {}))
-                self._scorings_since_best = 0
+                self._reset_plateau()
                 # Before the first rollout, so its returns already use the
                 # panel's discount rather than the table's.
                 self._apply_schedule(self.model)
@@ -1179,6 +1196,31 @@ class PPOTrainingSession:
             }
         return config
 
+    def _reset_plateau(self):
+        """Forget the plateau rule's history, as a new model must."""
+        self._scorings_since_best = 0
+        self._recent_dev_means = deque(maxlen=schedule.ROLLING_SCORINGS)
+        self._best_rolling_mean = None
+
+    def _judge_plateau(self, mean):
+        """Count a scoring against the rolling best; the rolling mean, or None.
+
+        Judged on the mean of the last ROLLING_SCORINGS scorings, not on the
+        retention gate's raw best: one lucky bounce would otherwise both reset
+        the count and raise the bar the next scorings have to clear. Nothing is
+        counted until the window is full. Call with the lock held.
+        """
+        self._recent_dev_means.append(mean)
+        if len(self._recent_dev_means) < self._recent_dev_means.maxlen:
+            return None
+        rolling = sum(self._recent_dev_means) / len(self._recent_dev_means)
+        if self._best_rolling_mean is None or rolling > self._best_rolling_mean:
+            self._best_rolling_mean = rolling
+            self._scorings_since_best = 0
+        else:
+            self._scorings_since_best += 1
+        return rolling
+
     def _retention_gate(self):
         name = self.active_model_name or self.model_architecture
         return RetentionGate(best_path_for(self.model_dir, name),
@@ -1239,13 +1281,16 @@ class PPOTrainingSession:
         dev = outcome["dev"]
         config = schedule.load(self.schedule_path)
         with self.lock:
-            self._scorings_since_best = (0 if outcome["promoted"]
-                                         else self._scorings_since_best + 1)
+            rolling = self._judge_plateau(dev["mean"])
             since_best = self._scorings_since_best
+            best_rolling = self._best_rolling_mean
         message = (f"Dev cohort at update {update}: mean {dev['mean']:.0f}, "
                    f"Q1 {dev['q1']:.0f} -- "
                    + ("new best" if outcome["promoted"]
                       else f"best is {outcome['best_mean']:.0f}"))
+        if rolling is not None:
+            message += (f"; {schedule.ROLLING_SCORINGS}-scoring mean {rolling:.0f}, "
+                        f"best {best_rolling:.0f}")
         if config.patience and since_best >= config.patience:
             lower = schedule.next_stage(config.learning_rate)
             if lower is not None:
@@ -1260,6 +1305,8 @@ class PPOTrainingSession:
                 **self.schedule_status,
                 "scoring": None,
                 "best_mean": outcome["best_mean"],
+                "rolling_mean": rolling,
+                "best_rolling_mean": best_rolling,
                 "since_best": since_best,
                 "last": {"update": update, "mean": dev["mean"], "q1": dev["q1"],
                          "promoted": outcome["promoted"]},

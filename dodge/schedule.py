@@ -27,19 +27,28 @@ CONFIG_PATH = Path("training.json")
 # hand between two stages steps to the next one below it.
 LR_STAGES = (3e-4, 1e-4, 3e-5)
 
+# Dev scorings averaged before the plateau rule looks at them. One scoring of
+# the 256-seed cohort carries about +-320 frames of sampling noise, and
+# successive checkpoints correlate at |r| <= 0.13, so a raw best is mostly the
+# luckiest bounce so far: it sets a bar the next few scorings cannot reach, and
+# the rate steps down on a run that is still climbing. Three scorings cut a
+# bounce to a third of its height.
+ROLLING_SCORINGS = 3
+
 
 @dataclass
 class TrainingConfig:
     learning_rate: float = 3e-4
-    # 0.99 is v2's table value. At one frame a decision that is a horizon of
-    # about 100 frames, shorter than the 125-frame warning a pattern gives
-    # before it turns lethal.
-    gamma: float = 0.99
+    # v2's table value, so a file written without a discount does not impose
+    # a shorter one over the table. 0.99 was the old default here, and at one
+    # frame a decision it is a horizon of about 100 frames, shorter than the
+    # 125-frame warning a pattern gives before it turns lethal.
+    gamma: float = 0.997
     # PPO updates between dev-cohort scorings; 0 turns scoring off, and with it
     # the automatic learning-rate steps.
     retain_every: int = 60
-    # Scorings in a row without a new best before the learning rate steps down
-    # a stage; 0 never steps it.
+    # Scorings in a row without a new best rolling mean (ROLLING_SCORINGS of
+    # them) before the learning rate steps down a stage; 0 never steps it.
     patience: int = 3
 
     def clamped(self):
@@ -61,7 +70,8 @@ SLIDERS = (
     SliderSpec("retain_every", "Score dev cohort every", 0, 240, 10,
                "PPO updates between scorings of the held-out seeds; 0 is off"),
     SliderSpec("patience", "Plateau patience", 0, 10, 1,
-               "Scorings without a new best before the rate steps down; 0 never"),
+               "Scorings without a new best 3-scoring mean before the rate "
+               "steps down; 0 never"),
 )
 
 

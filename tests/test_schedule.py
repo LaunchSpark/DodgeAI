@@ -18,6 +18,14 @@ def test_a_missing_or_malformed_file_yields_defaults(tmp_path):
     assert schedule.load(broken) == TrainingConfig()
 
 
+def test_the_default_discount_is_the_one_v2_trains_at(tmp_path):
+    """A file without a gamma must not quietly impose 0.99 over the table."""
+    from dodge.training import hyperparameters
+    path = tmp_path / "training.json"
+    path.write_text(json.dumps({"learning_rate": 1e-4}), encoding="utf-8")
+    assert schedule.load(path).gamma == hyperparameters("velocity-flow-v2")["gamma"] == 0.997
+
+
 def test_values_round_trip_and_are_clamped(tmp_path):
     path = tmp_path / "training.json"
     schedule.save(TrainingConfig(learning_rate=1e-4, gamma=0.997,
@@ -78,40 +86,75 @@ def test_the_panel_sets_rate_and_discount_without_a_restart(tmp_path, monkeypatc
         env.close()
 
 
+def _score_series(session, model, monkeypatch, means, patience):
+    """Score `means` in order through a stub gate; the rate after each, and events."""
+    remaining = iter(means)
+    best = {"mean": None}
+
+    class Gate:
+        def consider(self, model, candidate, *, update=None):
+            mean = next(remaining)
+            promoted = best["mean"] is None or mean > best["mean"]
+            if promoted:
+                best["mean"] = mean
+            return {"promoted": promoted, "best_mean": best["mean"],
+                    "dev": {"mean": mean, "q1": mean / 2}}
+
+    monkeypatch.setattr(session, "_retention_gate", lambda: Gate())
+    schedule.save(TrainingConfig(learning_rate=3e-4, retain_every=1, patience=patience),
+                  session.schedule_path)
+    events = []
+    monkeypatch.setattr(session, "_emit", events.append)
+    rates = []
+    for update in range(1, len(means) + 1):
+        model.completed_updates = update
+        session._score_dev_cohort(model)
+        rates.append(schedule.load(session.schedule_path).learning_rate)
+    return rates, events
+
+
 def test_a_plateau_steps_the_rate_down_and_a_new_best_resets_it(tmp_path, monkeypatch):
     session, model, env = _session(tmp_path, monkeypatch)
     try:
-        means = iter([500.0, 400.0, 450.0, 600.0, 300.0, 200.0])
-        best = {"mean": None}
+        means = [500.0, 500.0, 500.0, 400.0, 400.0, 700.0, 700.0, 700.0, 300.0, 300.0]
+        rates, events = _score_series(session, model, monkeypatch, means, patience=2)
 
-        class Gate:
-            def consider(self, model, candidate, *, update=None):
-                mean = next(means)
-                promoted = best["mean"] is None or mean > best["mean"]
-                if promoted:
-                    best["mean"] = mean
-                return {"promoted": promoted, "best_mean": best["mean"],
-                        "dev": {"mean": mean, "q1": mean / 2}}
-
-        monkeypatch.setattr(session, "_retention_gate", lambda: Gate())
-        schedule.save(TrainingConfig(learning_rate=3e-4, retain_every=1, patience=2),
-                      session.schedule_path)
-        events = []
-        monkeypatch.setattr(session, "_emit", events.append)
-        rates = []
-        for update in range(1, 7):
-            model.completed_updates = update
-            session._score_dev_cohort(model)
-            rates.append(schedule.load(session.schedule_path).learning_rate)
-
-        # 500 best; 400, 450 miss -> step to 1e-4; 600 best; 300, 200 miss -> 3e-5.
-        assert rates == [3e-4, 3e-4, 1e-4, 1e-4, 1e-4, 3e-5]
+        # Rolling means from the third scoring: 500 best; 467, 433 miss -> 1e-4;
+        # 500 ties, a miss; 600 and 700 best; 567, 433 miss -> 3e-5.
+        assert rates == [3e-4] * 4 + [1e-4] * 5 + [3e-5]
         # The next boundary applies the stepped rate.
         session._apply_schedule(model)
         assert model.lr_schedule(1.0) == pytest.approx(3e-5)
         assert (tmp_path / "models" / "mlp-candidate.zip").exists()
-        assert "steps down to 0.0001" in events[2].message
-        assert session.schedule_status["last"]["mean"] == 200.0
+        assert "steps down to 0.0001" in events[4].message
+        assert session.schedule_status["last"]["mean"] == 300.0
+        assert session.schedule_status["best_rolling_mean"] == pytest.approx(700.0)
+    finally:
+        env.close()
+
+
+def test_one_lucky_scoring_does_not_step_the_rate_down(tmp_path, monkeypatch):
+    """A steady climb with one +400 bounce in it. Judged by the raw best, the
+    bounce sets a bar the next three scorings cannot reach and the rate steps
+    down twice; averaged over three scorings it is a third of that, and the
+    climb clears it."""
+    session, model, env = _session(tmp_path, monkeypatch)
+    try:
+        means = [500.0 + 60 * scoring for scoring in range(10)]
+        means[3] += 400
+        rates, _ = _score_series(session, model, monkeypatch, means, patience=3)
+        assert rates == [3e-4] * 10
+    finally:
+        env.close()
+
+
+def test_nothing_steps_before_the_window_fills(tmp_path, monkeypatch):
+    session, model, env = _session(tmp_path, monkeypatch)
+    try:
+        rates, _ = _score_series(session, model, monkeypatch, [900.0, 100.0], patience=1)
+        assert rates == [3e-4, 3e-4]
+        assert session.schedule_status["since_best"] == 0
+        assert session.schedule_status["best_rolling_mean"] is None
     finally:
         env.close()
 

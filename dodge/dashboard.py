@@ -18,6 +18,7 @@ from pathlib import Path
 import numpy as np
 
 from . import charts, game_settings, metrics, rewards, schedule
+from .new_policy import NEW_MODEL_ARCHITECTURES, actor_flag_choices, write_new_policy
 from .telemetry import EVENT_KEYS, PROGRESS_ROWS
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "web" / "dist"
@@ -260,6 +261,8 @@ class Dashboard:
                                    "step": spec.step, "hint": spec.hint}
                                   for spec in schedule.SLIDERS],
             "training_status": schedule_status,
+            "new_model": {"architectures": list(NEW_MODEL_ARCHITECTURES),
+                          "actor_flags": actor_flag_choices()},
             "training_figures": training_eval,
             "evaluation": {**evaluation, "figures": evaluated},
             "death_paths": self.death_paths.snapshot(),
@@ -297,6 +300,23 @@ class Dashboard:
     def set_rewards(self, values):
         config = rewards.RewardConfig(**{**asdict(rewards.load()), **values})
         rewards.save(config)
+
+    def new_model(self, values):
+        """Write an untrained checkpoint and switch training to it.
+
+        What tools/new_policy.py does, followed by what loading it from the
+        Models panel does, so a fresh run needs no trip to the command line.
+        """
+        name = self.session._safe_name(str(values.get("name", "")))
+        flags = values.get("flags") or {}
+        if not isinstance(flags, dict):
+            raise ValueError("flags must be an object")
+        path = write_new_policy(str(values.get("architecture", "")), self.session.model_dir,
+                                name=name, **{key: bool(value) for key, value in flags.items()})
+        entry = next(entry for entry in self.session.available_models()
+                     if entry.path == path)
+        self.session.load_model(entry)
+        return str(path)
 
     def set_training(self, values):
         config = schedule.TrainingConfig(
@@ -419,6 +439,10 @@ def create_app(session):
     @app.post("/api/training")
     def set_training(body: dict = Body(...)):
         return act(dashboard.set_training, body)
+
+    @app.post("/api/new-model")
+    def new_model(body: dict = Body(...)):
+        return act(dashboard.new_model, body)
 
     def job(kind, body, most, options=None):
         games = int(body.get("games", 256))

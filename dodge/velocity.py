@@ -48,9 +48,9 @@ from stable_baselines3.common.policies import ActorCriticPolicy
 from . import speed
 from .actions import ACTION_MASKS
 from .gradient import simulate_player
-from .critic import CRITIC_FEATURE_COUNT, WIDE_OBSERVATION_SIZE
+from .critic import CRITIC_FEATURE_COUNT, CRITIC_GROUPS, WIDE_OBSERVATION_SIZE
 from .critic import critic_layout as current_layout
-from .observe import ARENA_SIZE, CELL_SIZE, GRID_SIZE, OBSERVATION_SIZE
+from .observe import ARENA_SIZE, CELL_SIZE, GRID_SIZE, OBSERVATION_SIZE, VELOCITY_SCALE
 from .policies import (HYBRID_INPUT_CHANNELS, NEGATIVE_SLOPE, COORDINATE_INPUTS,
                        DodgeHybridExtractor, _sense_features, activation)
 
@@ -105,17 +105,39 @@ VALUE_SUMMARY_DIM = VALUE_SUMMARY_CHANNELS * VALUE_SUMMARY_GRID ** 2
 # costs it. Build the extractor with half_resolution=False to A/B it.
 HALF_RESOLUTION = True
 
+# --- velocity-flow-v3 ---------------------------------------------------
+# Frames each slice's probe holds its button, one per SAMPLE_FRAMES entry.
+# A held button and its coast end exactly 2.5px a frame of hold away, so a
+# single hold stops every path about twenty frames after release: at v2's
+# four, the 24-, 48-, 72- and 108-frame slices all read one point 10px out.
+# Graduated, the six slices reach 4, 9, 15, 20, 25 and 30px -- 42px on a
+# diagonal, which the cart does not normalise -- so the far slices ask about
+# the corridor an action opens rather than the same cell four times.
+SLICE_HOLDS = (4, 4, 6, 8, 10, 12)
+# The bound on a logit once the field is no longer standardised per state.
+# Nine actions at +-5.5 is already all but deterministic; the cap is there so
+# a field that grows cannot buy certainty the entropy bonus never priced.
+LOGIT_CAP = 5.5
+# The critic-only feature groups v3's critic reads, in layout order. Left out:
+# next_pattern and next_enemy, which the probe found worth +0.001 and +0.0000
+# explained variance (docs/superpowers/plans/2026-11-01-critic-probe-result.txt).
+# The engine still produces them; the critic just does not look.
+V3_CRITIC_GROUPS = ("clock", "timers", "active_pattern", "nearest_enemies")
 
-def action_offsets(action_repeat=4, frames=SAMPLE_FRAMES):
+
+def action_offsets(action_repeat=4, frames=SAMPLE_FRAMES, holds=None):
     """Where each action moves the player, in pixels, starting from rest.
 
     Taken from the cart's own movement model, which gradient.py verified
-    against the live game to 0.000px over 24 frames. Starting from rest is an
-    approximation -- the real player carries velocity -- but it keeps the
-    offsets a constant, so the controller stays a lookup rather than a
-    simulation inside the forward pass.
+    against the live game to 0.000px over 24 frames. Starting from rest keeps
+    the offsets a constant, so the controller stays a lookup rather than a
+    simulation inside the forward pass; v3 adds the carried velocity back as a
+    second constant (see velocity_carry).
+
+    `holds` gives each sample its own hold; by default every sample holds for
+    action_repeat frames.
     """
-    horizon = max(frames)
+    holds = (action_repeat,) * len(frames) if holds is None else holds
     # Run from the middle of the arena and read the result as a delta.
     # simulate_player clamps to 2..125, so starting at the origin pins every
     # leftward and upward action against the wall -- which made "left" and
@@ -123,10 +145,23 @@ def action_offsets(action_repeat=4, frames=SAMPLE_FRAMES):
     origin = ARENA_SIZE / 2.0
     offsets = np.empty((N_ACTIONS, len(frames), 2), dtype=np.float32)
     for action, mask in enumerate(ACTION_MASKS):
-        path = simulate_player(origin, origin, 0.0, 0.0, mask, horizon,
-                               held=action_repeat)
-        offsets[action] = [path[frame - 1] - origin for frame in frames]
+        for sample, (frame, held) in enumerate(zip(frames, holds)):
+            path = simulate_player(origin, origin, 0.0, 0.0, mask, frame, held=held)
+            offsets[action, sample] = path[frame - 1] - origin
     return offsets
+
+
+def velocity_carry(frames=SAMPLE_FRAMES):
+    """How far one pixel a frame of carried velocity has moved the player by each frame.
+
+    Movement is linear in the starting velocity until a wall, so a player
+    moving at v lands at its at-rest offset plus v times this: 4(1 - 0.8^t)
+    for the cart's friction. Read off simulate_player rather than written as
+    that formula, so it cannot disagree with the movement model.
+    """
+    origin = ARENA_SIZE / 2.0
+    path = simulate_player(origin, origin, 1.0, 0.0, 0, max(frames))
+    return np.array([path[frame - 1, 0] - origin for frame in frames], dtype=np.float32)
 
 
 def _sample_weights(frames=SAMPLE_FRAMES, decay=SAMPLE_DECAY):
@@ -494,16 +529,34 @@ class VelocityFlowV2Extractor(VelocityFlowExtractor):
 
 
 class VelocityFlowV3Extractor(VelocityFlowV2Extractor):
-    """v2's actor, with a critic that also reads hidden game state.
+    """v2's trunk, read where each action actually takes the player, with a
+    critic that also reads hidden game state.
 
     The observation is the actor's OBSERVATION_SIZE values followed by
     CRITIC_FEATURE_COUNT the actor must never see. The actor path slices the
     first block off before anything else: policy_inputs reads the velocity
     planes to the end of the vector, so the extra columns would otherwise be
-    folded into them.
+    folded into them. The critic reads only `critic_groups` of them,
+    V3_CRITIC_GROUPS by default, recorded in the checkpoint so the columns a
+    network was trained on are the ones it is given back.
+
+    Two of v3's three actor changes live here, each a flag so an ablation can
+    isolate it. (The third, centred logits, is the policy's: see
+    VelocityFlowV3Policy.)
+
+    * carry_velocity: the read points include the player's own momentum. At
+      the terminal 2.5px a frame the coast alone is 10px, as far as v2's whole
+      action moves it, so from rest the controller read each action's danger
+      at the point the action to one side of it actually lands on.
+    * graduated_holds: each slice holds its button for SLICE_HOLDS frames, so
+      the six slices read six distances instead of four at one.
+
+    With both off, the actor is v2's.
     """
 
-    def __init__(self, observation_space, action_repeat=4, critic_layout=None):
+    def __init__(self, observation_space, action_repeat=4, critic_layout=None,
+                 carry_velocity=True, graduated_holds=True,
+                 critic_groups=V3_CRITIC_GROUPS):
         # The layout the checkpoint was trained with; None for a fresh network.
         # Same width with a different meaning would otherwise load silently.
         if critic_layout is not None and critic_layout != current_layout():
@@ -516,22 +569,54 @@ class VelocityFlowV3Extractor(VelocityFlowV2Extractor):
                 f"VelocityFlowV3Extractor expects {WIDE_OBSERVATION_SIZE} values "
                 f"(the actor's and the critic's), got {observation_space.shape}; "
                 "build the environment with critic_features=True")
+        unknown = [name for name in critic_groups if name not in CRITIC_GROUPS]
+        if unknown:
+            raise ValueError(f"no critic group {', '.join(unknown)}; the engine "
+                             f"produces {', '.join(CRITIC_GROUPS)}")
         super().__init__(observation_space, action_repeat=action_repeat,
                          half_resolution=True)
+        self.critic_groups = list(critic_groups)
+        columns = [column for name in critic_groups
+                   for column in range(*CRITIC_GROUPS[name])]
+        self.critic_width = len(columns)
+        self.register_buffer(
+            "critic_index",
+            torch.as_tensor(columns, dtype=torch.long) + OBSERVATION_SIZE,
+            persistent=False)
         first = self.value_net[0]
-        wide = nn.Linear(first.in_features + CRITIC_FEATURE_COUNT, first.out_features)
+        wide = nn.Linear(first.in_features + self.critic_width, first.out_features)
         with torch.no_grad():
-            # Zero, so a network starts out computing exactly what v2's does
+            # Zero, so the critic starts out computing exactly what v2's does
             # and learns to use the new columns rather than being thrown by them.
             wide.weight.zero_()
             wide.weight[:, :first.in_features] = first.weight
             wide.bias.copy_(first.bias)
         self.value_net[0] = wide
 
+        self.carry_velocity = carry_velocity
+        self.graduated_holds = graduated_holds
+        if graduated_holds:
+            # offsets is a persistent buffer, so a checkpoint carries whichever
+            # set it was trained with.
+            with torch.no_grad():
+                self.offsets.copy_(torch.as_tensor(action_offsets(holds=SLICE_HOLDS)))
+        if carry_velocity:
+            # Not persistent: a derived constant, like the trunk maps.
+            self.register_buffer("carry", torch.as_tensor(velocity_carry()),
+                                 persistent=False)
+
+    def _read_points(self, coordinates):
+        points = super()._read_points(coordinates)
+        if not self.carry_velocity:
+            return points
+        velocity = coordinates[:, 2:4] * VELOCITY_SCALE
+        return points + velocity[:, None, None, :] * self.carry[None, None, :, None]
+
     def _danger_and_value_inputs(self, observations):
         danger, inputs = super()._danger_and_value_inputs(
             observations[:, :OBSERVATION_SIZE])
-        return danger, torch.cat((inputs, observations[:, OBSERVATION_SIZE:]), dim=1)
+        critic = observations.index_select(1, self.critic_index)
+        return danger, torch.cat((inputs, critic), dim=1)
 
     def field(self, observations):
         return super().field(observations[:, :OBSERVATION_SIZE])
@@ -575,6 +660,93 @@ class _FieldLogits(nn.Module):
         return danger / spread * self.log_temperature.exp()
 
 
+class _CentredFieldLogits(nn.Module):
+    """v3's logits: centred danger over one scale shared by every state.
+
+    _FieldLogits divides each state by its own spread, which pins every
+    state's logits to unit variance -- an empty arena included. The most
+    uniform policy that constraint allows puts one action 2.67 sigma below the
+    other eight, so a calm state could only look calm by sacrificing an
+    action, and v2 trained one diagonal into exactly that role. Here a flat
+    field gives flat logits, and the field's own contrast is the per-state
+    temperature.
+
+    The scale is still taken out, so a field that drifts large does not
+    silently sharpen the policy, but as one number: the RMS of the centred
+    danger across the states of past updates. It holds still for a whole
+    update -- the rollout's log-probabilities and every epoch's are taken
+    under one scale, or the ratio starts off 1 and approx_kl measures the
+    scale rather than the policy. observe() gathers what the update sees and
+    commit() folds it in once the update is over.
+    """
+
+    EPSILON = 1e-3
+    # Weight of one update's statistics in the running mean square.
+    MOMENTUM = 0.2
+
+    def __init__(self, temperature=INITIAL_TEMPERATURE, cap=LOGIT_CAP):
+        super().__init__()
+        self.cap = cap
+        self.log_temperature = nn.Parameter(torch.tensor(float(np.log(temperature))))
+        # Persistent: a reloaded policy must read its field at the scale it
+        # was trained at.
+        self.register_buffer("rms", torch.ones(()))
+        self.register_buffer("rms_ready", torch.zeros((), dtype=torch.bool))
+        self.register_buffer("pending_sum", torch.zeros(()), persistent=False)
+        # Host-side, so neither check below costs a device sync.
+        self._pending_count = 0
+        self._ready = None
+
+    @staticmethod
+    def _centred(latent):
+        danger = latent[:, :N_ACTIONS]
+        return danger - danger.mean(dim=1, keepdim=True)
+
+    def forward(self, latent):
+        scaled = (self._centred(latent) / self.rms.clamp_min(self.EPSILON)
+                  * self.log_temperature.exp())
+        return self.cap * torch.tanh(scaled / self.cap)
+
+    def ready(self):
+        if self._ready is None:
+            self._ready = bool(self.rms_ready)
+        return self._ready
+
+    def initialise(self, latent):
+        """Take the scale from one batch: the first rollout's first step."""
+        with torch.no_grad():
+            self.rms.copy_(self._centred(latent).square().mean().sqrt())
+            self.rms_ready.fill_(True)
+        self._ready = True
+
+    def observe(self, latent):
+        with torch.no_grad():
+            self.pending_sum += self._centred(latent).square().mean(dim=1).sum()
+        self._pending_count += latent.shape[0]
+
+    def pending(self):
+        return self._pending_count > 0
+
+    def commit(self):
+        if not self._pending_count:
+            return
+        with torch.no_grad():
+            seen = self.pending_sum / self._pending_count
+            if self.ready():
+                seen = torch.lerp(self.rms.square(), seen, self.MOMENTUM)
+            self.rms.copy_(seen.sqrt())
+            self.rms_ready.fill_(True)
+            self.pending_sum.zero_()
+        self._pending_count = 0
+        self._ready = True
+
+    def _load_from_state_dict(self, *args, **kwargs):
+        super()._load_from_state_dict(*args, **kwargs)
+        self._ready = None
+        self._pending_count = 0
+        self.pending_sum.zero_()
+
+
 class VelocityFlowPolicy(ActorCriticPolicy):
     """ActorCritic whose logits come from the field, not from a head.
 
@@ -587,13 +759,16 @@ class VelocityFlowPolicy(ActorCriticPolicy):
 
     def _build(self, lr_schedule):
         super()._build(lr_schedule)
-        self.action_net = _FieldLogits()
+        self.action_net = self._field_logits()
         # The optimizer was built over the head that was just replaced.
         self.optimizer = self.optimizer_class(
             self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs
         )
         speed.configure_cudnn()
         self._graphs = speed.GraphCache()
+
+    def _field_logits(self):
+        return _FieldLogits()
 
     def __getstate__(self):
         # Captured graphs belong to one process and one device.
@@ -663,18 +838,41 @@ class VelocityFlowPolicy(ActorCriticPolicy):
 
 
 class VelocityFlowV3Policy(VelocityFlowPolicy):
-    """The v2 policy, which also takes the actor-only observation.
+    """The v2 policy with v3's centred logits, taking wide or narrow observations.
 
     Evaluation and the watch tools hold observations without the critic's
     columns, so they are padded with zeros here, where SB3 checks the shape.
+
+    With centred_logits=False the head is v2's _FieldLogits, so an ablation
+    that keeps only the extractor's changes trains everything else as v2's
+    head does. With it on, the entropy bonus is computed from the logits of a
+    detached field: the same number, but its gradient reaches the sharpness
+    alone. The bonus then sets how sharp the policy is without rewarding the
+    field for flattening the danger it reports -- which, with nothing
+    standardising the field per state any more, would be the cheap way to
+    raise entropy.
     """
+
+    def __init__(self, *args, centred_logits=True, **kwargs):
+        # Before the base constructor, which calls _build.
+        self.centred_logits = centred_logits
+        super().__init__(*args, **kwargs)
 
     def _build(self, lr_schedule):
         super()._build(lr_schedule)
         # SB3 re-initialises every Linear in the extractor once it is built,
         # which undoes the zeros the extractor started the new columns with.
-        with torch.no_grad():
-            self.features_extractor.value_net[0].weight[:, -CRITIC_FEATURE_COUNT:] = 0
+        width = self.features_extractor.critic_width
+        if width:
+            with torch.no_grad():
+                self.features_extractor.value_net[0].weight[:, -width:] = 0
+
+    def _get_constructor_parameters(self):
+        return {**super()._get_constructor_parameters(),
+                "centred_logits": self.centred_logits}
+
+    def _field_logits(self):
+        return _CentredFieldLogits() if self.centred_logits else _FieldLogits()
 
     def obs_to_tensor(self, observation):
         if (isinstance(observation, np.ndarray)
@@ -682,3 +880,42 @@ class VelocityFlowV3Policy(VelocityFlowPolicy):
             pad = [(0, 0)] * (observation.ndim - 1) + [(0, CRITIC_FEATURE_COUNT)]
             observation = np.pad(observation, pad)
         return super().obs_to_tensor(observation)
+
+    def end_update(self):
+        """Fold the update's statistics into the logit scale.
+
+        DashboardPPO calls this once train() returns, so the checkpoint saved
+        after an update and the rollout that follows it read the same scale.
+        """
+        if self.centred_logits:
+            self.action_net.commit()
+
+    def forward(self, obs, deterministic=False):
+        if self.centred_logits:
+            head = self.action_net
+            # A plain PPO never calls end_update; catch its update up here,
+            # before this rollout's first log-probability is taken.
+            if head.pending():
+                head.commit()
+            if not head.ready():
+                with torch.no_grad():
+                    head.initialise(self.mlp_extractor.forward_actor(
+                        self.extract_features(obs)))
+        return super().forward(obs, deterministic)
+
+    def evaluate_actions(self, obs, actions):
+        if not self.centred_logits:
+            return super().evaluate_actions(obs, actions)
+        features = self.extract_features(obs)
+        latent_pi, latent_vf = self.mlp_extractor(features)
+        values = self.value_net(latent_vf)
+        head = self.action_net
+        head.observe(latent_pi)
+        log_pmf = head(latent_pi)
+        log_pmf = log_pmf - log_pmf.logsumexp(dim=-1, keepdim=True)
+        log_prob = self._log_prob(log_pmf, actions)
+        bonus = head(latent_pi.detach())
+        bonus = bonus - bonus.logsumexp(dim=-1, keepdim=True)
+        clamped = torch.clamp(bonus, min=torch.finfo(bonus.dtype).min)
+        entropy = -(clamped * F.softmax(bonus, dim=-1)).sum(-1)
+        return values, log_prob, entropy

@@ -236,6 +236,7 @@ def main(argv=None):
                 gae_lambda=0.95,
                 clip_range=0.2,
                 ent_coef=settings["ent_coef"],
+                max_grad_norm=settings["max_grad_norm"],
                 verbose=1,
                 tensorboard_log=str(args.logs_dir),
                 seed=args.seed,
