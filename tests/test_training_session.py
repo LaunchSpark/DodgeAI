@@ -311,6 +311,56 @@ def test_watch_launches_immediately_from_an_existing_snapshot(tmp_path, monkeypa
     assert commands[0][commands[0].index("--live-dir") + 1] == str(session.live_watch_dir)
 
 
+def test_watch_heuristic_opens_the_bot_with_the_session_game_settings(tmp_path, monkeypatch):
+    from dodge.training import PPOTrainingSession
+
+    session = PPOTrainingSession(model_dir=tmp_path, autostart=False, device="cpu")
+    commands = []
+    monkeypatch.setattr("dodge.training.subprocess.Popen",
+                        lambda command, cwd: commands.append(command) or _Alive())
+
+    assert session.watch_heuristic("space") is True, "no model is needed"
+    command = commands[0]
+    assert command[1].endswith("watch_heuristic.py") and command[2] == "space"
+    difficulty = {1: "easy", 2: "normal", 3: "hard"}[session.env_kwargs["difficulty"]]
+    assert command[command.index("--difficulty") + 1] == difficulty
+    assert "--action-repeat" not in command, "heuristics decide every frame"
+    assert "--overlay" not in command, "overlays start off"
+
+    assert session.watch_heuristic("taylor-m0", overlay=True) is True
+    assert commands[1][2] == "taylor-m0" and "--overlay" in commands[1]
+
+    with pytest.raises(ValueError):
+        session.watch_heuristic("nonexistent")
+    assert len(commands) == 2
+
+
+def test_every_heuristic_plays_a_game_from_lane_state():
+    import numpy as np
+    from dodge.env import make_engine
+    from dodge.heuristics import BOTS
+
+    for _, make_bot in BOTS.values():
+        engine = make_engine(step_frames=1, execution="serial", difficulty=3,
+                             patterns=True, powerups=True)
+        engine.reset_ml_batch(np.array([1_000_000], dtype=np.uint32))
+        bot = make_bot()
+        for _ in range(120):
+            state = engine.lane_state(0)
+            bot.observe(state)
+            action = bot.act(state)
+            assert 0 <= action <= 8
+            engine.step_ml_batch(np.array([action], dtype=np.uint8))
+        if hasattr(bot, "overlay"):
+            overlay = bot.overlay()
+            assert overlay.paths, "at least the bot's own plan"
+            for x0, y0, x1, y1, colour in overlay.boxes:
+                assert x0 <= x1 and y0 <= y1 and len(colour) == 3
+            for points, colour in overlay.paths:
+                assert len(points) >= 2 and all(len(p) == 2 for p in points)
+            assert overlay.field is None or overlay.field.ndim == 2
+
+
 def test_watch_with_no_snapshot_waits_for_the_next_safe_point(tmp_path, monkeypatch):
     from dodge.training import PPOTrainingSession
 

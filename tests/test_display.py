@@ -85,7 +85,7 @@ def test_the_colour_range_is_smoothed_across_frames(window):
     """Rescaling per frame makes the picture flash every time an enemy moves."""
     window.set_field(np.zeros((32, 32)))
     window.set_field(np.full((32, 32), 100.0))
-    _, high = window._field_range
+    high = window._field_range[-1]
     assert 0.0 < high < 100.0, "the range should lag, not snap"
 
 
@@ -96,3 +96,32 @@ def test_clearing_the_field_restores_the_plain_frame(window):
     assert window._field_rgb is None
     window.show(_frame())      # must not raise, and must take the plain path
     assert tuple(window.compose(_frame())[0, 0]) == PICO8[BACKGROUND_INDEX]
+
+
+def test_an_overlay_draws_its_boxes_and_paths_over_the_frame(window):
+    from dodge.overlay import Overlay
+    overlay = Overlay(boxes=[(10, 10, 20, 20, (255, 0, 77))],
+                      paths=[([(100, 5), (100, 120)], (255, 241, 232))])
+    window.show(_frame(), overlay)
+    # scale 2: the box's top-left corner and a point on the vertical path
+    assert tuple(window.window.get_at((20, 20)))[:3] == (255, 0, 77)
+    assert tuple(window.window.get_at((200, 100)))[:3] == (255, 241, 232)
+    assert tuple(window.window.get_at((2, 2)))[:3] == PICO8[BACKGROUND_INDEX], "nothing else drawn"
+
+
+def test_the_field_mean_takes_the_middle_colour(window):
+    """A field that is mostly high would otherwise be nearly all one colour."""
+    field = np.ones((32, 32))
+    field[0, :4] = 0.0                     # a few low cells; the mean is near 1
+    window.set_field(field)
+    low, middle, high = window._field_range
+    assert low == 0.0 and high == 1.0 and 0.99 < middle < 1.0
+    np.testing.assert_array_equal(window._field_rgb[0, 0], VIRIDIS[0])
+    np.testing.assert_array_equal(window._field_rgb[127, 127], VIRIDIS[-1])
+    rgb = colorize(np.array([0.5]), 0.0, 1.0)[0]
+    field2 = np.linspace(0.0, 1.0, 32 * 32).reshape(32, 32) ** 4   # mean 0.2
+    window._field_range = None
+    window.set_field(field2)
+    mean_cell = np.unravel_index(np.argmin(np.abs(field2 - field2.mean())), field2.shape)
+    row, column = mean_cell[0] * 4, mean_cell[1] * 4
+    assert np.abs(window._field_rgb[row, column].astype(int) - rgb.astype(int)).max() <= 12

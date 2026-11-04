@@ -1632,27 +1632,58 @@ class PPOTrainingSession:
             game_config = dict(self.env_kwargs)
             self.data.update = update
         project = Path(__file__).resolve().parents[1]
-        difficulty = {1: "easy", 2: "normal", 3: "hard"}[game_config["difficulty"]]
         command = [
             # Absolute: the watcher runs in the project directory, and the
             # model directory is relative to wherever the dashboard started.
             sys.executable, str(project / "watch_ppo.py"), str(Path(path).resolve()),
-            "--difficulty", difficulty,
+            *self._watch_game_flags(game_config),
             "--action-repeat", str(game_config["action_repeat"]),
-            "--spawn-rate-percent", str(game_config["spawn_rate_percent"]),
             "--update", str(update),
             "--current-update", str(update),
             "--live-dir", str(Path(self.live_watch_dir).resolve()),
             "--seed", str(secrets.randbelow(2**31 - 1)),
             "--model-name", model_name,
         ]
+        if not self._open_watcher(command, project):
+            return False
+        self.last_watch_label = f"{model_name} | Update {update}"
+        self._emit(SessionEvent("watch", True, f"Opening {self.last_watch_label}",
+                                path, update))
+        return True
+
+    def watch_heuristic(self, bot, overlay=False):
+        """Open a window of a hand-written bot playing under the current game settings,
+        starting with the bot's own overlay shown if `overlay`."""
+        from .heuristics import BOTS
+        if bot not in BOTS:
+            raise ValueError(f"Unknown heuristic {bot!r}")
+        with self.lock:
+            game_config = dict(self.env_kwargs)
+        project = Path(__file__).resolve().parents[1]
+        command = [sys.executable, str(project / "watch_heuristic.py"), bot,
+                   *self._watch_game_flags(game_config)]
+        if overlay:
+            command.append("--overlay")
+        if not self._open_watcher(command, project):
+            return False
+        self._emit(SessionEvent("watch", True, f"Opening {BOTS[bot][0]}"))
+        return True
+
+    @staticmethod
+    def _watch_game_flags(game_config):
+        difficulty = {1: "easy", 2: "normal", 3: "hard"}[game_config["difficulty"]]
+        flags = ["--difficulty", difficulty,
+                 "--spawn-rate-percent", str(game_config["spawn_rate_percent"])]
         if game_config["patterns"]:
-            command.append("--patterns")
-        command.append("--powerups" if game_config["powerups"] else "--no-powerups")
-        command.append("--normal-enemies" if game_config["normal_enemies"]
-                       else "--no-normal-enemies")
-        command.append("--kamikaze-enemies" if game_config["kamikaze_enemies"]
-                       else "--no-kamikaze-enemies")
+            flags.append("--patterns")
+        flags.append("--powerups" if game_config["powerups"] else "--no-powerups")
+        flags.append("--normal-enemies" if game_config["normal_enemies"]
+                     else "--no-normal-enemies")
+        flags.append("--kamikaze-enemies" if game_config["kamikaze_enemies"]
+                     else "--no-kamikaze-enemies")
+        return flags
+
+    def _open_watcher(self, command, project):
         try:
             process = subprocess.Popen(command, cwd=project)
         except OSError as error:
@@ -1660,9 +1691,6 @@ class PPOTrainingSession:
             return False
         with self.lock:
             self.watchers.append(process)
-        self.last_watch_label = f"{model_name} | Update {update}"
-        self._emit(SessionEvent("watch", True, f"Opening {self.last_watch_label}",
-                                path, update))
         return True
 
     def tick(self, dt):

@@ -420,6 +420,15 @@ def create_app(session):
     def watch():
         return act(session.watch_agent)
 
+    @app.get("/api/heuristics")
+    def get_heuristics():
+        from .heuristics import BOTS
+        return [{"name": name, "label": label} for name, (label, _) in BOTS.items()]
+
+    @app.post("/api/watch-heuristic")
+    def watch_heuristic(body: dict = Body(...)):
+        return act(session.watch_heuristic, str(body.get("bot", "")), bool(body.get("overlay")))
+
     @app.post("/api/save")
     def save(body: dict = Body(...)):
         return act(dashboard.save, str(body.get("name", "")))

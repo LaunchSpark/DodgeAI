@@ -284,4 +284,48 @@ export function EvaluateDialog({ state, trigger }: { state: State; trigger: Reac
   )
 }
 
+type Heuristic = { name: string; label: string }
+
+export function HeuristicDialog({ trigger }: { trigger: ReactNode }) {
+  const [open, setOpen] = useState(false)
+  const [bots, setBots] = useState<Heuristic[]>([])
+  const [bot, setBot] = useState("space")
+  const [overlay, setOverlay] = useState(false)
+  useEffect(() => {
+    if (open) get<Heuristic[]>("heuristics").then(setBots).catch(() => setBots([]))
+  }, [open])
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>{trigger}</DialogTrigger>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Watch a heuristic</DialogTitle>
+          <DialogDescription>
+            A hand-written bot plays in its own window with the current game settings, a new
+            random seed each game. Its overlay shows what the bot itself predicts and plans;
+            press O in the window to toggle it.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-2 py-2">
+          <Label>Bot</Label>
+          <ToggleGroup type="single" variant="outline" value={bot} onValueChange={(value) => value && setBot(value)}>
+            {bots.map((entry) => <ToggleGroupItem key={entry.name} value={entry.name}>{entry.label}</ToggleGroupItem>)}
+          </ToggleGroup>
+          <div className="mt-2 flex items-center justify-between gap-2 rounded-md border px-3 py-2">
+            <Label htmlFor="heuristic-overlay">Start with the overlay shown</Label>
+            <Switch id="heuristic-overlay" checked={overlay} onCheckedChange={setOverlay} />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
+          <Button onClick={async () => {
+            if (await run(() => post("watch-heuristic", { bot, overlay }))) setOpen(false)
+          }}>Watch</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 export { run }
