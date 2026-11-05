@@ -63,6 +63,25 @@ It opens <http://127.0.0.1:8765>, with the same controls as the window below
 Every chart has a table view. For frontend work, run `pnpm run dev` in `web/`
 alongside `dashboard.py`; it proxies `/api` to the server.
 
+### On a Colab GPU
+
+`colab_dashboard.py` runs the same dashboard on a Google Colab VM and serves it
+at <http://127.0.0.1:8766>. The Colab CLI does not run on Windows, so it runs
+in Docker; you need Docker Desktop and a `dodge-ai-3` checkout beside this one
+(the Linux engine is built from it on first use).
+
+    python colab_dashboard.py login                       # once
+    python colab_dashboard.py up --gpu T4 -- --envs 32    # options after -- go to dashboard.py
+    python colab_dashboard.py down                        # copy the models back, release the VM
+
+`up` copies the project to the VM, starts `dashboard.py` there and leaves a
+tunnel running in the `dodge-colab-tunnel` container. A fresh VM is seeded with
+`artifacts/models` and the settings files; the VM's models are copied back to
+`artifacts/colab/models` every ten minutes and by `pull` and `down`, because
+they are lost with the VM. Copy a checkpoint into `artifacts/models` to keep
+training it locally. `status` shows the VM's CPUs and GPU and `logs` the remote
+server's log. **Watch** opens a window, so it does nothing on the VM.
+
 ## Training dashboard
 
 Start PPO training in the Dodge dashboard window:

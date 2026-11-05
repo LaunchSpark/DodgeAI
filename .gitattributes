@@ -5,3 +5,6 @@
 # Pin them so a re-extract never shows up as a whitespace-only diff.
 *.p8 text eol=lf
 *.lua text eol=lf
+
+# Scripts that run inside the Colab container and on the VM.
+colab/*.sh text eol=lf
