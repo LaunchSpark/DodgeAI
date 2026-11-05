@@ -7,12 +7,15 @@ Each frame, for each of the 9 actions held for H frames:
      kamikaze slow-down), blasts growing, rectangles extrapolated;
   2. reject actions that collide;
   3. score the end position by "room": over a grid, how much sooner the player
-     can reach each cell than any threat can, summed.
+     can reach each cell than any threat can, summed;
+  4. add the value of any powerup the plan collects (they home like enemies and
+     are simulated the same way), and a pull toward powerups still out there
+     that sit where the player can get before any threat.
 No pattern-specific knowledge; no RNG.
 """
 import numpy as np
 
-from ..overlay import HAZARD, MUTED, PLAYER, THREAT, Overlay
+from ..overlay import HAZARD, MUTED, PICKUP, PLAYER, THREAT, Overlay
 
 
 ONE = 65536
@@ -36,6 +39,10 @@ CFG = dict(
     centre_guard=35,     # leave the anti-camping box once its timer passes this
     w_sweep=1.0,         # penalty for ending in a sweeping rect's path with little time to exit
     sweep_margin=30.0,   # frames of slack wanted between exiting the band and the rect arriving
+    # score for collecting a powerup during a safe plan: explode clears the screen,
+    # so it outweighs any difference in room; freeze and shrink only tip the balance
+    pickup_value={2: 2.0, 3: 0.8, 4: 0.5},
+    w_seek=0.5,          # share of that value for heading toward one in the safe zone
 )
 
 
@@ -153,24 +160,33 @@ class SpaceBot:
                 bounce.append((r["x"], r["y"], r["w"], r["h"], r["dx"], r["dy"], d[0], d[1], lit_from))
         cap = self.cfg.get("bounce_cap", 0.6)
 
-        # -- homing enemies, simulated jointly with each candidate path --------
-        if lethal:
-            n = len(lethal)
-            ex = np.tile([e["x"] for e in lethal], (9, 1)).astype(float)
-            ey = np.tile([e["y"] for e in lethal], (9, 1)).astype(float)
-            vx = np.tile([e["vx"] for e in lethal], (9, 1)).astype(float)
-            vy = np.tile([e["vy"] for e in lethal], (9, 1)).astype(float)
-            sp = np.tile([e["spd"] for e in lethal], (9, 1)).astype(float)
-            es = np.array([e["s"] for e in lethal], dtype=float)[None]
-            kam = np.array([e["p"] == 1 for e in lethal])[None]
+        # -- everything that homes, simulated jointly with each candidate path.
+        # Powerups (p >= 2) steer exactly like enemies, bounce the same way, and
+        # die with whatever they touch; the player collects one on contact
+        # (collide() in the cart): explode removes every other non-blast entity,
+        # kamikazes leaving blasts; freeze slows everything to 0.4.
+        movers = [e for e in s["enemies"] if e["p"] != -1]
+        pers = np.array([e["p"] for e in movers], dtype=int)
+        got_t = np.full((9, len(movers)), np.inf)     # frame each plan collects each powerup
+        if movers:
+            n = len(movers)
+            ex = np.tile([e["x"] for e in movers], (9, 1)).astype(float)
+            ey = np.tile([e["y"] for e in movers], (9, 1)).astype(float)
+            vx = np.tile([e["vx"] for e in movers], (9, 1)).astype(float)
+            vy = np.tile([e["vy"] for e in movers], (9, 1)).astype(float)
+            sp = np.tile([e["spd"] for e in movers], (9, 1)).astype(float)
+            pw = (pers >= 2)[None]
+            kam = (pers == 1)[None]
+            es = np.where(pw[0], 4.0, [e["s"] for e in movers])[None]
+            lo = np.where(pw, -4.0, 0.0)            # each box is [x + lo, x + s]
             inside = (((ex >= 1) & (ex <= 128)) | ((ex < 1) & (vx < 0)) | ((ex > 128) & (vx > 0)))
             half = size - 1
             alive = np.ones((9, n), dtype=bool)
+            cleared = np.zeros((9, n), dtype=bool)  # removed by the plan's own pickup
             born = np.full((9, n), np.inf)          # frame a kamikaze turns into a blast
             bcx = np.zeros((9, n))
             bcy = np.zeros((9, n))
-            # explode powerups (personality 2): picking one up detonates every kamikaze
-            bombs = [e for e in s["enemies"] if e["p"] == 2]
+            stp = np.full((9, 1), step)             # enemy step; a freeze pickup slows it
             for t in range(0, H + 1):
                 px = paths[:, t, 0][:, None]
                 py = paths[:, t, 1][:, None]
@@ -181,8 +197,8 @@ class SpaceBot:
                         if t - 1 < lit_from:
                             continue
                         rx_t, ry_t = rx + mdx * (t - 1), ry + mdy * (t - 1)
-                        hitr = ((ex + vx < rx_t + rw) & (ex + es > rx_t + rdx)
-                                & (ey + es > ry_t + rdy) & (ey + vy < ry_t + rh))
+                        hitr = ((ex + vx - 3 * pw < rx_t + rw) & (ex + es > rx_t + rdx)
+                                & (ey + es > ry_t + rdy) & (ey + vy - 3 * pw < ry_t + rh))
                         if not hitr.any():
                             continue
                         nvx = np.where(ex + vx < rx_t, -np.maximum(np.abs(vx), cap),
@@ -200,34 +216,37 @@ class SpaceBot:
                                   np.where(inside & (ey <= -2), np.abs(vy), vy))
                     vx = np.where(inside & (ex >= 129 - es), -np.abs(vx),
                                   np.where(inside & (ex <= -2), np.abs(vx), vx))
-                    ex = ex + vx * step * sp
-                    ey = ey + vy * step * sp
+                    ex = ex + vx * stp * sp
+                    ey = ey + vy * stp * sp
                     inside |= (ex >= 1) & (ex <= 128)
-                    # enemy-enemy contact: both die; a kamikaze leaves a blast
+                ax0, ay0, ax1, ay1 = ex + lo, ey + lo, ex + es, ey + es
+                if t > 0:
+                    # entity-entity contact: both die; a kamikaze leaves a blast
                     both = (alive & inside)
-                    touch = ((ex[:, :, None] + es[:, :, None] > ex[:, None, :])
-                             & (ey[:, :, None] + es[:, :, None] > ey[:, None, :])
-                             & (ex[:, :, None] < ex[:, None, :] + es[:, None, :])
-                             & (ey[:, :, None] < ey[:, None, :] + es[:, None, :])
+                    touch = ((ax1[:, :, None] > ax0[:, None, :]) & (ay1[:, :, None] > ay0[:, None, :])
+                             & (ax0[:, :, None] < ax1[:, None, :]) & (ay0[:, :, None] < ay1[:, None, :])
                              & both[:, :, None] & both[:, None, :])
                     touch[:, np.arange(n), np.arange(n)] = False
                     dying = touch.any(axis=2)
-                    # picking up an explode powerup this frame detonates every kamikaze
-                    for b in bombs:
-                        bx = b["x"] + b["vx"] * b["spd"] * step * t
-                        by = b["y"] + b["vy"] * b["spd"] * step * t
-                        got = ((px[:, 0] + size > bx - 4) & (py[:, 0] + size > by - 4)
-                               & (px[:, 0] - size < bx + 4) & (py[:, 0] - size < by + 4))
-                        dying |= got[:, None] & kam & alive
+                    # the player collecting a powerup this frame
+                    got = ((px + size > ax0) & (py + size > ay0)
+                           & (px - size < ax1) & (py - size < ay1) & pw & alive)
+                    got_t = np.where(got, t, got_t)
+                    boom = (got & (pers == 2)).any(axis=1, keepdims=True)
+                    froze = (got & (pers == 3)).any(axis=1, keepdims=True)
+                    stp = np.where(froze, s["spd"] * 0.4, stp)
+                    cleared |= ((boom | got) & alive)
+                    dying |= cleared & alive
                     newly = dying & kam & np.isinf(born)
                     bcx = np.where(newly, ex + es / 2, bcx)
                     bcy = np.where(newly, ey + es / 2, bcy)
                     born = np.where(newly, t, born)
                     alive &= ~dying
-                touching = ((px + half > ex) & (py + half > ey)
-                            & (px - half < ex + es) & (py - half < ey + es))
-                # pessimistic: predicted enemy-enemy kills are not relied on
-                hit_p = np.where(touching.any(axis=1) & (hit_p > H), t, hit_p)
+                touching = ((px + half > ax0) & (py + half > ay0)
+                            & (px - half < ax1) & (py - half < ay1) & ~pw)
+                # pessimistic: predicted enemy-enemy kills are not relied on, but
+                # what the plan's own pickup removes is
+                hit_p = np.where((touching & ~cleared).any(axis=1) & (hit_p > H), t, hit_p)
                 over = (touching & alive).any(axis=1)
                 hb = np.clip((t - born) * s["frz"], 0, 30) / 2      # blast half-size
                 live_b = np.isfinite(born) & (born < t)
@@ -235,19 +254,20 @@ class SpaceBot:
                          & (px - half < bcx + hb) & (py - half < bcy + hb) & live_b).any(axis=1)
                 hit_t = np.where(over & (hit_t > H), t, hit_t)
                 hit_p = np.minimum(hit_p, hit_t)
-                clr = gap(px - half, py - half, px + half, py + half, ex, ey, ex + es, ey + es)
-                clr = np.where(alive, clr, 1e9)
+                clr = gap(px - half, py - half, px + half, py + half, ax0, ay0, ax1, ay1)
+                clr = np.where(alive & ~pw, clr, 1e9)
                 bclr = gap(px - half, py - half, px + half, py + half,
                            bcx - 15, bcy - 15, bcx + 15, bcy + 15)
                 clr = np.minimum(clr, np.where(np.isfinite(born), bclr, 1e9))
                 min_clear = np.minimum(min_clear, clr.min(axis=1))
-                traj.append((ex + es / 2, ey + es / 2))
-            sizes = es[0]
+                traj.append(((ax0 + ax1) / 2, (ay0 + ay1) / 2))
+            sizes = (es - lo)[0]
             # a kamikaze can become a 30-wide blast: give it 15 extra reach in the room map
             es_reach = np.where(kam, es + 30, es) * np.ones_like(ex)
-            ex_r = np.where(alive, np.where(kam, ex - 15, ex), 1e6)   # dead: far away
-            ey_r = np.where(alive, np.where(kam, ey - 15, ey), 1e6)
-            end_enemies = (ex_r, ey_r, vx, vy, sp, es_reach)
+            threat = alive & ~pw
+            ex_r = np.where(threat, np.where(kam, ex - 15, ex), 1e6)   # dead or powerup: far away
+            ey_r = np.where(threat, np.where(kam, ey - 15, ey), 1e6)
+            end_enemies = (ex_r, ey_r, vx, vy, sp, es_reach) if threat.any() else None
             # blasts born during the plan sit where they were born, full size
             for k in np.flatnonzero(np.isfinite(born).any(axis=0)):
                 a = int(np.argmax(np.isfinite(born[:, k])))
@@ -314,6 +334,9 @@ class SpaceBot:
         # -- room at the end of each path --------------------------------------
         room = self._room(paths[:, -1], size, step, end_enemies, static_boxes + room_extra, H)
         score = room + cfg["w_clear"] * np.minimum(min_clear, cfg["clear_cap"]) / cfg["clear_cap"]
+        if movers and (pers >= 2).any():
+            score = score + self._pickup_bonus(s, pers, got_t, alive, ex, ey, paths[:, -1], size,
+                                               step, end_enemies, static_boxes + room_extra, H)
         if sweepers:
             score = score - cfg["w_sweep"] * self._sweep_risk(paths[:, -1], sweepers, H)
 
@@ -331,7 +354,7 @@ class SpaceBot:
         self.last = (float(hit_t[best]), float(room[best]), len(lethal), float(hit_p[best]),
                      hit_p.copy(), hit_t.copy())
         self._decision = dict(best=best, path=paths[best], traj=traj, sizes=sizes,
-                              alive=None if alive is None else alive[best],
+                              alive=None if alive is None else alive[best], kinds=pers,
                               boxes=np.array(static_boxes) if static_boxes else None, H=H,
                               # the room map's inputs for the chosen plan, redrawn finer on demand
                               room=(paths[best:best + 1, -1], size, step,
@@ -360,7 +383,8 @@ class SpaceBot:
             best = d["best"]
             for k, s in enumerate(d["sizes"]):
                 points = [(cx[best, k], cy[best, k]) for cx, cy in d["traj"]]
-                colour = THREAT if d["alive"][k] else MUTED
+                colour = (MUTED if not d["alive"][k]
+                          else PICKUP if d["kinds"][k] >= 2 else THREAT)
                 out.paths.append((points, colour))
                 x, y = points[-1]
                 out.boxes.append((x - s / 2, y - s / 2, x + s / 2, y + s / 2, colour))
@@ -376,6 +400,30 @@ class SpaceBot:
                     out.paths.append(([((a0 + a1) / 2, (b0 + b1) / 2),
                                        ((x0 + x1) / 2, (y0 + y1) / 2)], HAZARD))
         return out
+
+    def _pickup_bonus(self, s, pers, got_t, alive, ex, ey, ends, size, step, enemies, boxes, H):
+        """Score for powerups, per plan. A plan that collects one gets its value
+        (a little more the sooner). Collision checks rank first, so this only
+        decides between plans that are already safe. Past the plan, a powerup still
+        out there pulls the player toward it if it sits in the safe zone: a point
+        the player reaches before any threat does."""
+        cfg = self.cfg
+        value = np.array([cfg["pickup_value"].get(int(p), 0.0) for p in pers])
+        if s["frz"] < 1:
+            value[pers == 3] *= 0.5     # already frozen: it only restarts the timer
+        if s["size"] < 4:
+            value[pers == 4] *= 0.5     # already small: likewise
+        got = np.isfinite(got_t)
+        bonus = (value[None] * np.where(got, 1 - 0.25 * np.where(got, got_t, 0) / H, 0.0)).sum(axis=1)
+        k = np.flatnonzero(pers >= 2)
+        qx, qy = ex[:, k], ey[:, k]                         # (9, m) powerup centres at plan end
+        m = len(k)
+        margin = self._room_map(ends, size, step, enemies, boxes, H, qx.ravel(), qy.ravel(),
+                                margin=True).reshape(9, 9, m)[np.arange(9), np.arange(9)]
+        t_player = np.maximum(np.abs(qx - ends[:, 0:1]), np.abs(qy - ends[:, 1:2])) / 2.5
+        near = np.clip(1 - t_player / cfg["room_tmax"], 0.0, 1.0)
+        out_there = alive[:, k] & (margin > 0)
+        return bonus + cfg["w_seek"] * np.where(out_there, value[k][None] * near, 0.0).sum(axis=1)
 
     def _sweep_risk(self, ends, sweepers, H):
         """A rect sweeping across the screen can only be escaped sideways, out of its
