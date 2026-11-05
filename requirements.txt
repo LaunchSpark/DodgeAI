@@ -2,3 +2,5 @@ pygame>=2.5
 Pillow>=10.0
 psutil>=5.9
 pytest>=8.0
+# for --record in watch_heuristic.py and for render_run.py
+imageio[ffmpeg]>=2.30
