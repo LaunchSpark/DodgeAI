@@ -274,6 +274,8 @@ def test_seeded_cuda_model_does_not_force_deterministic_cudnn():
 
     if speed.DETERMINISTIC_CUDNN:
         pytest.skip("DODGE_DETERMINISTIC_CUDNN is set")
+    if not policy_parity.CHECKPOINT.exists():
+        pytest.skip("velocity-flow-v2-latest.zip is not present")
     PPO.load(policy_parity.CHECKPOINT, device="cuda", seed=0)
     assert not torch.backends.cudnn.deterministic
     assert torch.backends.cudnn.benchmark
