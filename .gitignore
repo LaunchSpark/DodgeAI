@@ -29,3 +29,16 @@ game-config.json
 
 # Brainstorm and plan-execution scratch from the superpowers tools.
 .superpowers/
+
+# The Training panel's schedule, likewise per-user. Defaults live in
+# dodge/schedule.py, and a missing file simply uses them.
+training.json
+
+# Outputs: videos and saved runs from watch_heuristic.py/render_run.py, and
+# reports exported at the top level.
+recordings/
+/*.pdf
+
+# Claude Code's per-user settings and its worktrees.
+.claude/settings.local.json
+.claude/worktrees/
