@@ -15,6 +15,8 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Separator } from "@/components/ui/separator"
 import { Slider } from "@/components/ui/slider"
 import { Switch } from "@/components/ui/switch"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
@@ -148,6 +150,62 @@ function trainingValue(name: string, value: number) {
   return String(value)
 }
 
+function flagDefaults(state: State, architecture: string) {
+  return Object.fromEntries((state.new_model.actor_flags[architecture] ?? [])
+    .map((flag) => [flag.name, flag.default]))
+}
+
+/** Write an untrained checkpoint and switch training to it, as loading one does. */
+function NewModelSection({ state, onStarted }: { state: State; onStarted: () => void }) {
+  const first = state.new_model.architectures[0] ?? ""
+  const [architecture, setArchitecture] = useState(first)
+  const [flags, setFlags] = useState(() => flagDefaults(state, first))
+  const [name, setName] = useState(first)
+
+  const choose = (next: string) => {
+    setArchitecture(next)
+    setFlags(flagDefaults(state, next))
+    setName(next)
+  }
+  const start = async () => {
+    if (await run(() => post("new-model", { architecture, name, flags }), `Starting ${name}`))
+      onStarted()
+  }
+  return (
+    <div className="grid gap-4">
+      <div>
+        <h3 className="text-sm font-medium">Start a new model</h3>
+        <p className="text-xs text-muted-foreground">An untrained checkpoint, loaded in place of the live policy.</p>
+      </div>
+      <div className="grid gap-2">
+        <Label htmlFor="new-model-architecture">Architecture</Label>
+        <Select value={architecture} onValueChange={choose}>
+          <SelectTrigger id="new-model-architecture" className="w-full"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            {state.new_model.architectures.map((option) => (
+              <SelectItem key={option} value={option}>{option}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      {(state.new_model.actor_flags[architecture] ?? []).map((flag) => (
+        <div key={flag.name} className="flex items-center justify-between gap-4">
+          <div className="grid gap-1">
+            <Label htmlFor={`new-model-${flag.name}`}>{flag.label}</Label>
+            <p className="text-xs text-muted-foreground">{flag.hint}</p>
+          </div>
+          <Switch id={`new-model-${flag.name}`} checked={Boolean(flags[flag.name])}
+            onCheckedChange={(checked) => setFlags({ ...flags, [flag.name]: checked })} />
+        </div>
+      ))}
+      <form className="flex gap-2" onSubmit={(event) => { event.preventDefault(); start() }}>
+        <Input value={name} onChange={(event) => setName(event.target.value)} aria-label="New model name" />
+        <Button type="submit" variant="outline" disabled={!architecture || !name.trim()}>Start</Button>
+      </form>
+    </div>
+  )
+}
+
 export function TrainingDialog({ state, trigger }: { state: State; trigger: ReactNode }) {
   const [open, setOpen] = useState(false)
   const [draft, setDraft] = useState(state.training)
@@ -164,7 +222,7 @@ export function TrainingDialog({ state, trigger }: { state: State; trigger: Reac
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>{trigger}</DialogTrigger>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Training schedule</DialogTitle>
           <DialogDescription>
@@ -191,6 +249,9 @@ export function TrainingDialog({ state, trigger }: { state: State; trigger: Reac
           <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
           <Button onClick={apply}>Save</Button>
         </DialogFooter>
+        <Separator />
+        {/* Mounted only while open, so each opening starts from the defaults. */}
+        {open && <NewModelSection state={state} onStarted={() => setOpen(false)} />}
       </DialogContent>
     </Dialog>
   )

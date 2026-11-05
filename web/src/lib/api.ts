@@ -143,6 +143,13 @@ export interface TrainingStatus {
   last?: { update: number; mean: number; q1: number; promoted: boolean }
 }
 
+export interface ActorFlag {
+  name: string
+  label: string
+  hint: string
+  default: boolean
+}
+
 export interface State {
   status: string
   model_name: string
@@ -165,6 +172,8 @@ export interface State {
   training_applied: boolean
   training_controls: Slider[]
   training_status: TrainingStatus
+  /** What a new model can be started as; architectures without flags are absent from actor_flags. */
+  new_model: { architectures: string[]; actor_flags: Record<string, ActorFlag[]> }
   training_figures: Figures | null
   evaluation: EvaluationState
   death_paths?: DeathPathsState
