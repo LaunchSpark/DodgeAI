@@ -35,9 +35,11 @@ PAPER_EVAL_STOP = 1_010_000
 
 # The retention gate's fixed development cohort: the first DEV_COHORT_SIZE
 # seeds of its block. The block is wider than the cohort so a larger cohort
-# is still held out of training.
+# is still held out of training. 128 games put a candidate's mean within the
+# run-to-run noise the gate is there to see past; 256 doubled every scoring's
+# wait for it.
 DEV_COHORT_START = 2_000_000
-DEV_COHORT_SIZE = 256
+DEV_COHORT_SIZE = 128
 DEV_COHORT_STOP = 2_010_000
 
 # name -> (start, stop), half-open.

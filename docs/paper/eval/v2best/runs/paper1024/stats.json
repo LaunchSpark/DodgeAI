@@ -1,0 +1,3374 @@
+{
+ "summary": {
+  "k1_argmax": {
+   "n": 1024,
+   "worst": 414.0,
+   "q1": 2901.96484375,
+   "median": 6917.0,
+   "mean": 8888.1416015625,
+   "q4": 17887.48828125,
+   "best": 49081.0,
+   "mean_ci": [
+    8495.532006835938,
+    9287.3470703125
+   ],
+   "q1_ci": [
+    2658.2021484375,
+    3156.52529296875
+   ],
+   "capped_mean": 8355.068359375,
+   "capped_q1": 2901.96484375,
+   "over_cap": 80,
+   "past": {
+    "1000": 0.966796875,
+    "2000": 0.92578125,
+    "4000": 0.828125,
+    "8000": 0.4306640625,
+    "18000": 0.078125
+   }
+  },
+  "k1_sampled": {
+   "n": 1024,
+   "worst": 170.0,
+   "q1": 2039.24609375,
+   "median": 5305.5,
+   "mean": 6069.853515625,
+   "q4": 11485.24609375,
+   "best": 33023.0,
+   "mean_ci": [
+    5818.436938476562,
+    6323.390161132813
+   ],
+   "q1_ci": [
+    1864.3623046875,
+    2241.99130859375
+   ],
+   "capped_mean": 5996.8837890625,
+   "capped_q1": 2039.24609375,
+   "over_cap": 17,
+   "past": {
+    "1000": 0.94921875,
+    "2000": 0.8837890625,
+    "4000": 0.673828125,
+    "8000": 0.234375,
+    "18000": 0.0166015625
+   }
+  },
+  "k4_argmax": {
+   "n": 1024,
+   "worst": 284.0,
+   "q1": 990.828125,
+   "median": 3048.5,
+   "mean": 3240.8076171875,
+   "q4": 5799.78515625,
+   "best": 15278.0,
+   "mean_ci": [
+    3126.4771728515625,
+    3357.771240234375
+   ],
+   "q1_ci": [
+    909.1078125,
+    1092.23134765625
+   ],
+   "capped_mean": 3240.8076171875,
+   "capped_q1": 990.828125,
+   "over_cap": 0,
+   "past": {
+    "1000": 0.86328125,
+    "2000": 0.685546875,
+    "4000": 0.341796875,
+    "8000": 0.013671875,
+    "18000": 0.0
+   }
+  },
+  "k4_sampled": {
+   "n": 1024,
+   "worst": 125.0,
+   "q1": 480.8671875,
+   "median": 1485.0,
+   "mean": 1717.2578125,
+   "q4": 3408.625,
+   "best": 8591.0,
+   "mean_ci": [
+    1644.4835205078125,
+    1792.96455078125
+   ],
+   "q1_ci": [
+    449.09228515625,
+    515.5302734375
+   ],
+   "capped_mean": 1717.2578125,
+   "capped_q1": 480.8671875,
+   "over_cap": 0,
+   "past": {
+    "1000": 0.640625,
+    "2000": 0.3310546875,
+    "4000": 0.052734375,
+    "8000": 0.0009765625,
+    "18000": 0.0
+   }
+  },
+  "c100": {
+   "n": 1024,
+   "worst": 198.0,
+   "q1": 950.73828125,
+   "median": 3302.0,
+   "mean": 3411.0390625,
+   "q4": 6116.5234375,
+   "best": 15710.0,
+   "mean_ci": [
+    3278.23505859375,
+    3539.6408935546874
+   ],
+   "q1_ci": [
+    840.97646484375,
+    1060.29169921875
+   ],
+   "capped_mean": 3411.0390625,
+   "capped_q1": 950.73828125,
+   "over_cap": 0,
+   "past": {
+    "1000": 0.8486328125,
+    "2000": 0.724609375,
+    "4000": 0.357421875,
+    "8000": 0.033203125,
+    "18000": 0.0
+   }
+  },
+  "random": {
+   "n": 1024,
+   "worst": 99.0,
+   "q1": 139.3359375,
+   "median": 206.0,
+   "mean": 224.6416015625,
+   "q4": 343.3203125,
+   "best": 705.0,
+   "mean_ci": [
+    219.4634521484375,
+    230.06845703125
+   ],
+   "q1_ci": [
+    136.95673828125,
+    142.00419921875
+   ],
+   "capped_mean": 224.6416015625,
+   "capped_q1": 139.3359375,
+   "over_cap": 0,
+   "past": {
+    "1000": 0.0,
+    "2000": 0.0,
+    "4000": 0.0,
+    "8000": 0.0,
+    "18000": 0.0
+   }
+  },
+  "gradient": {
+   "n": 128,
+   "worst": 252.0,
+   "q1": 254.28125,
+   "median": 255.0,
+   "mean": 314.3984375,
+   "q4": 465.15625,
+   "best": 1337.0,
+   "mean_ci": [
+    292.5076171875,
+    339.4697265625
+   ],
+   "q1_ci": [
+    253.9375,
+    254.5625
+   ],
+   "capped_mean": 314.3984375,
+   "capped_q1": 254.28125,
+   "over_cap": 0,
+   "past": {
+    "1000": 0.0078125,
+    "2000": 0.0,
+    "4000": 0.0,
+    "8000": 0.0,
+    "18000": 0.0
+   }
+  }
+ },
+ "telemetry": {
+  "k1_argmax": {
+   "deaths": 1024,
+   "causes": {
+    "normal": 695,
+    "kamikaze": 125,
+    "static_rect": 162,
+    "moving_rect": 42
+   },
+   "cause_shares": {
+    "normal": 0.6787109375,
+    "kamikaze": 0.1220703125,
+    "static_rect": 0.158203125,
+    "moving_rect": 0.041015625
+   },
+   "active_frame_share": 0.4229857922747973,
+   "deaths_in_pattern": 711,
+   "death_share_in_pattern": 0.6943359375,
+   "enemy_deaths": 820,
+   "enemy_in_pattern": 507,
+   "rect_deaths_in_pattern": 204,
+   "hazard": {
+    "active": 1.8468554234299197,
+    "inactive": 0.5960008911451025,
+    "active_frame_share": 0.4229857922747973
+   },
+   "anti_camping": {
+    "games_triggered": 0.0380859375,
+    "triggers_per_game": 0.0380859375
+   },
+   "fyou_games": 39,
+   "by_window": [
+    {
+     "window": "0-2.6k",
+     "bucket": "Shortest 10%",
+     "games": 102,
+     "share_of_games": 0.099609375,
+     "causes": {
+      "normal": 0.6666666666666666,
+      "kamikaze": 0.08823529411764706,
+      "static_rect": 0.17647058823529413,
+      "moving_rect": 0.06862745098039216
+     }
+    },
+    {
+     "window": "2.6k-5.9k",
+     "bucket": "Early side of normal",
+     "games": 303,
+     "share_of_games": 0.2958984375,
+     "causes": {
+      "normal": 0.6039603960396039,
+      "kamikaze": 0.10561056105610561,
+      "static_rect": 0.28052805280528054,
+      "moving_rect": 0.009900990099009901
+     }
+    },
+    {
+     "window": "5.9k-8.5k",
+     "bucket": "Middle 20%",
+     "games": 210,
+     "share_of_games": 0.205078125,
+     "causes": {
+      "normal": 0.6333333333333333,
+      "kamikaze": 0.1380952380952381,
+      "static_rect": 0.20476190476190476,
+      "moving_rect": 0.023809523809523808
+     }
+    },
+    {
+     "window": "8.5k-17k",
+     "bucket": "Late side of normal",
+     "games": 308,
+     "share_of_games": 0.30078125,
+     "causes": {
+      "normal": 0.7597402597402597,
+      "kamikaze": 0.13636363636363635,
+      "static_rect": 0.04220779220779221,
+      "moving_rect": 0.06168831168831169
+     }
+    },
+    {
+     "window": "17k+",
+     "bucket": "Longest 10%",
+     "games": 101,
+     "share_of_games": 0.0986328125,
+     "causes": {
+      "normal": 0.7623762376237624,
+      "kamikaze": 0.12871287128712872,
+      "static_rect": 0.0297029702970297,
+      "moving_rect": 0.07920792079207921
+     }
+    }
+   ],
+   "hazard_windows": [
+    {
+     "window": "0-2.6k",
+     "bucket": "Shortest 10%",
+     "active": 0.7433503759909392,
+     "inactive": 0.1386455584226635,
+     "active_frame_share": 0.4333343633243132
+    },
+    {
+     "window": "2.6k-5.9k",
+     "bucket": "Early side of normal",
+     "active": 2.063659775728995,
+     "inactive": 0.4542860015423787,
+     "active_frame_share": 0.43206485964073243
+    },
+    {
+     "window": "5.9k-8.5k",
+     "bucket": "Middle 20%",
+     "active": 2.779555069653935,
+     "inactive": 0.7738111478773938,
+     "active_frame_share": 0.421826284578689
+    },
+    {
+     "window": "8.5k-17k",
+     "bucket": "Late side of normal",
+     "active": 2.2881031324621808,
+     "inactive": 1.0395873332432088,
+     "active_frame_share": 0.4092241363805842
+    },
+    {
+     "window": "17k+",
+     "bucket": "Longest 10%",
+     "active": 2.2565254866379942,
+     "inactive": 1.1561915764908128,
+     "active_frame_share": 0.38935944556349744
+    }
+   ],
+   "patterns": [
+    {
+     "pattern": 19,
+     "encounters": 98,
+     "deaths": 37,
+     "lethality": 0.37755102040816324,
+     "low": 0.2879039439886928,
+     "high": 0.4764359721163174
+    },
+    {
+     "pattern": 35,
+     "encounters": 144,
+     "deaths": 52,
+     "lethality": 0.3611111111111111,
+     "low": 0.2872092991896756,
+     "high": 0.44223085838437665
+    },
+    {
+     "pattern": 13,
+     "encounters": 82,
+     "deaths": 28,
+     "lethality": 0.34146341463414637,
+     "low": 0.24799192441485413,
+     "high": 0.4491246251368784
+    },
+    {
+     "pattern": 20,
+     "encounters": 127,
+     "deaths": 42,
+     "lethality": 0.33070866141732286,
+     "low": 0.2549115137349538,
+     "high": 0.4164468310116711
+    },
+    {
+     "pattern": 25,
+     "encounters": 62,
+     "deaths": 16,
+     "lethality": 0.25806451612903225,
+     "low": 0.16554737249309678,
+     "high": 0.37881363938996804
+    },
+    {
+     "pattern": 22,
+     "encounters": 91,
+     "deaths": 22,
+     "lethality": 0.24175824175824176,
+     "low": 0.16541685277480106,
+     "high": 0.33902001880897653
+    },
+    {
+     "pattern": 26,
+     "encounters": 61,
+     "deaths": 13,
+     "lethality": 0.21311475409836064,
+     "low": 0.1289965277061263,
+     "high": 0.3312265389671205
+    },
+    {
+     "pattern": 34,
+     "encounters": 186,
+     "deaths": 39,
+     "lethality": 0.20967741935483872,
+     "low": 0.15734710578165073,
+     "high": 0.2737575625313008
+    },
+    {
+     "pattern": 15,
+     "encounters": 62,
+     "deaths": 13,
+     "lethality": 0.20967741935483872,
+     "low": 0.12683870286313342,
+     "high": 0.3263945113965444
+    },
+    {
+     "pattern": 14,
+     "encounters": 70,
+     "deaths": 14,
+     "lethality": 0.2,
+     "low": 0.12304627802949916,
+     "high": 0.30816864689087087
+    },
+    {
+     "pattern": 16,
+     "encounters": 81,
+     "deaths": 15,
+     "lethality": 0.18518518518518517,
+     "low": 0.11556188621286034,
+     "high": 0.28331790860477624
+    },
+    {
+     "pattern": 24,
+     "encounters": 377,
+     "deaths": 61,
+     "lethality": 0.16180371352785147,
+     "low": 0.12807099444166023,
+     "high": 0.20235929468641825
+    },
+    {
+     "pattern": 37,
+     "encounters": 35,
+     "deaths": 4,
+     "lethality": 0.11428571428571428,
+     "low": 0.0453510585448975,
+     "high": 0.2595179478812023
+    },
+    {
+     "pattern": 12,
+     "encounters": 211,
+     "deaths": 22,
+     "lethality": 0.10426540284360189,
+     "low": 0.06986795872121467,
+     "high": 0.1528151715477835
+    },
+    {
+     "pattern": 3,
+     "encounters": 96,
+     "deaths": 10,
+     "lethality": 0.10416666666666667,
+     "low": 0.0575709119553797,
+     "high": 0.1812233381367663
+    },
+    {
+     "pattern": 23,
+     "encounters": 380,
+     "deaths": 37,
+     "lethality": 0.09736842105263158,
+     "low": 0.07146740217031755,
+     "high": 0.13132875124296545
+    },
+    {
+     "pattern": 11,
+     "encounters": 225,
+     "deaths": 20,
+     "lethality": 0.08888888888888889,
+     "low": 0.05827785584808943,
+     "high": 0.1333026959396974
+    },
+    {
+     "pattern": 2,
+     "encounters": 342,
+     "deaths": 29,
+     "lethality": 0.0847953216374269,
+     "low": 0.05968693090207647,
+     "high": 0.11912787911499492
+    },
+    {
+     "pattern": 7,
+     "encounters": 234,
+     "deaths": 19,
+     "lethality": 0.0811965811965812,
+     "low": 0.05259509613110824,
+     "high": 0.12332703019162083
+    },
+    {
+     "pattern": 5,
+     "encounters": 214,
+     "deaths": 17,
+     "lethality": 0.0794392523364486,
+     "low": 0.050186760024237616,
+     "high": 0.12352478083848095
+    },
+    {
+     "pattern": 29,
+     "encounters": 93,
+     "deaths": 7,
+     "lethality": 0.07526881720430108,
+     "low": 0.036936214085016475,
+     "high": 0.14729866018389276
+    },
+    {
+     "pattern": 18,
+     "encounters": 315,
+     "deaths": 23,
+     "lethality": 0.07301587301587302,
+     "low": 0.04914369058239549,
+     "high": 0.10717719100896525
+    },
+    {
+     "pattern": 8,
+     "encounters": 200,
+     "deaths": 14,
+     "lethality": 0.07,
+     "low": 0.04215178292291873,
+     "high": 0.11405578216683726
+    },
+    {
+     "pattern": 39,
+     "encounters": 44,
+     "deaths": 3,
+     "lethality": 0.06818181818181818,
+     "low": 0.023458970172840127,
+     "high": 0.1822532133661719
+    },
+    {
+     "pattern": 30,
+     "encounters": 207,
+     "deaths": 14,
+     "lethality": 0.06763285024154589,
+     "low": 0.04071115951879931,
+     "high": 0.11031027078717445
+    },
+    {
+     "pattern": 28,
+     "encounters": 368,
+     "deaths": 23,
+     "lethality": 0.0625,
+     "low": 0.042004374156363544,
+     "high": 0.09203549658429594
+    },
+    {
+     "pattern": 1,
+     "encounters": 336,
+     "deaths": 21,
+     "lethality": 0.0625,
+     "low": 0.04123852925624141,
+     "high": 0.09365254941099649
+    },
+    {
+     "pattern": 31,
+     "encounters": 212,
+     "deaths": 13,
+     "lethality": 0.06132075471698113,
+     "low": 0.03618251268571618,
+     "high": 0.10207443129542557
+    },
+    {
+     "pattern": 9,
+     "encounters": 216,
+     "deaths": 13,
+     "lethality": 0.06018518518518518,
+     "low": 0.03550604178741986,
+     "high": 0.10023532836272461
+    },
+    {
+     "pattern": 10,
+     "encounters": 216,
+     "deaths": 13,
+     "lethality": 0.06018518518518518,
+     "low": 0.03550604178741986,
+     "high": 0.10023532836272461
+    },
+    {
+     "pattern": 38,
+     "encounters": 35,
+     "deaths": 2,
+     "lethality": 0.05714285714285714,
+     "low": 0.015812829614043955,
+     "high": 0.1860738073937003
+    },
+    {
+     "pattern": 6,
+     "encounters": 224,
+     "deaths": 12,
+     "lethality": 0.05357142857142857,
+     "low": 0.030907059980113148,
+     "high": 0.091290115601519
+    },
+    {
+     "pattern": 4,
+     "encounters": 97,
+     "deaths": 5,
+     "lethality": 0.05154639175257732,
+     "low": 0.022215723427449756,
+     "high": 0.11504508957036064
+    },
+    {
+     "pattern": 21,
+     "encounters": 166,
+     "deaths": 8,
+     "lethality": 0.04819277108433735,
+     "low": 0.024619173376324223,
+     "high": 0.09220497335804473
+    },
+    {
+     "pattern": 33,
+     "encounters": 237,
+     "deaths": 11,
+     "lethality": 0.046413502109704644,
+     "low": 0.026111040132452117,
+     "high": 0.08118603811316658
+    },
+    {
+     "pattern": 32,
+     "encounters": 221,
+     "deaths": 10,
+     "lethality": 0.04524886877828054,
+     "low": 0.02476090684199716,
+     "high": 0.08127641009579373
+    },
+    {
+     "pattern": 27,
+     "encounters": 186,
+     "deaths": 7,
+     "lethality": 0.03763440860215054,
+     "low": 0.018347373622032766,
+     "high": 0.07563413517266768
+    },
+    {
+     "pattern": 36,
+     "encounters": 47,
+     "deaths": 1,
+     "lethality": 0.02127659574468085,
+     "low": 0.003765671010464995,
+     "high": 0.11113236524331144
+    },
+    {
+     "pattern": 17,
+     "encounters": 134,
+     "deaths": 1,
+     "lethality": 0.007462686567164179,
+     "low": 0.0013185304171489005,
+     "high": 0.04106054817741181
+    }
+   ],
+   "survival": [
+    {
+     "frames": 0,
+     "alive": 1.0
+    },
+    {
+     "frames": 1000,
+     "alive": 0.966796875
+    },
+    {
+     "frames": 2000,
+     "alive": 0.92578125
+    },
+    {
+     "frames": 3000,
+     "alive": 0.8828125
+    },
+    {
+     "frames": 4000,
+     "alive": 0.828125
+    },
+    {
+     "frames": 5000,
+     "alive": 0.7119140625
+    },
+    {
+     "frames": 6000,
+     "alive": 0.595703125
+    },
+    {
+     "frames": 7000,
+     "alive": 0.494140625
+    },
+    {
+     "frames": 8000,
+     "alive": 0.4306640625
+    },
+    {
+     "frames": 9000,
+     "alive": 0.3662109375
+    },
+    {
+     "frames": 10000,
+     "alive": 0.3193359375
+    },
+    {
+     "frames": 11000,
+     "alive": 0.2783203125
+    },
+    {
+     "frames": 12000,
+     "alive": 0.2451171875
+    },
+    {
+     "frames": 13000,
+     "alive": 0.2138671875
+    },
+    {
+     "frames": 14000,
+     "alive": 0.1845703125
+    },
+    {
+     "frames": 15000,
+     "alive": 0.15234375
+    },
+    {
+     "frames": 16000,
+     "alive": 0.126953125
+    },
+    {
+     "frames": 17000,
+     "alive": 0.0986328125
+    },
+    {
+     "frames": 18000,
+     "alive": 0.078125
+    },
+    {
+     "frames": 19000,
+     "alive": 0.0634765625
+    },
+    {
+     "frames": 20000,
+     "alive": 0.0556640625
+    },
+    {
+     "frames": 21000,
+     "alive": 0.044921875
+    },
+    {
+     "frames": 22000,
+     "alive": 0.0400390625
+    },
+    {
+     "frames": 23000,
+     "alive": 0.0361328125
+    },
+    {
+     "frames": 24000,
+     "alive": 0.03515625
+    },
+    {
+     "frames": 25000,
+     "alive": 0.0283203125
+    },
+    {
+     "frames": 26000,
+     "alive": 0.0244140625
+    },
+    {
+     "frames": 27000,
+     "alive": 0.0205078125
+    },
+    {
+     "frames": 28000,
+     "alive": 0.017578125
+    },
+    {
+     "frames": 29000,
+     "alive": 0.015625
+    },
+    {
+     "frames": 30000,
+     "alive": 0.0146484375
+    },
+    {
+     "frames": 31000,
+     "alive": 0.0146484375
+    },
+    {
+     "frames": 32000,
+     "alive": 0.013671875
+    },
+    {
+     "frames": 33000,
+     "alive": 0.0126953125
+    },
+    {
+     "frames": 34000,
+     "alive": 0.0107421875
+    },
+    {
+     "frames": 35000,
+     "alive": 0.0087890625
+    },
+    {
+     "frames": 36000,
+     "alive": 0.0078125
+    },
+    {
+     "frames": 37000,
+     "alive": 0.0048828125
+    },
+    {
+     "frames": 38000,
+     "alive": 0.00390625
+    },
+    {
+     "frames": 39000,
+     "alive": 0.00390625
+    },
+    {
+     "frames": 40000,
+     "alive": 0.0029296875
+    },
+    {
+     "frames": 41000,
+     "alive": 0.001953125
+    },
+    {
+     "frames": 42000,
+     "alive": 0.001953125
+    },
+    {
+     "frames": 43000,
+     "alive": 0.001953125
+    },
+    {
+     "frames": 44000,
+     "alive": 0.001953125
+    },
+    {
+     "frames": 45000,
+     "alive": 0.001953125
+    },
+    {
+     "frames": 46000,
+     "alive": 0.0009765625
+    },
+    {
+     "frames": 47000,
+     "alive": 0.0009765625
+    },
+    {
+     "frames": 48000,
+     "alive": 0.0009765625
+    },
+    {
+     "frames": 49000,
+     "alive": 0.0009765625
+    },
+    {
+     "frames": 50000,
+     "alive": 0.0
+    }
+   ]
+  },
+  "k1_sampled": {
+   "deaths": 1024,
+   "causes": {
+    "normal": 730,
+    "kamikaze": 124,
+    "static_rect": 119,
+    "moving_rect": 51
+   },
+   "cause_shares": {
+    "normal": 0.712890625,
+    "kamikaze": 0.12109375,
+    "static_rect": 0.1162109375,
+    "moving_rect": 0.0498046875
+   },
+   "active_frame_share": 0.4395436913666252,
+   "deaths_in_pattern": 682,
+   "death_share_in_pattern": 0.666015625,
+   "enemy_deaths": 854,
+   "enemy_in_pattern": 512,
+   "rect_deaths_in_pattern": 170,
+   "hazard": {
+    "active": 2.4963424191168584,
+    "inactive": 0.9817619066620009,
+    "active_frame_share": 0.4395436913666252
+   },
+   "anti_camping": {
+    "games_triggered": 0.009765625,
+    "triggers_per_game": 0.009765625
+   },
+   "fyou_games": 10,
+   "by_window": [
+    {
+     "window": "0-1.9k",
+     "bucket": "Shortest 10%",
+     "games": 107,
+     "share_of_games": 0.1044921875,
+     "causes": {
+      "normal": 0.6261682242990654,
+      "kamikaze": 0.11214953271028037,
+      "static_rect": 0.102803738317757,
+      "moving_rect": 0.1588785046728972
+     }
+    },
+    {
+     "window": "1.9k-4.5k",
+     "bucket": "Early side of normal",
+     "games": 298,
+     "share_of_games": 0.291015625,
+     "causes": {
+      "normal": 0.714765100671141,
+      "kamikaze": 0.1174496644295302,
+      "static_rect": 0.12751677852348994,
+      "moving_rect": 0.040268456375838924
+     }
+    },
+    {
+     "window": "4.5k-6.1k",
+     "bucket": "Middle 20%",
+     "games": 213,
+     "share_of_games": 0.2080078125,
+     "causes": {
+      "normal": 0.6525821596244131,
+      "kamikaze": 0.13145539906103287,
+      "static_rect": 0.20187793427230047,
+      "moving_rect": 0.014084507042253521
+     }
+    },
+    {
+     "window": "6.1k-11k",
+     "bucket": "Late side of normal",
+     "games": 294,
+     "share_of_games": 0.287109375,
+     "causes": {
+      "normal": 0.7517006802721088,
+      "kamikaze": 0.11904761904761904,
+      "static_rect": 0.0782312925170068,
+      "moving_rect": 0.05102040816326531
+     }
+    },
+    {
+     "window": "11k+",
+     "bucket": "Longest 10%",
+     "games": 112,
+     "share_of_games": 0.109375,
+     "causes": {
+      "normal": 0.8035714285714286,
+      "kamikaze": 0.125,
+      "static_rect": 0.03571428571428571,
+      "moving_rect": 0.03571428571428571
+     }
+    }
+   ],
+   "hazard_windows": [
+    {
+     "window": "0-1.9k",
+     "bucket": "Shortest 10%",
+     "active": 1.010524623240137,
+     "inactive": 0.23112470553783007,
+     "active_frame_share": 0.4416469377543901
+    },
+    {
+     "window": "1.9k-4.5k",
+     "bucket": "Early side of normal",
+     "active": 2.2123270451757677,
+     "inactive": 0.8583156263436782,
+     "active_frame_share": 0.44565691427615167
+    },
+    {
+     "window": "4.5k-6.1k",
+     "bucket": "Middle 20%",
+     "active": 4.352307657479988,
+     "inactive": 1.176036143487522,
+     "active_frame_share": 0.44308858749124297
+    },
+    {
+     "window": "6.1k-11k",
+     "bucket": "Late side of normal",
+     "active": 3.8983202828710684,
+     "inactive": 1.7974397242940539,
+     "active_frame_share": 0.43186978251090075
+    },
+    {
+     "window": "11k+",
+     "bucket": "Longest 10%",
+     "active": 3.346490866740252,
+     "inactive": 2.3500033524563118,
+     "active_frame_share": 0.41253501926449027
+    }
+   ],
+   "patterns": [
+    {
+     "pattern": 15,
+     "encounters": 34,
+     "deaths": 13,
+     "lethality": 0.38235294117647056,
+     "low": 0.23899964851608782,
+     "high": 0.5495928000061734
+    },
+    {
+     "pattern": 35,
+     "encounters": 85,
+     "deaths": 32,
+     "lethality": 0.3764705882352941,
+     "low": 0.2809213599468807,
+     "high": 0.48270288815310847
+    },
+    {
+     "pattern": 20,
+     "encounters": 74,
+     "deaths": 27,
+     "lethality": 0.36486486486486486,
+     "low": 0.2643839969334518,
+     "high": 0.4786839770033634
+    },
+    {
+     "pattern": 13,
+     "encounters": 55,
+     "deaths": 19,
+     "lethality": 0.34545454545454546,
+     "low": 0.23362533364154048,
+     "high": 0.4774634198933736
+    },
+    {
+     "pattern": 19,
+     "encounters": 85,
+     "deaths": 29,
+     "lethality": 0.3411764705882353,
+     "low": 0.24921771761762068,
+     "high": 0.44687060136807966
+    },
+    {
+     "pattern": 25,
+     "encounters": 54,
+     "deaths": 18,
+     "lethality": 0.3333333333333333,
+     "low": 0.22241243520150356,
+     "high": 0.466392853725497
+    },
+    {
+     "pattern": 16,
+     "encounters": 52,
+     "deaths": 17,
+     "lethality": 0.3269230769230769,
+     "low": 0.2152190173110406,
+     "high": 0.46244064860111084
+    },
+    {
+     "pattern": 26,
+     "encounters": 59,
+     "deaths": 19,
+     "lethality": 0.3220338983050847,
+     "low": 0.21687410829652445,
+     "high": 0.44895235060967775
+    },
+    {
+     "pattern": 14,
+     "encounters": 41,
+     "deaths": 13,
+     "lethality": 0.3170731707317073,
+     "low": 0.19564433205311735,
+     "high": 0.46984485655745856
+    },
+    {
+     "pattern": 29,
+     "encounters": 88,
+     "deaths": 26,
+     "lethality": 0.29545454545454547,
+     "low": 0.2103072371931576,
+     "high": 0.3977135289955849
+    },
+    {
+     "pattern": 22,
+     "encounters": 114,
+     "deaths": 33,
+     "lethality": 0.2894736842105263,
+     "low": 0.21416522774282082,
+     "high": 0.3785083272666156
+    },
+    {
+     "pattern": 34,
+     "encounters": 57,
+     "deaths": 15,
+     "lethality": 0.2631578947368421,
+     "low": 0.1664564242184771,
+     "high": 0.3897682641526373
+    },
+    {
+     "pattern": 39,
+     "encounters": 38,
+     "deaths": 9,
+     "lethality": 0.23684210526315788,
+     "low": 0.12993561496969508,
+     "high": 0.39207119165337856
+    },
+    {
+     "pattern": 24,
+     "encounters": 171,
+     "deaths": 40,
+     "lethality": 0.23391812865497075,
+     "low": 0.1767442039945335,
+     "high": 0.30278469530631935
+    },
+    {
+     "pattern": 7,
+     "encounters": 122,
+     "deaths": 27,
+     "lethality": 0.22131147540983606,
+     "low": 0.15679013737498693,
+     "high": 0.30284801090030516
+    },
+    {
+     "pattern": 23,
+     "encounters": 182,
+     "deaths": 37,
+     "lethality": 0.2032967032967033,
+     "low": 0.15124320253294626,
+     "high": 0.26761672979652146
+    },
+    {
+     "pattern": 38,
+     "encounters": 35,
+     "deaths": 7,
+     "lethality": 0.2,
+     "low": 0.10042319445900802,
+     "high": 0.35891936609462516
+    },
+    {
+     "pattern": 4,
+     "encounters": 97,
+     "deaths": 17,
+     "lethality": 0.17525773195876287,
+     "low": 0.11239961612750933,
+     "high": 0.2628582139743534
+    },
+    {
+     "pattern": 36,
+     "encounters": 34,
+     "deaths": 4,
+     "lethality": 0.11764705882352941,
+     "low": 0.04671370973436122,
+     "high": 0.26621174796298774
+    },
+    {
+     "pattern": 8,
+     "encounters": 149,
+     "deaths": 17,
+     "lethality": 0.11409395973154363,
+     "low": 0.07246525159271658,
+     "high": 0.17512179277216838
+    },
+    {
+     "pattern": 17,
+     "encounters": 132,
+     "deaths": 15,
+     "lethality": 0.11363636363636363,
+     "low": 0.07008488210293365,
+     "high": 0.17904056989409817
+    },
+    {
+     "pattern": 21,
+     "encounters": 133,
+     "deaths": 15,
+     "lethality": 0.11278195488721804,
+     "low": 0.06954841785435961,
+     "high": 0.17775649527147344
+    },
+    {
+     "pattern": 9,
+     "encounters": 147,
+     "deaths": 16,
+     "lethality": 0.10884353741496598,
+     "low": 0.06811491698809272,
+     "high": 0.16949592776560918
+    },
+    {
+     "pattern": 37,
+     "encounters": 37,
+     "deaths": 4,
+     "lethality": 0.10810810810810811,
+     "low": 0.04285120520506268,
+     "high": 0.24708846415167163
+    },
+    {
+     "pattern": 10,
+     "encounters": 150,
+     "deaths": 16,
+     "lethality": 0.10666666666666667,
+     "low": 0.06672979536363804,
+     "high": 0.16624750076432737
+    },
+    {
+     "pattern": 18,
+     "encounters": 359,
+     "deaths": 38,
+     "lethality": 0.10584958217270195,
+     "low": 0.07809341398508496,
+     "high": 0.14195191709051386
+    },
+    {
+     "pattern": 2,
+     "encounters": 213,
+     "deaths": 21,
+     "lethality": 0.09859154929577464,
+     "low": 0.06539131111585818,
+     "high": 0.14601461837368623
+    },
+    {
+     "pattern": 11,
+     "encounters": 147,
+     "deaths": 13,
+     "lethality": 0.08843537414965986,
+     "low": 0.05240961060689506,
+     "high": 0.14542440865569564
+    },
+    {
+     "pattern": 12,
+     "encounters": 106,
+     "deaths": 9,
+     "lethality": 0.08490566037735849,
+     "low": 0.045311045103536174,
+     "high": 0.1535352936242318
+    },
+    {
+     "pattern": 32,
+     "encounters": 128,
+     "deaths": 10,
+     "lethality": 0.078125,
+     "low": 0.04298691065341302,
+     "high": 0.13784827338561562
+    },
+    {
+     "pattern": 30,
+     "encounters": 146,
+     "deaths": 11,
+     "lethality": 0.07534246575342465,
+     "low": 0.04258787980687761,
+     "high": 0.12987157070619754
+    },
+    {
+     "pattern": 5,
+     "encounters": 161,
+     "deaths": 12,
+     "lethality": 0.07453416149068323,
+     "low": 0.04314758976698398,
+     "high": 0.1257515230783172
+    },
+    {
+     "pattern": 28,
+     "encounters": 327,
+     "deaths": 24,
+     "lethality": 0.07339449541284404,
+     "low": 0.049813587913763974,
+     "high": 0.10688254703419905
+    },
+    {
+     "pattern": 27,
+     "encounters": 204,
+     "deaths": 14,
+     "lethality": 0.06862745098039216,
+     "low": 0.04131633022712568,
+     "high": 0.11188495382765452
+    },
+    {
+     "pattern": 6,
+     "encounters": 136,
+     "deaths": 9,
+     "lethality": 0.0661764705882353,
+     "low": 0.03520277178641907,
+     "high": 0.12098537251398939
+    },
+    {
+     "pattern": 1,
+     "encounters": 261,
+     "deaths": 17,
+     "lethality": 0.06513409961685823,
+     "low": 0.0410603915555961,
+     "high": 0.1018235058381668
+    },
+    {
+     "pattern": 31,
+     "encounters": 138,
+     "deaths": 8,
+     "lethality": 0.057971014492753624,
+     "low": 0.02966407178415653,
+     "high": 0.11022154710339127
+    },
+    {
+     "pattern": 3,
+     "encounters": 90,
+     "deaths": 4,
+     "lethality": 0.044444444444444446,
+     "low": 0.01741696001324882,
+     "high": 0.1087701467709492
+    },
+    {
+     "pattern": 33,
+     "encounters": 161,
+     "deaths": 7,
+     "lethality": 0.043478260869565216,
+     "low": 0.021217725855230428,
+     "high": 0.08701708865761099
+    }
+   ],
+   "survival": [
+    {
+     "frames": 0,
+     "alive": 1.0
+    },
+    {
+     "frames": 1000,
+     "alive": 0.94921875
+    },
+    {
+     "frames": 2000,
+     "alive": 0.8837890625
+    },
+    {
+     "frames": 3000,
+     "alive": 0.7958984375
+    },
+    {
+     "frames": 4000,
+     "alive": 0.673828125
+    },
+    {
+     "frames": 5000,
+     "alive": 0.5458984375
+    },
+    {
+     "frames": 6000,
+     "alive": 0.4130859375
+    },
+    {
+     "frames": 7000,
+     "alive": 0.3095703125
+    },
+    {
+     "frames": 8000,
+     "alive": 0.234375
+    },
+    {
+     "frames": 9000,
+     "alive": 0.171875
+    },
+    {
+     "frames": 10000,
+     "alive": 0.130859375
+    },
+    {
+     "frames": 11000,
+     "alive": 0.109375
+    },
+    {
+     "frames": 12000,
+     "alive": 0.0791015625
+    },
+    {
+     "frames": 13000,
+     "alive": 0.05859375
+    },
+    {
+     "frames": 14000,
+     "alive": 0.0419921875
+    },
+    {
+     "frames": 15000,
+     "alive": 0.033203125
+    },
+    {
+     "frames": 16000,
+     "alive": 0.0244140625
+    },
+    {
+     "frames": 17000,
+     "alive": 0.01953125
+    },
+    {
+     "frames": 18000,
+     "alive": 0.0166015625
+    },
+    {
+     "frames": 19000,
+     "alive": 0.01171875
+    },
+    {
+     "frames": 20000,
+     "alive": 0.009765625
+    },
+    {
+     "frames": 21000,
+     "alive": 0.0087890625
+    },
+    {
+     "frames": 22000,
+     "alive": 0.0078125
+    },
+    {
+     "frames": 23000,
+     "alive": 0.005859375
+    },
+    {
+     "frames": 24000,
+     "alive": 0.0048828125
+    },
+    {
+     "frames": 25000,
+     "alive": 0.00390625
+    },
+    {
+     "frames": 26000,
+     "alive": 0.001953125
+    },
+    {
+     "frames": 27000,
+     "alive": 0.001953125
+    },
+    {
+     "frames": 28000,
+     "alive": 0.001953125
+    },
+    {
+     "frames": 29000,
+     "alive": 0.001953125
+    },
+    {
+     "frames": 30000,
+     "alive": 0.001953125
+    },
+    {
+     "frames": 31000,
+     "alive": 0.0009765625
+    },
+    {
+     "frames": 32000,
+     "alive": 0.0009765625
+    },
+    {
+     "frames": 33000,
+     "alive": 0.0009765625
+    },
+    {
+     "frames": 34000,
+     "alive": 0.0
+    }
+   ]
+  },
+  "k4_argmax": {
+   "deaths": 1024,
+   "causes": {
+    "normal": 652,
+    "kamikaze": 147,
+    "static_rect": 203,
+    "moving_rect": 22
+   },
+   "cause_shares": {
+    "normal": 0.63671875,
+    "kamikaze": 0.1435546875,
+    "static_rect": 0.1982421875,
+    "moving_rect": 0.021484375
+   },
+   "active_frame_share": 0.43077098777280814,
+   "deaths_in_pattern": 743,
+   "death_share_in_pattern": 0.7255859375,
+   "enemy_deaths": 799,
+   "enemy_in_pattern": 518,
+   "rect_deaths_in_pattern": 225,
+   "hazard": {
+    "active": 5.19743611805385,
+    "inactive": 1.487531206393102,
+    "active_frame_share": 0.43077098777280814
+   },
+   "anti_camping": {
+    "games_triggered": 0.0048828125,
+    "triggers_per_game": 0.0048828125
+   },
+   "fyou_games": 5,
+   "by_window": [
+    {
+     "window": "0-790",
+     "bucket": "Shortest 10%",
+     "games": 102,
+     "share_of_games": 0.099609375,
+     "causes": {
+      "normal": 0.5686274509803921,
+      "kamikaze": 0.10784313725490197,
+      "static_rect": 0.22549019607843138,
+      "moving_rect": 0.09803921568627451
+     }
+    },
+    {
+     "window": "790-2.6k",
+     "bucket": "Early side of normal",
+     "games": 311,
+     "share_of_games": 0.3037109375,
+     "causes": {
+      "normal": 0.6752411575562701,
+      "kamikaze": 0.15434083601286175,
+      "static_rect": 0.15434083601286175,
+      "moving_rect": 0.01607717041800643
+     }
+    },
+    {
+     "window": "2.6k-3.6k",
+     "bucket": "Middle 20%",
+     "games": 204,
+     "share_of_games": 0.19921875,
+     "causes": {
+      "normal": 0.6862745098039216,
+      "kamikaze": 0.14705882352941177,
+      "static_rect": 0.14705882352941177,
+      "moving_rect": 0.0196078431372549
+     }
+    },
+    {
+     "window": "3.6k-5.7k",
+     "bucket": "Late side of normal",
+     "games": 302,
+     "share_of_games": 0.294921875,
+     "causes": {
+      "normal": 0.5927152317880795,
+      "kamikaze": 0.13245033112582782,
+      "static_rect": 0.2682119205298013,
+      "moving_rect": 0.006622516556291391
+     }
+    },
+    {
+     "window": "5.7k+",
+     "bucket": "Longest 10%",
+     "games": 105,
+     "share_of_games": 0.1025390625,
+     "causes": {
+      "normal": 0.6190476190476191,
+      "kamikaze": 0.17142857142857143,
+      "static_rect": 0.2,
+      "moving_rect": 0.009523809523809525
+     }
+    }
+   ],
+   "hazard_windows": [
+    {
+     "window": "0-790",
+     "bucket": "Shortest 10%",
+     "active": 2.767301346306848,
+     "inactive": 0.2198927540338728,
+     "active_frame_share": 0.4223132447048262
+    },
+    {
+     "window": "790-2.6k",
+     "bucket": "Early side of normal",
+     "active": 3.477069653901419,
+     "inactive": 1.281618308612726,
+     "active_frame_share": 0.43269780294471294
+    },
+    {
+     "window": "2.6k-3.6k",
+     "bucket": "Middle 20%",
+     "active": 6.49558872120303,
+     "inactive": 2.0682154420105383,
+     "active_frame_share": 0.4372916006102365
+    },
+    {
+     "window": "3.6k-5.7k",
+     "bucket": "Late side of normal",
+     "active": 10.399095305708048,
+     "inactive": 2.537660479294877,
+     "active_frame_share": 0.43359126375110085
+    },
+    {
+     "window": "5.7k+",
+     "bucket": "Longest 10%",
+     "active": 12.565619810698141,
+     "inactive": 5.050085514122682,
+     "active_frame_share": 0.42483171812215514
+    }
+   ],
+   "patterns": [
+    {
+     "pattern": 25,
+     "encounters": 32,
+     "deaths": 29,
+     "lethality": 0.90625,
+     "low": 0.7578150066422116,
+     "high": 0.9675990373736805
+    },
+    {
+     "pattern": 20,
+     "encounters": 38,
+     "deaths": 32,
+     "lethality": 0.8421052631578947,
+     "low": 0.6958287736272311,
+     "high": 0.9255623777627731
+    },
+    {
+     "pattern": 19,
+     "encounters": 32,
+     "deaths": 26,
+     "lethality": 0.8125,
+     "low": 0.6469050424507756,
+     "high": 0.9111057606383721
+    },
+    {
+     "pattern": 35,
+     "encounters": 31,
+     "deaths": 25,
+     "lethality": 0.8064516129032258,
+     "low": 0.6371939644454013,
+     "high": 0.9081311641365236
+    },
+    {
+     "pattern": 26,
+     "encounters": 33,
+     "deaths": 25,
+     "lethality": 0.7575757575757576,
+     "low": 0.5897505131450971,
+     "high": 0.8716843865335271
+    },
+    {
+     "pattern": 13,
+     "encounters": 26,
+     "deaths": 18,
+     "lethality": 0.6923076923076923,
+     "low": 0.5001138848576876,
+     "high": 0.8349887906020732
+    },
+    {
+     "pattern": 14,
+     "encounters": 15,
+     "deaths": 10,
+     "lethality": 0.6666666666666666,
+     "low": 0.41713125151212976,
+     "high": 0.8482389930530876
+    },
+    {
+     "pattern": 22,
+     "encounters": 28,
+     "deaths": 17,
+     "lethality": 0.6071428571428571,
+     "low": 0.42408726034906297,
+     "high": 0.7643454817241996
+    },
+    {
+     "pattern": 29,
+     "encounters": 43,
+     "deaths": 26,
+     "lethality": 0.6046511627906976,
+     "low": 0.4557879659331908,
+     "high": 0.7363489380154359
+    },
+    {
+     "pattern": 24,
+     "encounters": 16,
+     "deaths": 9,
+     "lethality": 0.5625,
+     "low": 0.33178195606776517,
+     "high": 0.7690163666481448
+    },
+    {
+     "pattern": 23,
+     "encounters": 15,
+     "deaths": 8,
+     "lethality": 0.5333333333333333,
+     "low": 0.3011663015105079,
+     "high": 0.7519077474025355
+    },
+    {
+     "pattern": 21,
+     "encounters": 100,
+     "deaths": 47,
+     "lethality": 0.47,
+     "low": 0.3751065198210374,
+     "high": 0.5671131686275227
+    },
+    {
+     "pattern": 37,
+     "encounters": 31,
+     "deaths": 13,
+     "lethality": 0.41935483870967744,
+     "low": 0.26415303073549257,
+     "high": 0.5923403564797902
+    },
+    {
+     "pattern": 36,
+     "encounters": 28,
+     "deaths": 9,
+     "lethality": 0.32142857142857145,
+     "low": 0.1793304754342074,
+     "high": 0.5066149544436882
+    },
+    {
+     "pattern": 38,
+     "encounters": 19,
+     "deaths": 6,
+     "lethality": 0.3157894736842105,
+     "low": 0.15364171004428598,
+     "high": 0.5398998982493537
+    },
+    {
+     "pattern": 18,
+     "encounters": 296,
+     "deaths": 86,
+     "lethality": 0.2905405405405405,
+     "low": 0.24176429033155677,
+     "high": 0.3446840210435159
+    },
+    {
+     "pattern": 28,
+     "encounters": 298,
+     "deaths": 86,
+     "lethality": 0.28859060402684567,
+     "low": 0.24009324779320967,
+     "high": 0.3424692618144786
+    },
+    {
+     "pattern": 39,
+     "encounters": 23,
+     "deaths": 6,
+     "lethality": 0.2608695652173913,
+     "low": 0.1254844588924897,
+     "high": 0.4647039054375056
+    },
+    {
+     "pattern": 4,
+     "encounters": 67,
+     "deaths": 17,
+     "lethality": 0.2537313432835821,
+     "low": 0.16487779577697392,
+     "high": 0.36929421614822255
+    },
+    {
+     "pattern": 27,
+     "encounters": 149,
+     "deaths": 33,
+     "lethality": 0.2214765100671141,
+     "low": 0.1622742038249329,
+     "high": 0.29467992384711456
+    },
+    {
+     "pattern": 3,
+     "encounters": 83,
+     "deaths": 18,
+     "lethality": 0.21686746987951808,
+     "low": 0.14181449316941397,
+     "high": 0.3169702367296206
+    },
+    {
+     "pattern": 2,
+     "encounters": 144,
+     "deaths": 30,
+     "lethality": 0.20833333333333334,
+     "low": 0.15001005766064063,
+     "high": 0.2818142732448691
+    },
+    {
+     "pattern": 1,
+     "encounters": 150,
+     "deaths": 27,
+     "lethality": 0.18,
+     "low": 0.1267568486333268,
+     "high": 0.24922468041993318
+    },
+    {
+     "pattern": 6,
+     "encounters": 95,
+     "deaths": 17,
+     "lethality": 0.17894736842105263,
+     "low": 0.1148347978557353,
+     "high": 0.2680161474952101
+    },
+    {
+     "pattern": 7,
+     "encounters": 91,
+     "deaths": 16,
+     "lethality": 0.17582417582417584,
+     "low": 0.11122434523601706,
+     "high": 0.2666857701563846
+    },
+    {
+     "pattern": 30,
+     "encounters": 83,
+     "deaths": 12,
+     "lethality": 0.14457831325301204,
+     "low": 0.08468215781561281,
+     "high": 0.23591994992998375
+    },
+    {
+     "pattern": 17,
+     "encounters": 81,
+     "deaths": 11,
+     "lethality": 0.13580246913580246,
+     "low": 0.07755383801327821,
+     "high": 0.2270325912855563
+    },
+    {
+     "pattern": 9,
+     "encounters": 101,
+     "deaths": 12,
+     "lethality": 0.1188118811881188,
+     "low": 0.06928651062322312,
+     "high": 0.1962721988966621
+    },
+    {
+     "pattern": 32,
+     "encounters": 107,
+     "deaths": 12,
+     "lethality": 0.11214953271028037,
+     "low": 0.06532817353470435,
+     "high": 0.18585549757794648
+    },
+    {
+     "pattern": 33,
+     "encounters": 94,
+     "deaths": 9,
+     "lethality": 0.09574468085106383,
+     "low": 0.05119138083044319,
+     "high": 0.17204290806098949
+    },
+    {
+     "pattern": 10,
+     "encounters": 77,
+     "deaths": 7,
+     "lethality": 0.09090909090909091,
+     "low": 0.04473514189357164,
+     "high": 0.17596311247051816
+    },
+    {
+     "pattern": 31,
+     "encounters": 101,
+     "deaths": 9,
+     "lethality": 0.0891089108910891,
+     "low": 0.047588698373386994,
+     "high": 0.16074081968051523
+    },
+    {
+     "pattern": 11,
+     "encounters": 81,
+     "deaths": 7,
+     "lethality": 0.08641975308641975,
+     "low": 0.04249204303723253,
+     "high": 0.1678010207427999
+    },
+    {
+     "pattern": 12,
+     "encounters": 89,
+     "deaths": 7,
+     "lethality": 0.07865168539325842,
+     "low": 0.03861933093175789,
+     "high": 0.15355314347626609
+    },
+    {
+     "pattern": 5,
+     "encounters": 89,
+     "deaths": 6,
+     "lethality": 0.06741573033707865,
+     "low": 0.03126095907688764,
+     "high": 0.139369447982017
+    },
+    {
+     "pattern": 8,
+     "encounters": 93,
+     "deaths": 6,
+     "lethality": 0.06451612903225806,
+     "low": 0.029901024142029796,
+     "high": 0.13368156846280116
+    }
+   ],
+   "survival": [
+    {
+     "frames": 0,
+     "alive": 1.0
+    },
+    {
+     "frames": 1000,
+     "alive": 0.86328125
+    },
+    {
+     "frames": 2000,
+     "alive": 0.6865234375
+    },
+    {
+     "frames": 3000,
+     "alive": 0.5087890625
+    },
+    {
+     "frames": 4000,
+     "alive": 0.3427734375
+    },
+    {
+     "frames": 5000,
+     "alive": 0.1728515625
+    },
+    {
+     "frames": 6000,
+     "alive": 0.07421875
+    },
+    {
+     "frames": 7000,
+     "alive": 0.033203125
+    },
+    {
+     "frames": 8000,
+     "alive": 0.013671875
+    },
+    {
+     "frames": 9000,
+     "alive": 0.0078125
+    },
+    {
+     "frames": 10000,
+     "alive": 0.0048828125
+    },
+    {
+     "frames": 11000,
+     "alive": 0.0009765625
+    },
+    {
+     "frames": 12000,
+     "alive": 0.0009765625
+    },
+    {
+     "frames": 13000,
+     "alive": 0.0009765625
+    },
+    {
+     "frames": 14000,
+     "alive": 0.0009765625
+    },
+    {
+     "frames": 15000,
+     "alive": 0.0009765625
+    },
+    {
+     "frames": 16000,
+     "alive": 0.0
+    }
+   ]
+  },
+  "k4_sampled": {
+   "deaths": 1024,
+   "causes": {
+    "normal": 757,
+    "kamikaze": 133,
+    "static_rect": 97,
+    "moving_rect": 37
+   },
+   "cause_shares": {
+    "normal": 0.7392578125,
+    "kamikaze": 0.1298828125,
+    "static_rect": 0.0947265625,
+    "moving_rect": 0.0361328125
+   },
+   "active_frame_share": 0.40954874459189566,
+   "deaths_in_pattern": 628,
+   "death_share_in_pattern": 0.61328125,
+   "enemy_deaths": 890,
+   "enemy_in_pattern": 494,
+   "rect_deaths_in_pattern": 134,
+   "hazard": {
+    "active": 8.720042211669305,
+    "inactive": 3.813955996964245,
+    "active_frame_share": 0.40954874459189566
+   },
+   "anti_camping": {
+    "games_triggered": 0.0,
+    "triggers_per_game": 0.0
+   },
+   "fyou_games": 0,
+   "by_window": [
+    {
+     "window": "0-470",
+     "bucket": "Shortest 10%",
+     "games": 106,
+     "share_of_games": 0.103515625,
+     "causes": {
+      "normal": 0.7830188679245284,
+      "kamikaze": 0.1320754716981132,
+      "static_rect": 0.0,
+      "moving_rect": 0.08490566037735849
+     }
+    },
+    {
+     "window": "470-1.1k",
+     "bucket": "Early side of normal",
+     "games": 295,
+     "share_of_games": 0.2880859375,
+     "causes": {
+      "normal": 0.6915254237288135,
+      "kamikaze": 0.13220338983050847,
+      "static_rect": 0.11864406779661017,
+      "moving_rect": 0.0576271186440678
+     }
+    },
+    {
+     "window": "1.1k-1.8k",
+     "bucket": "Middle 20%",
+     "games": 211,
+     "share_of_games": 0.2060546875,
+     "causes": {
+      "normal": 0.7725118483412322,
+      "kamikaze": 0.12322274881516587,
+      "static_rect": 0.07582938388625593,
+      "moving_rect": 0.02843601895734597
+     }
+    },
+    {
+     "window": "1.8k-3.3k",
+     "bucket": "Late side of normal",
+     "games": 307,
+     "share_of_games": 0.2998046875,
+     "causes": {
+      "normal": 0.7361563517915309,
+      "kamikaze": 0.1465798045602606,
+      "static_rect": 0.10097719869706841,
+      "moving_rect": 0.016286644951140065
+     }
+    },
+    {
+     "window": "3.3k+",
+     "bucket": "Longest 10%",
+     "games": 105,
+     "share_of_games": 0.1025390625,
+     "causes": {
+      "normal": 0.7714285714285715,
+      "kamikaze": 0.08571428571428572,
+      "static_rect": 0.14285714285714285,
+      "moving_rect": 0.0
+     }
+    }
+   ],
+   "hazard_windows": [
+    {
+     "window": "0-470",
+     "bucket": "Shortest 10%",
+     "active": 1.6055864683633947,
+     "inactive": 2.678664390755934,
+     "active_frame_share": 0.37456662965662996
+    },
+    {
+     "window": "470-1.1k",
+     "bucket": "Early side of normal",
+     "active": 11.977931713431841,
+     "inactive": 2.028234069088466,
+     "active_frame_share": 0.41848847216113544
+    },
+    {
+     "window": "1.1k-1.8k",
+     "bucket": "Middle 20%",
+     "active": 6.792556329063092,
+     "inactive": 5.048307541282651,
+     "active_frame_share": 0.41940601198560257
+    },
+    {
+     "window": "1.8k-3.3k",
+     "bucket": "Late side of normal",
+     "active": 12.992889795385928,
+     "inactive": 5.539256217018105,
+     "active_frame_share": 0.4282309062639761
+    },
+    {
+     "window": "3.3k+",
+     "bucket": "Longest 10%",
+     "active": 13.8954426948597,
+     "inactive": 7.5008888213299665,
+     "active_frame_share": 0.4280393243639814
+    }
+   ],
+   "patterns": [
+    {
+     "pattern": 39,
+     "encounters": 11,
+     "deaths": 8,
+     "lethality": 0.7272727272727273,
+     "low": 0.4343497069897537,
+     "high": 0.9025411942607853
+    },
+    {
+     "pattern": 21,
+     "encounters": 53,
+     "deaths": 36,
+     "lethality": 0.6792452830188679,
+     "low": 0.5451826763724886,
+     "high": 0.7890795541065968
+    },
+    {
+     "pattern": 3,
+     "encounters": 30,
+     "deaths": 20,
+     "lethality": 0.6666666666666666,
+     "low": 0.48779725813830266,
+     "high": 0.807697044731538
+    },
+    {
+     "pattern": 37,
+     "encounters": 12,
+     "deaths": 8,
+     "lethality": 0.6666666666666666,
+     "low": 0.3906175873976139,
+     "high": 0.8618821601026385
+    },
+    {
+     "pattern": 38,
+     "encounters": 11,
+     "deaths": 7,
+     "lethality": 0.6363636363636364,
+     "low": 0.35379677689163724,
+     "high": 0.8483377638586862
+    },
+    {
+     "pattern": 4,
+     "encounters": 40,
+     "deaths": 23,
+     "lethality": 0.575,
+     "low": 0.42194800436059987,
+     "high": 0.7149083147518411
+    },
+    {
+     "pattern": 28,
+     "encounters": 203,
+     "deaths": 102,
+     "lethality": 0.5024630541871922,
+     "low": 0.4342773352857817,
+     "high": 0.5705572821219352
+    },
+    {
+     "pattern": 17,
+     "encounters": 19,
+     "deaths": 9,
+     "lethality": 0.47368421052631576,
+     "low": 0.27329505487448547,
+     "high": 0.6829251748817489
+    },
+    {
+     "pattern": 36,
+     "encounters": 11,
+     "deaths": 5,
+     "lethality": 0.45454545454545453,
+     "low": 0.21270957543988045,
+     "high": 0.7199122443100118
+    },
+    {
+     "pattern": 18,
+     "encounters": 205,
+     "deaths": 92,
+     "lethality": 0.44878048780487806,
+     "low": 0.38225910972206134,
+     "high": 0.5171862115166191
+    },
+    {
+     "pattern": 27,
+     "encounters": 79,
+     "deaths": 34,
+     "lethality": 0.43037974683544306,
+     "low": 0.3269364765548295,
+     "high": 0.5402799943969628
+    },
+    {
+     "pattern": 2,
+     "encounters": 138,
+     "deaths": 56,
+     "lethality": 0.4057971014492754,
+     "low": 0.32749615411428507,
+     "high": 0.48920078105847103
+    },
+    {
+     "pattern": 1,
+     "encounters": 105,
+     "deaths": 38,
+     "lethality": 0.3619047619047619,
+     "low": 0.27636595500808664,
+     "high": 0.45719180231999373
+    },
+    {
+     "pattern": 9,
+     "encounters": 64,
+     "deaths": 20,
+     "lethality": 0.3125,
+     "low": 0.21230909502265743,
+     "high": 0.43392566359152623
+    },
+    {
+     "pattern": 11,
+     "encounters": 68,
+     "deaths": 17,
+     "lethality": 0.25,
+     "low": 0.16234881695499528,
+     "high": 0.3643877813390294
+    },
+    {
+     "pattern": 33,
+     "encounters": 48,
+     "deaths": 12,
+     "lethality": 0.25,
+     "low": 0.1492048880971003,
+     "high": 0.3878464374792707
+    },
+    {
+     "pattern": 7,
+     "encounters": 53,
+     "deaths": 13,
+     "lethality": 0.24528301886792453,
+     "low": 0.14932762711854577,
+     "high": 0.3756681506217008
+    },
+    {
+     "pattern": 30,
+     "encounters": 62,
+     "deaths": 15,
+     "lethality": 0.24193548387096775,
+     "low": 0.15245763680948543,
+     "high": 0.3615274425324505
+    },
+    {
+     "pattern": 6,
+     "encounters": 63,
+     "deaths": 15,
+     "lethality": 0.23809523809523808,
+     "low": 0.14993653261946965,
+     "high": 0.35635894803928175
+    },
+    {
+     "pattern": 8,
+     "encounters": 45,
+     "deaths": 10,
+     "lethality": 0.2222222222222222,
+     "low": 0.12544551866005632,
+     "high": 0.3626957379736329
+    },
+    {
+     "pattern": 32,
+     "encounters": 61,
+     "deaths": 13,
+     "lethality": 0.21311475409836064,
+     "low": 0.1289965277061263,
+     "high": 0.3312265389671205
+    },
+    {
+     "pattern": 12,
+     "encounters": 71,
+     "deaths": 15,
+     "lethality": 0.2112676056338028,
+     "low": 0.13242435724642304,
+     "high": 0.3197519724953249
+    },
+    {
+     "pattern": 31,
+     "encounters": 68,
+     "deaths": 12,
+     "lethality": 0.17647058823529413,
+     "low": 0.10393485385088719,
+     "high": 0.28360662629432115
+    },
+    {
+     "pattern": 10,
+     "encounters": 58,
+     "deaths": 10,
+     "lethality": 0.1724137931034483,
+     "low": 0.09644189395085108,
+     "high": 0.2890850005667552
+    },
+    {
+     "pattern": 5,
+     "encounters": 53,
+     "deaths": 6,
+     "lethality": 0.11320754716981132,
+     "low": 0.052929589110686695,
+     "high": 0.22576770301339144
+    }
+   ],
+   "survival": [
+    {
+     "frames": 0,
+     "alive": 1.0
+    },
+    {
+     "frames": 500,
+     "alive": 0.8837890625
+    },
+    {
+     "frames": 1000,
+     "alive": 0.640625
+    },
+    {
+     "frames": 1500,
+     "alive": 0.494140625
+    },
+    {
+     "frames": 2000,
+     "alive": 0.3310546875
+    },
+    {
+     "frames": 2500,
+     "alive": 0.228515625
+    },
+    {
+     "frames": 3000,
+     "alive": 0.14453125
+    },
+    {
+     "frames": 3500,
+     "alive": 0.0830078125
+    },
+    {
+     "frames": 4000,
+     "alive": 0.052734375
+    },
+    {
+     "frames": 4500,
+     "alive": 0.0361328125
+    },
+    {
+     "frames": 5000,
+     "alive": 0.017578125
+    },
+    {
+     "frames": 5500,
+     "alive": 0.0087890625
+    },
+    {
+     "frames": 6000,
+     "alive": 0.00390625
+    },
+    {
+     "frames": 6500,
+     "alive": 0.0029296875
+    },
+    {
+     "frames": 7000,
+     "alive": 0.0009765625
+    },
+    {
+     "frames": 7500,
+     "alive": 0.0009765625
+    },
+    {
+     "frames": 8000,
+     "alive": 0.0009765625
+    },
+    {
+     "frames": 8500,
+     "alive": 0.0009765625
+    },
+    {
+     "frames": 9000,
+     "alive": 0.0
+    }
+   ]
+  },
+  "c100": {
+   "deaths": 1024,
+   "causes": {
+    "normal": 655,
+    "kamikaze": 118,
+    "static_rect": 175,
+    "moving_rect": 76
+   },
+   "cause_shares": {
+    "normal": 0.6396484375,
+    "kamikaze": 0.115234375,
+    "static_rect": 0.1708984375,
+    "moving_rect": 0.07421875
+   },
+   "active_frame_share": 0.43168034392013066,
+   "deaths_in_pattern": 744,
+   "death_share_in_pattern": 0.7265625,
+   "enemy_deaths": 773,
+   "enemy_in_pattern": 493,
+   "rect_deaths_in_pattern": 251,
+   "hazard": {
+    "active": 4.934282519508322,
+    "inactive": 1.4105182344744762,
+    "active_frame_share": 0.43168034392013066
+   },
+   "anti_camping": {
+    "games_triggered": 1.0,
+    "triggers_per_game": 2.0390625
+   },
+   "fyou_games": 1024,
+   "by_window": [
+    {
+     "window": "0-680",
+     "bucket": "Shortest 10%",
+     "games": 101,
+     "share_of_games": 0.0986328125,
+     "causes": {
+      "normal": 0.49504950495049505,
+      "kamikaze": 0.10891089108910891,
+      "static_rect": 0.1188118811881188,
+      "moving_rect": 0.27722772277227725
+     }
+    },
+    {
+     "window": "680-2.9k",
+     "bucket": "Early side of normal",
+     "games": 321,
+     "share_of_games": 0.3134765625,
+     "causes": {
+      "normal": 0.6355140186915887,
+      "kamikaze": 0.1308411214953271,
+      "static_rect": 0.1557632398753894,
+      "moving_rect": 0.0778816199376947
+     }
+    },
+    {
+     "window": "2.9k-3.8k",
+     "bucket": "Middle 20%",
+     "games": 194,
+     "share_of_games": 0.189453125,
+     "causes": {
+      "normal": 0.6597938144329897,
+      "kamikaze": 0.08762886597938144,
+      "static_rect": 0.20103092783505155,
+      "moving_rect": 0.05154639175257732
+     }
+    },
+    {
+     "window": "3.8k-5.7k",
+     "bucket": "Late side of normal",
+     "games": 300,
+     "share_of_games": 0.29296875,
+     "causes": {
+      "normal": 0.65,
+      "kamikaze": 0.09666666666666666,
+      "static_rect": 0.22333333333333333,
+      "moving_rect": 0.03
+     }
+    },
+    {
+     "window": "5.7k+",
+     "bucket": "Longest 10%",
+     "games": 108,
+     "share_of_games": 0.10546875,
+     "causes": {
+      "normal": 0.7222222222222222,
+      "kamikaze": 0.17592592592592593,
+      "static_rect": 0.06481481481481481,
+      "moving_rect": 0.037037037037037035
+     }
+    }
+   ],
+   "hazard_windows": [
+    {
+     "window": "0-680",
+     "bucket": "Shortest 10%",
+     "active": 3.144103932907316,
+     "inactive": 0.27846273934190613,
+     "active_frame_share": 0.420167566832159
+    },
+    {
+     "window": "680-2.9k",
+     "bucket": "Early side of normal",
+     "active": 3.177226353427545,
+     "inactive": 0.8814417641239951,
+     "active_frame_share": 0.43406850096174915
+    },
+    {
+     "window": "2.9k-3.8k",
+     "bucket": "Middle 20%",
+     "active": 6.860768429835203,
+     "inactive": 2.17335693721982,
+     "active_frame_share": 0.4366135641073194
+    },
+    {
+     "window": "3.8k-5.7k",
+     "bucket": "Late side of normal",
+     "active": 11.006112707786794,
+     "inactive": 3.2642744423799313,
+     "active_frame_share": 0.43675149372365946
+    },
+    {
+     "window": "5.7k+",
+     "bucket": "Longest 10%",
+     "active": 7.404809850845067,
+     "inactive": 3.9544043107848967,
+     "active_frame_share": 0.42780127896784537
+    }
+   ],
+   "patterns": [
+    {
+     "pattern": 20,
+     "encounters": 34,
+     "deaths": 33,
+     "lethality": 0.9705882352941176,
+     "low": 0.8508409778365519,
+     "high": 0.9947892280744034
+    },
+    {
+     "pattern": 19,
+     "encounters": 36,
+     "deaths": 32,
+     "lethality": 0.8888888888888888,
+     "low": 0.7468487098496367,
+     "high": 0.9559343109125816
+    },
+    {
+     "pattern": 22,
+     "encounters": 44,
+     "deaths": 34,
+     "lethality": 0.7727272727272727,
+     "low": 0.6300735713298432,
+     "high": 0.8715818916981491
+    },
+    {
+     "pattern": 26,
+     "encounters": 38,
+     "deaths": 29,
+     "lethality": 0.7631578947368421,
+     "low": 0.6079288083466214,
+     "high": 0.8700643850303049
+    },
+    {
+     "pattern": 16,
+     "encounters": 11,
+     "deaths": 8,
+     "lethality": 0.7272727272727273,
+     "low": 0.4343497069897537,
+     "high": 0.9025411942607853
+    },
+    {
+     "pattern": 25,
+     "encounters": 28,
+     "deaths": 18,
+     "lethality": 0.6428571428571429,
+     "low": 0.4582997758222723,
+     "high": 0.7929438802754113
+    },
+    {
+     "pattern": 35,
+     "encounters": 45,
+     "deaths": 28,
+     "lethality": 0.6222222222222222,
+     "low": 0.4762967000646754,
+     "high": 0.7489211470165014
+    },
+    {
+     "pattern": 14,
+     "encounters": 29,
+     "deaths": 18,
+     "lethality": 0.6206896551724138,
+     "low": 0.4400222620928496,
+     "high": 0.7731220426913266
+    },
+    {
+     "pattern": 29,
+     "encounters": 37,
+     "deaths": 20,
+     "lethality": 0.5405405405405406,
+     "low": 0.38383779524767364,
+     "high": 0.6896167217154228
+    },
+    {
+     "pattern": 24,
+     "encounters": 28,
+     "deaths": 14,
+     "lethality": 0.5,
+     "low": 0.3263284683244634,
+     "high": 0.6736715316755366
+    },
+    {
+     "pattern": 13,
+     "encounters": 33,
+     "deaths": 15,
+     "lethality": 0.45454545454545453,
+     "low": 0.298426891258915,
+     "high": 0.6201434205625044
+    },
+    {
+     "pattern": 37,
+     "encounters": 21,
+     "deaths": 9,
+     "lethality": 0.42857142857142855,
+     "low": 0.24469699486521043,
+     "high": 0.6345378370296754
+    },
+    {
+     "pattern": 15,
+     "encounters": 12,
+     "deaths": 5,
+     "lethality": 0.4166666666666667,
+     "low": 0.19325746190524656,
+     "high": 0.6804926643446272
+    },
+    {
+     "pattern": 38,
+     "encounters": 31,
+     "deaths": 11,
+     "lethality": 0.3548387096774194,
+     "low": 0.21116447741565816,
+     "high": 0.530523619571851
+    },
+    {
+     "pattern": 39,
+     "encounters": 24,
+     "deaths": 8,
+     "lethality": 0.3333333333333333,
+     "low": 0.17971978688379642,
+     "high": 0.5329404050591954
+    },
+    {
+     "pattern": 18,
+     "encounters": 279,
+     "deaths": 76,
+     "lethality": 0.2724014336917563,
+     "low": 0.22351651574712106,
+     "high": 0.3274689121390173
+    },
+    {
+     "pattern": 21,
+     "encounters": 117,
+     "deaths": 31,
+     "lethality": 0.26495726495726496,
+     "low": 0.1933903571557129,
+     "high": 0.35146836699226264
+    },
+    {
+     "pattern": 28,
+     "encounters": 245,
+     "deaths": 63,
+     "lethality": 0.2571428571428571,
+     "low": 0.20645846869640305,
+     "high": 0.31532567029000436
+    },
+    {
+     "pattern": 5,
+     "encounters": 94,
+     "deaths": 24,
+     "lethality": 0.2553191489361702,
+     "low": 0.17799224189785487,
+     "high": 0.3518600908522227
+    },
+    {
+     "pattern": 33,
+     "encounters": 112,
+     "deaths": 28,
+     "lethality": 0.25,
+     "low": 0.17900186747034863,
+     "high": 0.3375793952193932
+    },
+    {
+     "pattern": 4,
+     "encounters": 56,
+     "deaths": 14,
+     "lethality": 0.25,
+     "low": 0.15516915222973843,
+     "high": 0.37692892001431927
+    },
+    {
+     "pattern": 8,
+     "encounters": 78,
+     "deaths": 17,
+     "lethality": 0.21794871794871795,
+     "low": 0.14076696665343852,
+     "high": 0.32160913547555214
+    },
+    {
+     "pattern": 3,
+     "encounters": 61,
+     "deaths": 13,
+     "lethality": 0.21311475409836064,
+     "low": 0.1289965277061263,
+     "high": 0.3312265389671205
+    },
+    {
+     "pattern": 7,
+     "encounters": 96,
+     "deaths": 20,
+     "lethality": 0.20833333333333334,
+     "low": 0.13910723657424498,
+     "high": 0.30000431612523104
+    },
+    {
+     "pattern": 11,
+     "encounters": 102,
+     "deaths": 20,
+     "lethality": 0.19607843137254902,
+     "low": 0.13066968570928417,
+     "high": 0.2835492981307183
+    },
+    {
+     "pattern": 27,
+     "encounters": 140,
+     "deaths": 25,
+     "lethality": 0.17857142857142858,
+     "low": 0.12397995549218581,
+     "high": 0.25033178742502316
+    },
+    {
+     "pattern": 17,
+     "encounters": 118,
+     "deaths": 20,
+     "lethality": 0.1694915254237288,
+     "low": 0.11248224271964079,
+     "high": 0.24734231638004267
+    },
+    {
+     "pattern": 2,
+     "encounters": 148,
+     "deaths": 22,
+     "lethality": 0.14864864864864866,
+     "low": 0.10025962527909332,
+     "high": 0.21481608519814088
+    },
+    {
+     "pattern": 23,
+     "encounters": 27,
+     "deaths": 4,
+     "lethality": 0.14814814814814814,
+     "low": 0.059158318596448906,
+     "high": 0.32479063346829484
+    },
+    {
+     "pattern": 12,
+     "encounters": 74,
+     "deaths": 10,
+     "lethality": 0.13513513513513514,
+     "low": 0.07508967900487225,
+     "high": 0.23119385062452902
+    },
+    {
+     "pattern": 1,
+     "encounters": 163,
+     "deaths": 21,
+     "lethality": 0.12883435582822086,
+     "low": 0.0858313831091429,
+     "high": 0.18892982752417642
+    },
+    {
+     "pattern": 9,
+     "encounters": 94,
+     "deaths": 11,
+     "lethality": 0.11702127659574468,
+     "low": 0.0666129428495252,
+     "high": 0.1975037518897268
+    },
+    {
+     "pattern": 36,
+     "encounters": 27,
+     "deaths": 3,
+     "lethality": 0.1111111111111111,
+     "low": 0.03851964789498724,
+     "high": 0.2805818254397295
+    },
+    {
+     "pattern": 10,
+     "encounters": 79,
+     "deaths": 8,
+     "lethality": 0.10126582278481013,
+     "low": 0.05221118365843358,
+     "high": 0.1873013317927407
+    },
+    {
+     "pattern": 31,
+     "encounters": 88,
+     "deaths": 8,
+     "lethality": 0.09090909090909091,
+     "low": 0.04678586169975407,
+     "high": 0.16925567067773065
+    },
+    {
+     "pattern": 6,
+     "encounters": 91,
+     "deaths": 8,
+     "lethality": 0.08791208791208792,
+     "low": 0.0452196666692631,
+     "high": 0.16398810713463732
+    },
+    {
+     "pattern": 30,
+     "encounters": 92,
+     "deaths": 7,
+     "lethality": 0.07608695652173914,
+     "low": 0.03734308465448332,
+     "high": 0.1488140746583829
+    },
+    {
+     "pattern": 32,
+     "encounters": 81,
+     "deaths": 6,
+     "lethality": 0.07407407407407407,
+     "low": 0.03438916189352608,
+     "high": 0.15233056050680582
+    }
+   ],
+   "survival": [
+    {
+     "frames": 0,
+     "alive": 1.0
+    },
+    {
+     "frames": 1000,
+     "alive": 0.8486328125
+    },
+    {
+     "frames": 2000,
+     "alive": 0.724609375
+    },
+    {
+     "frames": 3000,
+     "alive": 0.5634765625
+    },
+    {
+     "frames": 4000,
+     "alive": 0.3583984375
+    },
+    {
+     "frames": 5000,
+     "alive": 0.17578125
+    },
+    {
+     "frames": 6000,
+     "alive": 0.08203125
+    },
+    {
+     "frames": 7000,
+     "alive": 0.0498046875
+    },
+    {
+     "frames": 8000,
+     "alive": 0.033203125
+    },
+    {
+     "frames": 9000,
+     "alive": 0.0224609375
+    },
+    {
+     "frames": 10000,
+     "alive": 0.0107421875
+    },
+    {
+     "frames": 11000,
+     "alive": 0.005859375
+    },
+    {
+     "frames": 12000,
+     "alive": 0.00390625
+    },
+    {
+     "frames": 13000,
+     "alive": 0.0009765625
+    },
+    {
+     "frames": 14000,
+     "alive": 0.0009765625
+    },
+    {
+     "frames": 15000,
+     "alive": 0.0009765625
+    },
+    {
+     "frames": 16000,
+     "alive": 0.0
+    }
+   ]
+  },
+  "random": {
+   "deaths": 1024,
+   "causes": {
+    "normal": 796,
+    "kamikaze": 224,
+    "static_rect": 2,
+    "moving_rect": 2
+   },
+   "cause_shares": {
+    "normal": 0.77734375,
+    "kamikaze": 0.21875,
+    "static_rect": 0.001953125,
+    "moving_rect": 0.001953125
+   },
+   "active_frame_share": 0.015041320158412055,
+   "deaths_in_pattern": 48,
+   "death_share_in_pattern": 0.046875,
+   "enemy_deaths": 1020,
+   "enemy_in_pattern": 44,
+   "rect_deaths_in_pattern": 4,
+   "hazard": {
+    "active": 138.72832369942196,
+    "inactive": 43.07662431092848,
+    "active_frame_share": 0.015041320158412055
+   },
+   "anti_camping": {
+    "games_triggered": 0.0205078125,
+    "triggers_per_game": 0.0205078125
+   },
+   "fyou_games": 21,
+   "by_window": [
+    {
+     "window": "0-140",
+     "bucket": "Shortest 10%",
+     "games": 110,
+     "share_of_games": 0.107421875,
+     "causes": {
+      "normal": 0.8636363636363636,
+      "kamikaze": 0.13636363636363635,
+      "static_rect": 0.0,
+      "moving_rect": 0.0
+     }
+    },
+    {
+     "window": "140-190",
+     "bucket": "Early side of normal",
+     "games": 323,
+     "share_of_games": 0.3154296875,
+     "causes": {
+      "normal": 0.7832817337461301,
+      "kamikaze": 0.21671826625386997,
+      "static_rect": 0.0,
+      "moving_rect": 0.0
+     }
+    },
+    {
+     "window": "190-230",
+     "bucket": "Middle 20%",
+     "games": 190,
+     "share_of_games": 0.185546875,
+     "causes": {
+      "normal": 0.7473684210526316,
+      "kamikaze": 0.25263157894736843,
+      "static_rect": 0.0,
+      "moving_rect": 0.0
+     }
+    },
+    {
+     "window": "230-330",
+     "bucket": "Late side of normal",
+     "games": 297,
+     "share_of_games": 0.2900390625,
+     "causes": {
+      "normal": 0.7710437710437711,
+      "kamikaze": 0.22895622895622897,
+      "static_rect": 0.0,
+      "moving_rect": 0.0
+     }
+    },
+    {
+     "window": "330+",
+     "bucket": "Longest 10%",
+     "games": 104,
+     "share_of_games": 0.1015625,
+     "causes": {
+      "normal": 0.7403846153846154,
+      "kamikaze": 0.22115384615384615,
+      "static_rect": 0.019230769230769232,
+      "moving_rect": 0.019230769230769232
+     }
+    }
+   ],
+   "hazard_windows": [
+    {
+     "window": "0-140",
+     "bucket": "Shortest 10%",
+     "active": 0.0,
+     "inactive": 7.795476758966271,
+     "active_frame_share": 0.006495320511208188
+    },
+    {
+     "window": "140-190",
+     "bucket": "Early side of normal",
+     "active": 0.0,
+     "inactive": 85.6848024516336,
+     "active_frame_share": 0.008967261796609748
+    },
+    {
+     "window": "190-230",
+     "bucket": "Middle 20%",
+     "active": 0.0,
+     "inactive": 94.80169075389735,
+     "active_frame_share": 0.013326934287836397
+    },
+    {
+     "window": "230-330",
+     "bucket": "Late side of normal",
+     "active": 0.0,
+     "inactive": 135.94788218202712,
+     "active_frame_share": 0.02937545764363725
+    },
+    {
+     "window": "330+",
+     "bucket": "Longest 10%",
+     "active": 373.40598740985854,
+     "inactive": 68.25028026027431,
+     "active_frame_share": 0.14202454122805952
+    }
+   ],
+   "patterns": [],
+   "survival": [
+    {
+     "frames": 0,
+     "alive": 1.0
+    },
+    {
+     "frames": 50,
+     "alive": 1.0
+    },
+    {
+     "frames": 100,
+     "alive": 0.9990234375
+    },
+    {
+     "frames": 150,
+     "alive": 0.8115234375
+    },
+    {
+     "frames": 200,
+     "alive": 0.533203125
+    },
+    {
+     "frames": 250,
+     "alive": 0.306640625
+    },
+    {
+     "frames": 300,
+     "alive": 0.154296875
+    },
+    {
+     "frames": 350,
+     "alive": 0.0791015625
+    },
+    {
+     "frames": 400,
+     "alive": 0.0498046875
+    },
+    {
+     "frames": 450,
+     "alive": 0.0302734375
+    },
+    {
+     "frames": 500,
+     "alive": 0.0166015625
+    },
+    {
+     "frames": 550,
+     "alive": 0.0048828125
+    },
+    {
+     "frames": 600,
+     "alive": 0.001953125
+    },
+    {
+     "frames": 650,
+     "alive": 0.0009765625
+    },
+    {
+     "frames": 700,
+     "alive": 0.0009765625
+    },
+    {
+     "frames": 750,
+     "alive": 0.0
+    }
+   ]
+  },
+  "gradient": {
+   "deaths": 128,
+   "causes": {
+    "normal": 112,
+    "kamikaze": 16,
+    "static_rect": 0,
+    "moving_rect": 0
+   },
+   "cause_shares": {
+    "normal": 0.875,
+    "kamikaze": 0.125,
+    "static_rect": 0.0,
+    "moving_rect": 0.0
+   },
+   "active_frame_share": 0.060606813607335434,
+   "deaths_in_pattern": 12,
+   "death_share_in_pattern": 0.09375,
+   "enemy_deaths": 128,
+   "enemy_in_pattern": 12,
+   "rect_deaths_in_pattern": 0,
+   "hazard": {
+    "active": 49.20049200492005,
+    "inactive": 30.684583641942652,
+    "active_frame_share": 0.060606813607335434
+   },
+   "anti_camping": {
+    "games_triggered": 1.0,
+    "triggers_per_game": 2.0
+   },
+   "fyou_games": 128,
+   "by_window": [
+    {
+     "window": "0-250",
+     "bucket": "Shortest 10%",
+     "games": 0,
+     "share_of_games": 0.0,
+     "causes": {
+      "normal": 0.0,
+      "kamikaze": 0.0,
+      "static_rect": 0.0,
+      "moving_rect": 0.0
+     }
+    },
+    {
+     "window": "250-260",
+     "bucket": "Early side of normal",
+     "games": 76,
+     "share_of_games": 0.59375,
+     "causes": {
+      "normal": 0.9210526315789473,
+      "kamikaze": 0.07894736842105263,
+      "static_rect": 0.0,
+      "moving_rect": 0.0
+     }
+    },
+    {
+     "window": "260-300",
+     "bucket": "Middle 20%",
+     "games": 14,
+     "share_of_games": 0.109375,
+     "causes": {
+      "normal": 1.0,
+      "kamikaze": 0.0,
+      "static_rect": 0.0,
+      "moving_rect": 0.0
+     }
+    },
+    {
+     "window": "300-400",
+     "bucket": "Late side of normal",
+     "games": 25,
+     "share_of_games": 0.1953125,
+     "causes": {
+      "normal": 0.72,
+      "kamikaze": 0.28,
+      "static_rect": 0.0,
+      "moving_rect": 0.0
+     }
+    },
+    {
+     "window": "400+",
+     "bucket": "Longest 10%",
+     "games": 13,
+     "share_of_games": 0.1015625,
+     "causes": {
+      "normal": 0.7692307692307693,
+      "kamikaze": 0.23076923076923078,
+      "static_rect": 0.0,
+      "moving_rect": 0.0
+     }
+    }
+   ],
+   "hazard_windows": [
+    {
+     "window": "0-250",
+     "bucket": "Shortest 10%",
+     "active": 0.0,
+     "inactive": 0.0,
+     "active_frame_share": 0.02689374877218566
+    },
+    {
+     "window": "250-260",
+     "bucket": "Early side of normal",
+     "active": 0.0,
+     "inactive": 886.2188291267671,
+     "active_frame_share": 0.038591926489235026
+    },
+    {
+     "window": "260-300",
+     "bucket": "Middle 20%",
+     "active": 0.0,
+     "inactive": 73.40203739863426,
+     "active_frame_share": 0.06733300426092449
+    },
+    {
+     "window": "300-400",
+     "bucket": "Late side of normal",
+     "active": 0.0,
+     "inactive": 141.5820937018012,
+     "active_frame_share": 0.16314691198292725
+    },
+    {
+     "window": "400+",
+     "bucket": "Longest 10%",
+     "active": 112.99008784695538,
+     "inactive": 4.686123589284201,
+     "active_frame_share": 0.33230289826786424
+    }
+   ],
+   "patterns": [],
+   "survival": [
+    {
+     "frames": 0,
+     "alive": 1.0
+    },
+    {
+     "frames": 100,
+     "alive": 1.0
+    },
+    {
+     "frames": 200,
+     "alive": 1.0
+    },
+    {
+     "frames": 300,
+     "alive": 0.296875
+    },
+    {
+     "frames": 400,
+     "alive": 0.1015625
+    },
+    {
+     "frames": 500,
+     "alive": 0.078125
+    },
+    {
+     "frames": 600,
+     "alive": 0.0546875
+    },
+    {
+     "frames": 700,
+     "alive": 0.0234375
+    },
+    {
+     "frames": 800,
+     "alive": 0.015625
+    },
+    {
+     "frames": 900,
+     "alive": 0.0078125
+    },
+    {
+     "frames": 1000,
+     "alive": 0.0078125
+    },
+    {
+     "frames": 1100,
+     "alive": 0.0078125
+    },
+    {
+     "frames": 1200,
+     "alive": 0.0078125
+    },
+    {
+     "frames": 1300,
+     "alive": 0.0078125
+    },
+    {
+     "frames": 1400,
+     "alive": 0.0
+    }
+   ]
+  }
+ },
+ "paired": {
+  "k4_minus_k1_argmax": {
+   "mean": {
+    "diff": -5647.333984375,
+    "ci": [
+     -6046.365014648438,
+     -5231.958251953125
+    ],
+    "better": 172,
+    "worse": 852
+   },
+   "q1": {
+    "diff": -1911.13671875,
+    "ci": [
+     -2184.1158203125,
+     -1643.1583007812503
+    ],
+    "better": 172,
+    "worse": 852
+   },
+   "capped_mean": {
+    "diff": -5114.2607421875,
+    "ci": [
+     -5452.65556640625,
+     -4780.30830078125
+    ],
+    "better": 172,
+    "worse": 852
+   }
+  },
+  "k4_minus_k1_sampled": {
+   "mean": {
+    "diff": -4352.595703125,
+    "ci": [
+     -4614.2213134765625,
+     -4115.542236328125
+    ],
+    "better": 105,
+    "worse": 919
+   },
+   "q1": {
+    "diff": -1558.37890625,
+    "ci": [
+     -1746.566796875,
+     -1373.7282226562502
+    ],
+    "better": 105,
+    "worse": 919
+   },
+   "capped_mean": {
+    "diff": -4279.6259765625,
+    "ci": [
+     -4498.922924804688,
+     -4044.888427734375
+    ],
+    "better": 105,
+    "worse": 919
+   }
+  },
+  "argmax_minus_sampled_k1": {
+   "mean": {
+    "diff": 2818.2880859375,
+    "ci": [
+     2349.2316650390626,
+     3273.512841796875
+    ],
+    "better": 659,
+    "worse": 364
+   },
+   "q1": {
+    "diff": 862.71875,
+    "ci": [
+     560.14267578125,
+     1147.7316406249997
+    ],
+    "better": 659,
+    "worse": 364
+   },
+   "capped_mean": {
+    "diff": 2358.1845703125,
+    "ci": [
+     1999.780224609375,
+     2744.427294921875
+    ],
+    "better": 658,
+    "worse": 363
+   }
+  },
+  "argmax_minus_sampled_k4": {
+   "mean": {
+    "diff": 1523.5498046875,
+    "ci": [
+     1382.4840576171875,
+     1660.8562255859374
+    ],
+    "better": 761,
+    "worse": 263
+   },
+   "q1": {
+    "diff": 509.9609375,
+    "ci": [
+     418.511328125,
+     605.8237304687499
+    ],
+    "better": 761,
+    "worse": 263
+   },
+   "capped_mean": {
+    "diff": 1523.5498046875,
+    "ci": [
+     1383.5775634765625,
+     1653.1169921875
+    ],
+    "better": 761,
+    "worse": 263
+   }
+  },
+  "best_minus_c100": {
+   "mean": {
+    "diff": 5477.1025390625,
+    "ci": [
+     5069.094580078125,
+     5919.956787109375
+    ],
+    "better": 847,
+    "worse": 177
+   },
+   "q1": {
+    "diff": 1951.2265625,
+    "ci": [
+     1695.71904296875,
+     2221.7146484375
+    ],
+    "better": 847,
+    "worse": 177
+   },
+   "capped_mean": {
+    "diff": 4944.029296875,
+    "ci": [
+     4622.137548828125,
+     5291.90048828125
+    ],
+    "better": 847,
+    "worse": 177
+   }
+  }
+ }
+}

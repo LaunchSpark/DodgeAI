@@ -83,6 +83,9 @@ function ThemeToggle() {
 function Header({ state, connected }: { state: State; connected: boolean }) {
   const paused = state.status === "paused"
   const phase = state.progress_phase === "learning" ? state.learning_progress : state.rollout_progress
+  // A scoring beside training; a paused one has the header to itself.
+  const scoring = state.training_status
+  const scoringBeside = scoring.scoring != null && state.status !== "scoring dev cohort"
   return (
     <header className="sticky top-0 z-10 border-b bg-background/95 backdrop-blur">
       <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-3 px-4 py-3">
@@ -96,6 +99,11 @@ function Header({ state, connected }: { state: State; connected: boolean }) {
           <span className="text-muted-foreground tabular-nums">
             update {state.update.toLocaleString()} · {Math.round(state.steps_per_second).toLocaleString()} steps/s · {duration(state.elapsed_seconds)}
           </span>
+          {scoringBeside && (
+            <span className="text-muted-foreground tabular-nums">
+              · dev cohort u{scoring.scoring!.toLocaleString()} {Math.round(100 * (scoring.scoring_progress ?? 0))}% · {Math.round(scoring.scoring_steps_per_second ?? 0).toLocaleString()} steps/s
+            </span>
+          )}
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-1">
           <Button size="sm" variant="outline" onClick={() => run(() => post("pause"))}>

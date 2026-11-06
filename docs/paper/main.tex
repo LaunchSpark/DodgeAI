@@ -27,24 +27,26 @@ reviewed.}}
 \begin{abstract}
 We report the current state of a reinforcement-learning agent for Dodge, a
 small score-driven arcade game whose hazards intensify as the player scores.
-The cartridge's own Lua source runs headlessly under LuaJIT inside a partial
-PICO-8 runtime written in Python. The policy, VelocityFlow~v2, is a
+Training and evaluation run on Turner's native Rust port of the cartridge.
+The policy, VelocityFlow~v2, is a
 111k-parameter convolutional network whose only output is a time-sliced danger
 field over the arena; a fixed controller reads that field along the simulated
 path of each of the nine actions, so the logits are path danger and nothing
-between field and action is learned. After 21,051 PPO updates (43.2M
-decisions), the best checkpoint survives a mean of 3,922 alive frames
-(65~seconds) on the hardest setting, with a worst-quarter mean of 1,180, on
-512 fresh seeds. It beats an earlier checkpoint on the same seeds by
-623~frames (95\% interval $+223$ to $+975$). Evaluating it with a decision every
-fourth frame instead of every frame halves survival ($-1{,}805$ frames), the
-reverse of a recent report's ``control-frequency surprise'' and consistent
-with our checkpoint having been trained on per-frame decisions. Observation-only
-death telemetry shows that the anti-camping guard never fires for this policy,
-that 74\% of deaths occur while a pattern is active (in 44\% of frames), and
-that 69\% of enemy-contact deaths happen during patterns. Replaying the 310
-deaths inside static patterns shows two recurring shapes: running along a wall
-into a bar, and circling in the open centre until an enemy closes in. We
+between field and action is learned. After 24,000 PPO updates (91.6M
+decisions), the best checkpoint survives a mean of 8,888 alive frames
+(about 2.5~minutes) on the hardest setting, with a worst-quarter mean of 2,902,
+on 1,024 evaluation seeds with no frame cap. It beats an earlier checkpoint on
+the same seeds by 5,477~frames (95\% interval $+5{,}069$ to $+5{,}920$).
+Evaluating it with a decision every fourth frame instead of every frame cuts
+survival by 64\% ($-5{,}647$ frames), the reverse of a recent report's
+``control-frequency surprise'' and consistent with our checkpoint having been
+trained on per-frame decisions; sampling actions instead of taking the argmax
+costs 2,818 frames. Death telemetry shows that the anti-camping guard fires in
+4\% of games, that 69\% of deaths occur while a pattern is active (in 42\% of
+frames), and that 62\% of enemy-contact deaths happen during patterns. Replaying the 496
+deaths inside static patterns shows that the deadliest layouts kill mostly
+through enemies that catch the player in the open or against a block, and
+through rectangles only where the layout is a dense grid or a frame of bars. We
 describe the game, model, and protocol, report these results with their
 limits, and pose specific questions.
 \end{abstract}
@@ -65,9 +67,9 @@ This draft follows the evaluation protocol of a recent working draft on the
 same game by Turner~\cite{turner}, which trained an entity-transformer teacher
 on a Rust port, so that the two efforts can be compared on like terms: alive
 frames, quarter means, sampled versus argmax actions, one- versus four-frame
-decisions, and instrumented death telemetry. The two projects differ in
-almost everything else: simulator, observation, architecture, reward,
-difficulty, and training history. Cross-paper comparisons of levels are
+decisions, and instrumented death telemetry. The two projects now share that
+simulator but differ in almost everything else: observation, architecture,
+reward, difficulty, and training history. Cross-paper comparisons of levels are
 therefore indicative only (Section~\ref{sec:limits}).
 
 We do not present a finished or competitive agent. The contributions we think
@@ -76,15 +78,17 @@ are of interest are:
 \item A field-only policy: a convolutional network that predicts danger per
   arena cell at six future times, read by a fixed path-sampling controller, so
   that the network never outputs an action directly (Section~\ref{sec:model}).
-\item A paired, 512-seed evaluation of the best checkpoint on the hardest
-  setting, with bootstrap intervals and an earlier checkpoint and two
-  baselines on the same seeds (Section~\ref{sec:headline}).
+\item A paired, uncapped, 1,024-seed evaluation of the best checkpoint on
+  the hardest setting, with bootstrap intervals and an earlier checkpoint and
+  two baselines on the same seeds, drawn with the training dashboard's own
+  evaluation charts (Section~\ref{sec:headline}).
 \item A decision-frequency result that runs opposite to~\cite{turner}:
-  coarser decisions halve survival for a policy trained at one decision per
-  frame (Section~\ref{sec:k}).
-\item Death telemetry: the anti-camping guard is absent from this policy's
-  deaths, while patterns, and enemies during patterns, account for most of
-  them; replayed paths into the deadliest static patterns
+  coarser decisions cut survival by nearly two thirds for a policy trained at
+  one decision per frame (Section~\ref{sec:k}).
+\item Death telemetry: the anti-camping guard is nearly absent from this
+  policy's games, while patterns, and enemies during patterns, account for
+  most deaths; per-pattern lethality from at least 35 encounters each; and
+  replayed paths into the deadliest static patterns
   (Sections~\ref{sec:where}--\ref{sec:paths}).
 \end{enumerate}
 Section~\ref{sec:questions} lists the questions on which we most want input.
@@ -116,14 +120,16 @@ normal enemy, kamikaze (body or explosion), static-pattern rectangle, or
 moving-pattern rectangle.
 
 \section{Environment and Observations}
-\emph{Simulator.} The game is not ported. A Python runtime implements the
-subset of the PICO-8 API the cartridge uses and executes the cartridge's own
-Lua under LuaJIT via \texttt{lupa}; a null backend skips rendering. Training
-controls (enemy-type switches, spawn-rate scaling, event counters) are layered
-over the unmodified cartridge functions rather than edited into its source.
-Rounds start directly in gameplay with the cartridge's keyboard movement
-model. All runs here use the hard setting (cartridge difficulty~3) with
-patterns, powerups, and both enemy types on at 100\% spawn rate.
+\emph{Simulator.} All training and evaluation now run on Turner's native
+Rust port of the cartridge~\cite{turner}, the simulator of that draft, loaded
+as a Python extension. A branch of it adds what this project needs, all
+opt-in: our observation computed natively, one-frame decisions, death
+telemetry, and Turner's per-lane gameplay trace. An earlier version of this
+draft ran the cartridge's own Lua under a Python PICO-8 runtime; none of its
+numbers are reused here. Rounds start directly in gameplay with the
+cartridge's keyboard movement model. All runs here use the hard setting
+(cartridge difficulty~3) with patterns, powerups, and both enemy types on at
+100\% spawn rate.
 
 \emph{Units.} A frame is one 1/60\,s update. A decision is one policy action,
 held for $K$ frames. The current training configuration uses $K=1$; the
@@ -139,9 +145,11 @@ two entities share a cell the more dangerous one is kept. Warnings are encoded
 for exactly as long as the cartridge draws them. The agent never sees seeds,
 hidden timers, or future pattern schedules.
 
-\emph{Reward.} Per frame survived, $+0.02$; plus the score change, where score
+\emph{Reward.} Per frame survived, $+0.01$; plus the score change, where score
 from enemies destroying one another (0.5 per enemy, not caused by the agent)
-is weighted 0.05 and all other score 1.0; and $-2$ on death. A frame cap
+is weighted 0.05 and all other score 1.0; and $-3.5$ on death. These are the
+weights of the final training run; earlier runs used others
+(Section~\ref{sec:limits}). A frame cap
 while the player is alive is a truncation and bootstraps; death is a
 termination and does not~\cite{pardo}.
 
@@ -166,8 +174,10 @@ Value output & 1 scalar \\
 \section{Model and Training}\label{sec:model}
 \emph{Architecture.} VelocityFlow~v2 (Fig.~\ref{fig:arch}) is fully
 convolutional up to its output. A trunk of four $3\times3$ convolutions
-(32--64 channels, one dilated) maps the one-hot grid, velocity planes, and
-player channels to 32 feature maps; its three heavy layers run at
+(32--64 channels, one dilated) maps eleven input planes to 32 feature maps:
+the category grid expanded to eight one-hot planes, a plane marking the
+player's own cell, and the two entity-velocity planes. The player's
+velocity is not among them. Its three heavy layers run at
 $16\times16$ and are interpolated back to $32\times32$. A context branch pools
 the trunk to $4\times4$, convolves, and is bilinearly upsampled and
 concatenated, so every cell sees an arena-wide summary. A $1\times1$ head
@@ -176,20 +186,26 @@ $t\in\{4,12,24,48,72,108\}$ frames.
 
 \emph{Controller.} For each action, the cartridge's movement model gives the
 player's offset at each $t$ (from rest). The controller samples field slice
-$t$ at the player's position plus that offset, weights the six samples by
-$0.985^t$, and negates the sum. The nine path dangers are standardised across
+$t$ bilinearly at the player's position plus that offset, weights the six
+samples by $0.985^t$, and negates the sum. Because the offsets start from rest
+and the trunk sees only the player's cell, nothing on the path from
+observation to action knows the player's current velocity: a player moving at
+speed reads danger along paths it cannot follow until its momentum decays,
+and only the critic receives $\dot p_x, \dot p_y$. The nine path dangers are standardised across
 actions and multiplied by a learned temperature to give the logits; there is
-no policy head. The temperature, initialised at 0.5, had grown to 6.4 in the
-best checkpoint.
+no policy head. The temperature, initialised at 0.5, grew to 6.4 by update
+21,051 and settled at 2.80 in the best checkpoint.
 
 \emph{Critic.} The value head sees the trunk's channel means, an
 $8\times4\times4$ coarse arena map, and the player inputs, through a 64-unit
 MLP. All activations are LeakyReLU. The model has 111,424 parameters.
 
 \emph{PPO.} We use Stable-Baselines3~\cite{sb3} PPO~\cite{ppo} with
-GAE~\cite{gae} (Table~\ref{tab:ppo}). Each update collects 256 decisions from
-each of eight environments and runs four epochs of 256-sample minibatches
-with a KL early stop. Training ran in a dashboard that allowed game settings
+GAE~\cite{gae} (Table~\ref{tab:ppo}). The best checkpoint is update 24,000,
+after 91.6M decisions. Updates up to about 21,000 collected 256 decisions
+from each of eight environments; the final run collected 256 from each of
+64 (16,384 per update) and ran four epochs of 512-sample minibatches with a
+KL early stop. Training ran in a dashboard that allowed game settings
 and reward weights to be changed between updates; checkpoints do not record
 which settings were in force when, so the training curriculum is not
 reconstructible from the checkpoints alone.
@@ -200,7 +216,7 @@ reconstructible from the checkpoints alone.
   box/.style={draw, rounded corners=1pt, align=center, font=\scriptsize,
               inner sep=2.5pt, minimum height=0.55cm},
   ar/.style={-{Stealth[length=1.6mm]}, thin}]
-\node[box] (obs) {observation: player 4 + grid $3\times32\times32$};
+\node[box] (obs) {observation: player 4 + grid $3\times32\times32$\\$\to$ 11 planes: 8 one-hot, player cell, $v_x$, $v_y$};
 \node[box, below=0.28cm of obs] (trunk) {conv trunk, 32 ch (middle at $16\times16$)};
 \node[box, below left=0.3cm and -1.2cm of trunk] (ctx) {context: pool $4\times4$,\\conv, bilinear up};
 \node[box, below right=0.3cm and -1.2cm of trunk] (val) {critic: means + $8\times4\times4$\\map + player $\to$ MLP 64};
@@ -223,70 +239,76 @@ actions are chosen by reading it along simulated paths.}
 \end{figure}
 
 \begin{table}[t]
-\caption{PPO settings (all three VelocityFlow~v2 checkpoints).}
+\caption{PPO settings of the final training run (updates 21,420--24,000).}
 \label{tab:ppo}
 \centering
 \begin{tabular}{@{}ll@{}}
 \toprule
 Setting & Value \\
 \midrule
-Discount $\gamma$, GAE $\lambda$ & 0.99, 0.95 \\
+Discount $\gamma$, GAE $\lambda$ & 0.997, 0.95 \\
 Clip, entropy coef., value coef. & 0.2, 0.01, 1.0 \\
-Epochs, minibatch, grad-norm clip & 4, 256, 0.5 \\
-Rollout & 8 envs $\times$ 256 decisions \\
+Epochs, minibatch, grad-norm clip & 4, 512, 0.5 \\
+Rollout & 64 envs $\times$ 256 decisions \\
 Target KL (epoch early stop) & 0.02 \\
-Learning rate & $3\times10^{-4}$, constant \\
+Learning rate & staged, $3\times10^{-4}\to3\times10^{-5}$ \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \section{Evaluation Protocol}\label{sec:protocol}
 All numbers are alive frames at 60\,Hz on the hard setting with patterns and
-powerups on and an 18,000-frame cap, unless stated. As in~\cite{turner} we
+powerups on. Games are uncapped: each runs until the player dies, as on the
+training dashboard's evaluation page, whose code produced every number and
+chart in Section~\ref{sec:headline} onward. For comparison with the earlier
+draft and~\cite{turner}, we also give means with an 18,000-frame cap. As in~\cite{turner} we
 report Worst and Best (single games), Median, Mean, and two quarter means: Q1
 is the mean of the worst 25\% of games and Q4 the mean of the best 25\%; Q1 is
 not the 25th percentile. We treat the lower tail as primary.
 
-Every condition plays the same 512 seeds (256 for the earlier checkpoint and
-random baseline, 128 for the heuristic), a contiguous block starting at 1,000,000;
-training draws 31-bit seeds at random, so overlap is improbable but not
-excluded. Differences are paired by seed
+Every condition plays the same 1,024 seeds (128 for the heuristic, which is
+slow), a contiguous block starting at 1,000,000; training draws seeds outside
+the reserved evaluation and development ranges. Differences are paired by seed
 and bootstrapped by seed (2,000 resamples); single-condition intervals use
 4,000 resamples for the mean and 1,000 for Q1. Argmax evaluation chooses the most likely action; sampled evaluation
-draws from the policy. The evaluator runs up to 64 games in lockstep with
-batched GPU inference. In a spot check, a batched GPU game matched an
-unbatched CPU run of the same seed in frame, cause, and score, and the telemetry hooks wrap cartridge
-functions without touching the random-number generator.
+draws from the policy. The evaluator runs all 1,024 games in lockstep on the
+native engine with batched GPU inference. Death telemetry (the killer's class,
+the pattern active at death, every pattern encounter, and anti-camping
+triggers) is reported by the engine and does not touch the game's
+random-number generator.
 
 The best checkpoint was evaluated as tracked in the repository
-(\texttt{velocity-flow-v2-latest.zip}, SHA-256 prefix
-\texttt{71e3733d91a56f94}). No evaluation result was used to choose a
-training setting; the only selection made on this cohort is the comparison
-of two checkpoints in Section~\ref{sec:headline}.
+(\texttt{velocity-flow-v2-best.zip}, SHA-256 prefix
+\texttt{dcd5f9b10d3913b8}). It was chosen during training on a separate
+256-seed development cohort (seeds from 2,000,000), so no result on the
+evaluation cohort was used to select it or any training setting.
 
 \section{Results}
 
 \subsection{The best checkpoint}\label{sec:headline}
 Table~\ref{tab:main} gives the headline numbers. With a decision every frame
-and argmax actions, the best checkpoint survives a mean of 3,922 frames
-(95\% interval 3,707--4,138) and a median of 3,600; its worst quarter averages
-1,180 (1,047--1,328). 89\% of games pass 1,000 frames, 46\% pass 4,000 and 6\%
-pass 8,000 (Fig.~\ref{fig:survival}). No game reached the cap; the longest
-lasted 15,235 frames (17,732 with sampled actions).
+and argmax actions, the best checkpoint survives a mean of 8,888 frames
+(95\% interval 8,496--9,287), about 2.5 minutes, and a median of 6,917; its
+worst quarter averages 2,902 (2,658--3,157). 97\% of games pass 1,000 frames,
+83\% pass 4,000 and 43\% pass 8,000 (Fig.~\ref{fig:survival}). With no cap,
+80 games (7.8\%) passed 18,000 frames and the longest lasted 49,081. Capped at
+18,000 the mean is 8,355; the checkpoint scored 8,881 on the 256-seed
+development cohort it was selected on.
 
-On the same 256 seeds, the earlier \texttt{can-reach-100} checkpoint (5,691
-updates) averages 3,208. The later checkpoint is ahead by 623 frames in mean
-($+223$ to $+975$) and 431 in Q1 ($+175$ to $+674$), so the additional 15,360
-updates helped, the lower tail included. A uniformly random policy survives
-196 frames. The repository's hand-written gradient-field controller survives
-126: on this setting it idles at the spawn point, triggers the anti-camping
-guard at frame~51, and dies near frame~119 in almost every game. It is
-therefore not a meaningful upper reference here, unlike the 6,115-frame
-heuristic in~\cite{turner}.
+On the same 1,024 seeds, the earlier \texttt{can-reach-100} checkpoint
+(5,691 updates) averages 3,411. The best checkpoint is ahead by 5,477 frames
+in mean ($+5{,}069$ to $+5{,}920$) and 1,951 in Q1 ($+1{,}696$ to
+$+2{,}222$), and outlasts it on 847 of the 1,024 seeds. A uniformly random
+policy survives 225 frames. The repository's hand-written gradient-field
+controller survives 314 (128 seeds): on this setting it lingers in the
+centre, triggers the anti-camping guard in every game, and most games end
+near frame 255. It is therefore not a meaningful upper reference here, unlike
+the 6,115-frame heuristic in~\cite{turner}.
 
 \begin{table}[t]
-\caption{Survival on fresh seeds, hard setting, alive frames.
-1f/4f: one/four frames per decision.}
+\caption{Survival on 1,024 evaluation seeds, hard setting, alive frames,
+uncapped. 1f/4f: one/four frames per decision. Q1/Q4: mean of the worst/best
+25\% of games, not percentiles.}
 \label{tab:main}
 \centering
 \setlength{\tabcolsep}{3.2pt}
@@ -295,14 +317,14 @@ heuristic in~\cite{turner}.
 \toprule
 Policy & Mode & $n$ & Worst & Q1 & Median & Mean & Q4 & Best \\
 \midrule
-v2-latest & 1f argmax  & 512 & 453 & 1,180 & 3,600 & 3,922 & 7,262 & 15,235 \\
-v2-latest & 1f sampled & 512 & 176 & 1,106 & 3,757 & 3,854 & 7,034 & 17,732 \\
-v2-latest & 4f argmax  & 512 & 235 & 601 & 1,790 & 2,118 & 4,158 & 8,668 \\
-v2-latest & 4f sampled & 512 & 127 & 577 & 1,582 & 1,865 & 3,708 & 7,830 \\
+v2-best & 1f argmax  & 1,024 & 414 & 2,902 & 6,917 & 8,888 & 17,887 & 49,081 \\
+v2-best & 1f sampled & 1,024 & 170 & 2,039 & 5,306 & 6,070 & 11,485 & 33,023 \\
+v2-best & 4f argmax  & 1,024 & 284 & 991 & 3,048 & 3,241 & 5,800 & 15,278 \\
+v2-best & 4f sampled & 1,024 & 125 & 481 & 1,485 & 1,717 & 3,409 & 8,591 \\
 \midrule
-can-reach-100 & 1f argmax & 256 & 213 & 824 & 3,292 & 3,208 & 5,747 & 9,709 \\
-random & 1f & 256 & 72 & 110 & 188 & 196 & 302 & 541 \\
-gradient field & 1f & 128 & 119 & 119 & 119 & 126 & 145 & 259 \\
+can-reach-100 & 1f argmax & 1,024 & 198 & 951 & 3,302 & 3,411 & 6,117 & 15,710 \\
+random & 1f & 1,024 & 99 & 139 & 206 & 225 & 343 & 705 \\
+gradient field & 1f & 128 & 252 & 254 & 255 & 314 & 465 & 1,337 \\
 \bottomrule
 \end{tabular}}
 \end{table}
@@ -310,9 +332,9 @@ gradient field & 1f & 128 & 119 & 119 & 119 & 126 & 145 & 259 \\
 \begin{figure}[t]
 \centering
 \includegraphics[width=\columnwidth]{fig_survival.pdf}
-\caption{Share of games still alive at each 1,000-frame milestone
-(\texttt{velocity-flow-v2-latest}, 512 fresh seeds per line; baselines on
-their own seed counts).}
+\caption{Share of games still alive at each 500-frame milestone, 1,024
+evaluation seeds per line, as drawn by the training dashboard's evaluation
+page.}
 \label{fig:survival}
 \end{figure}
 
@@ -320,116 +342,151 @@ their own seed counts).}
 Turner~\cite{turner} found that a policy trained with $K=4$ more than doubled
 its worst-quarter survival when evaluated at $K=1$ with frozen weights. We ran
 the same $2\times2$ design, $K\in\{1,4\}$ by action mode, on our checkpoint,
-whose current training configuration is $K=1$ (Fig.~\ref{fig:kgrid}). The
-effect is of similar size and opposite sign. Moving to four-frame decisions
-lowered the mean by 1,805 frames under argmax ($-2{,}054$ to $-1{,}555$) and
-1,989 under sampling, and Q1 by 578 ($-731$ to $-430$) and 529. Under $K=4$,
-29\% of games end before frame 1,000, against 11\% at $K=1$.
+whose final training ran at $K=1$ (Fig.~\ref{fig:kgrid}). The effect runs the
+other way and is large. Moving to four-frame decisions lowered the mean by
+5,647 frames under argmax ($-6{,}046$ to $-5{,}232$), 64\% of it, and by
+4,353 under sampling ($-4{,}614$ to $-4{,}116$); Q1 fell by 1,911
+($-2{,}184$ to $-1{,}643$) and 1,558. Under $K=4$, 14\% of games end before
+frame 1,000, against 3\% at $K=1$, and four-frame play is shorter on 852 of
+the 1,024 seeds.
 
-Argmax and sampling are indistinguishable at $K=1$ (mean $+68$, $-242$ to
-$+365$; Q1 $+74$, $-139$ to $+281$). At $K=4$, argmax is ahead in mean
-($+253$, $+80$ to $+415$) but not in Q1 ($+24$, $-52$ to $+105$).
+Unlike in the earlier draft, argmax is clearly better than sampling at both
+intervals: by 2,818 frames in mean at $K=1$ ($+2{,}349$ to $+3{,}274$) and
+863 in Q1 ($+560$ to $+1{,}148$), and by 1,524 in mean at $K=4$ ($+1{,}382$
+to $+1{,}661$). A likely reason is the learned temperature, which fell from 6.4
+at update 21,051 to 2.8 (Section~\ref{sec:model}): the sampled policy is now
+much less deterministic, and the cost of its exploratory actions shows.
 
-Read together with~\cite{turner}, the simplest account is that a policy does
-best at the decision rate it was trained for, and that for both policies that
-rate leaves the agent better off when it is one frame. One detail is specific
-to our controller: its action-path offsets were computed for an action held
-four frames, and that table is stored in every checkpoint and was not
-regenerated when training moved to $K=1$. The policy therefore scores its nine
-actions as if each were held four frames, while executing each for one.
+Read together with~\cite{turner}, the simplest account is still that a policy
+does best at the decision rate it was trained for. One detail is specific to
+our controller: its action-path offsets were computed for an action held four
+frames, and that table is stored in every checkpoint and was not regenerated
+when training moved to $K=1$. The policy therefore scores its nine actions as
+if each were held four frames, while executing each for one.
 
 \begin{figure}[t]
 \centering
 \includegraphics[width=\columnwidth]{fig_k_grid.pdf}
-\caption{One frozen checkpoint, four versus one frame per decision, sampled
-and argmax, on the same 512 fresh seeds. Q1 is the mean of the worst 25\% of
-games.}
+\caption{One frozen checkpoint, four versus one frame per decision, argmax
+and sampled, on the same 1,024 seeds, with 95\% bootstrap intervals. Q1 is the
+mean of the worst 25\% of games.}
 \label{fig:kgrid}
 \end{figure}
 
 \subsection{Where games end}\label{sec:where}
-Fig.~\ref{fig:causes} splits the first lethal contact by the window in which
-the game ended. At $K=1$, normal enemies account for 59--77\% of deaths in
-every window and 71\% overall; kamikazes 10\%, static-pattern rectangles
-15\%, moving-pattern rectangles 3\%. Rectangles matter most early: they are
-27\% of deaths before frame 1,000 and 28\% between 1,000 and 2,000, falling to
-13--19\% later. At $K=4$, deaths shift heavily toward the first 2,000 frames
-(56\% of games end there, against 27\% at $K=1$) and toward normal enemies.
+Fig.~\ref{fig:causes} splits the first lethal contact by when the game ended,
+in windows of the death-time distribution (shortest 10\%, the next 30\%, the
+middle 20\%, the next 30\%, the longest 10\%). At $K=1$, normal enemies
+account for 60--76\% of deaths in every window and 68\% overall; kamikazes
+12\%, static-pattern rectangles 16\%, moving-pattern rectangles 4\%. Static
+rectangles matter most in short and middling games: 18\% of deaths in the
+shortest tenth (under 2,600 frames) and 28\% between 2,600 and 5,900, falling
+to 3--4\% in games that last past 8,500 frames, where enemies account for
+about nine deaths in ten. At $K=4$ the windows are far shorter (the longest
+tenth starts at 5,700 frames) and static rectangles take 15--27\% of deaths
+in every window.
 
 \begin{figure*}[t]
 \centering
 \includegraphics[width=\textwidth]{fig_causes.pdf}
-\caption{First lethal contact by the window in which the game ended,
-\texttt{velocity-flow-v2-latest}, argmax, 512 fresh games per setting (4f:
-$K=4$; 1f: $K=1$). The percentage above each bar is that window's share of
-all games.}
+\caption{First lethal contact by the window of the death-time distribution in
+which the game ended, best checkpoint, argmax, 1,024 games per panel (left
+$K=1$, right $K=4$). Each bar sums to 100\%; window boundaries in frames are
+under the bars.}
 \label{fig:causes}
 \end{figure*}
 
 \subsection{Death telemetry: guard, patterns, and enemies}\label{sec:telemetry}
-We added an observation-only recorder in Lua: it wraps the cartridge's
-\texttt{collide}, \texttt{die}, \texttt{fyou}, \texttt{addenemy} and
-\texttt{updatepatterns} functions, logs every anti-camping trigger and the
-enemies it spawns, every pattern encounter by identifier, and at the first
-lethal contact the killer's class and the active pattern. It consumes no
-random numbers and does not touch reward or observation; a recorded game
-reproduces the unrecorded game frame for frame.
+The engine reports, for every game, the killer's class, the pattern active
+at death, every pattern encounter by identifier, the frames lived with a
+pattern active, and every anti-camping trigger. It consumes no random numbers
+and does not touch reward or observation.
 
-\emph{The guard is not involved.} The anti-camping guard fired in none of the
-2,048 games of the best checkpoint, under any setting, so none of its deaths
-follow a trigger. The earlier \texttt{can-reach-100} checkpoint triggered it in
-97.7\% of games, although its spawns killed the player in only 2 of 203
-enemy-contact deaths. Somewhere between the two checkpoints the policy
-stopped lingering in the centre.
+\emph{The guard is rarely involved.} The anti-camping guard fired in 39 of
+the 1,024 games at $K=1$ under argmax, and in 54 of the 4,096 games of the
+best checkpoint across all four settings. The earlier \texttt{can-reach-100}
+checkpoint triggered it in every one of its 1,024 games. Somewhere between
+the two checkpoints the policy stopped lingering in the centre.
 
-\emph{Patterns are where games end.} A pattern is active in 44\% of the frames
-the best checkpoint lives at $K=1$ but in 74\% of its deaths: 4.35 deaths per
-10,000 frames with a pattern active against 1.16 without, a ratio of 3.8. At
-$K=4$ the rates are 7.41 and 2.78 (ratio 2.7). Of 512 deaths at $K=1$, 310
-happen during static patterns, 71 during moving patterns, and 131 with no
-pattern active. The ratio is smaller than the 14--27$\times$ reported
-in~\cite{turner}; we have not established why.
+\emph{Patterns are where games end.} A pattern is active in 42\% of the frames
+the best checkpoint lives at $K=1$ but in 69\% of its deaths (711 of 1,024):
+1.85 deaths per 10,000 frames with a pattern active against 0.60 without, a
+ratio of 3.1 (Fig.~\ref{fig:hazard}). Patterns are deadlier in every window of
+the game, by $5.4\times$ in the shortest tenth of games and $2.0\times$ in the
+longest. The ratio shrinks because the death rate with no pattern active
+rises about eightfold, from 0.14 to 1.16 per 10,000 frames, while the rate
+with a pattern active only triples: enemy speed and spawn timing scale with
+score, so between patterns the arena of a long game is far more dangerous
+than that of a short one. At $K=4$ the rates are 5.20 and 1.49 (ratio 3.5).
+The ratio is smaller than the 14--27$\times$ reported in~\cite{turner}.
+Game length and difficulty plausibly account for part of the gap, since our
+games are longer and run on the hard setting, but not all of it: even our
+shortest tenth of games, under 2,600 frames, gives only $5.4\times$. We have
+not tested this further.
 
-\emph{The policy loses to enemies while patterns are active.} 69\% of
-enemy-contact deaths at $K=1$ occur during a pattern, and only 94 of the 381
-deaths during a pattern are rectangle contact. Lethality is concentrated but
-not in a short list (Fig.~\ref{fig:patterns}). Among patterns met at least 30
-times, pattern 28 ends 34\% of its 144 encounters in death, pattern 21 32\%,
-patterns 17 and 18 26\%. Patterns 18 and 28 are each the active pattern in 13
-of the 57 deaths before frame 1,000. At $K=4$ the same two patterns are far
-deadlier (18: 57\%, 28: 49\%); all but three of the frequently met patterns
-are more lethal at $K=4$, and those three differ by at most three points.
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{fig_hazard.pdf}
+\caption{Deaths per 10,000 frames lived with a pattern active (solid) and
+without (dashed), by window of the death-time distribution; best checkpoint,
+$K=1$, argmax, 1,024 games. Log scale.}
+\label{fig:hazard}
+\end{figure}
+
+\emph{The policy loses to enemies while patterns are active.} 62\% of
+enemy-contact deaths at $K=1$ (507 of 820) occur during a pattern, and only
+204 of the 711 deaths during a pattern are rectangle contact. With 1,024 games
+each of the 39 patterns in Fig.~\ref{fig:patterns} was met at least 35 times,
+against a 30-encounter threshold in the earlier draft.
+Lethality is concentrated but not in a short list: pattern 19 ends 38\% of
+its 98 encounters in death, pattern 35 36\% of 144, pattern 13 34\% of 82 and
+pattern 20 33\% of 127, and 24 of the 39 end under 10\% of encounters in
+death. At $K=4$ the same patterns are far deadlier (25: 91\%,
+20: 84\%, 19: 81\%, 35: 81\%); of the 28 patterns met at least 30 times at
+both intervals, 24 are more lethal at $K=4$, and the other four differ by at
+most 2.5 points.
 
 \begin{figure*}[t]
 \centering
 \includegraphics[width=\textwidth]{fig_patterns.pdf}
-\caption{Share of encounters with each pattern during which the player died,
-for patterns met at least 30 times at $K=1$ (filled, with 95\% Wilson
-intervals), and the same at $K=4$ (hollow). Score-gated patterns appear only
-later in a game, so cross-identifier comparisons mix lethality with exposure
-at higher score.}
+\caption{Share of encounters with each pattern that ended in death, best
+checkpoint, $K=1$, argmax, 1,024 games, with 95\% Wilson intervals, deadliest
+first. Score-gated patterns appear only later in a game, so cross-identifier
+comparisons mix lethality with exposure at higher score.}
 \label{fig:patterns}
 \end{figure*}
 
 \subsection{Paths into the deadliest static patterns}\label{sec:paths}
-We replayed all 310 games that ended during a static pattern ($K=1$, argmax)
-with a per-frame recorder of the player's position, the lethal rectangles at
-the death frame, and the killer's position. 309 replays ended on the same
-frame with the same cause as the original run; one (seed 1,000,395) diverged
-late, ending 254 frames earlier on the same pattern and cause, which we
-attribute to floating-point differences between batch compositions in GPU
-inference. Fig.~\ref{fig:paths} shows the last 60 frames before death in the
-four static patterns with the most deaths.
+Of the 711 deaths during a pattern at $K=1$ (argmax), 496 happened during a
+static pattern and 215 during a moving one; 313 games ended with no pattern
+active. We replayed all 711 pattern deaths with the engine's per-frame
+gameplay trace, which records the player's path through every pattern, the
+pattern's rectangles, and how it ended, as the training dashboard's
+death-path viewer does. 702 replays ended on the same frame with the same
+cause as the original game. Nine diverged, ending on a different frame, and
+are left out of Fig.~\ref{fig:paths}; we attribute them to floating-point
+differences between batch compositions in GPU inference, since the 711
+replays ran as a different batch from the 1,024 originals. The 711 games
+span 5.87M decisions, so a divergence occurred about once per 650,000
+decisions, consistent with rare near-ties between actions that rounding
+flips and that the game then amplifies.
+Fig.~\ref{fig:paths} shows the last 60 frames before death in the four static
+patterns with the most deaths.
 
-Two shapes recur. In pattern 28, a frame of four bars, deaths to a rectangle
-(17 of 49) run down the left wall into the side bar, while deaths to enemies
-circle in the open centre until an enemy arrives. In pattern 18, a ring of
-wall bars with gaps at the midpoints (35 deaths, 30 to enemies), paths wander
-in the open interior and end at an enemy, not at a wall. Patterns 1 and 21
-(18 deaths each) show the same mixture at lower density. These shapes
-resemble the wall-running and circling failures reported in~\cite{turner},
-which may mean they are properties of the game's layouts rather than of
-either architecture.
+The deadliest layouts kill in different ways. Pattern~24, whose rectangles
+morph in place (57 deaths), kills mostly through enemies (46): paths end in
+the open, often low and left of centre, away from the rectangles. In
+pattern~35, a frame of side and end bars (50 deaths), deaths split almost
+evenly between the bars (24) and enemies (26); rectangle deaths cluster along
+the top bar and the upper ends of the side bars, where paths turn along them. Pattern~20, a grid of
+small blocks (42 deaths), is the one where rectangles dominate (26): paths
+weave between blocks and end against one. In pattern~34, one large block in a
+corner with two small ones (39 deaths), 31 deaths are to enemies, clustered
+just above and left of the large block, where the open space narrows. The
+shapes of the earlier draft, wall-running into a bar and circling in the
+open centre, still appear, but at this level of play the commonest end inside
+a static pattern is an enemy reaching a player whose room to move the layout
+has cut down.
 
 These are associations at the death frame. They have no counterfactual: we
 cannot say the policy ``should'' have turned away. Distinguishing a perception
@@ -440,11 +497,11 @@ state about 60 frames before death and vary the actions.
 \centering
 \includegraphics[width=\textwidth]{fig_paths.pdf}
 \caption{Last 60 frames before death inside the four static patterns with the
-most deaths (\texttt{velocity-flow-v2-latest}, $K=1$, argmax; up to 45 paths
-each, first by seed). Blue: died to the rectangle; orange: died to an enemy;
-dots mark the death position. Shading is the share of these deaths at which
-each pixel lay inside a lethal rectangle; static rectangles move within a
-pattern, so no single layout is representative.}
+most deaths (best checkpoint, $K=1$, argmax; up to 45 paths each, first by
+seed; replays that diverged are left out). Blue: died to a rectangle; orange:
+died to an enemy; dots mark the death position. Grey is the pattern's lethal
+rectangles at each death frame, overlaid; a pattern whose rectangles morph,
+such as 24, shows as a blur.}
 \label{fig:paths}
 \end{figure*}
 
@@ -455,30 +512,36 @@ training replicas, and evaluation seeds do not substitute for
 those~\cite{henderson,agarwal}. \emph{Unrecorded training history.} The
 decision interval, difficulty, reward weights and lives in force during
 training were changed interactively and are not stored with the checkpoints;
-the reward described is the current configuration. \emph{One cohort.} A
-single 512-seed cohort served both the checkpoint comparison and the
-reported levels; there was no separate confirmation cohort. \emph{Replay
-determinism.} Batched GPU inference reproduced 309 of 310 replays exactly.
+the reward described is the final run's configuration. \emph{One evaluation
+cohort.} A single 1,024-seed cohort gives the reported levels and the
+checkpoint comparison. The best checkpoint was chosen on a separate
+development cohort, so its level is not inflated by selection on this one, but
+there is no third confirmation cohort. \emph{Uncapped games.} Headline means
+are uncapped and so carry the very long games: 8\% of games pass 18,000
+frames, and the capped mean is 8,355. \emph{Replay
+determinism.} Replays in a different batch reproduced 702 of 711 games exactly;
+the other nine diverged.
 \emph{Baselines.} Neither baseline calibrates the upper end: the gradient-field
 heuristic fails on this setting for a reason unrelated to dodging. \emph{Cross-paper
-comparison.} Turner~\cite{turner} reports normal difficulty on a Rust port with
-a different reward and observation; we report hard difficulty on the original
-Lua. Levels are not directly comparable. \emph{No explanation.} The telemetry
+comparison.} Turner~\cite{turner} reports normal difficulty on the same Rust
+port with a different reward and observation; we report hard difficulty.
+Levels are not directly comparable. \emph{No explanation.} The telemetry
 is descriptive and has no counterfactuals.
 
 \section{Questions for Practitioners}\label{sec:questions}
 We would especially value opinions on the following.
 \begin{enumerate}
 \item \emph{Path offsets.} Our controller scores actions with paths for a
-  four-frame hold while executing one-frame decisions. Should the offsets
-  match the executed interval, or is a longer assumed hold a useful bias
+  four-frame hold from rest while executing one-frame decisions from whatever
+  velocity the player has. Should the offsets match the executed interval and
+  start from the current velocity, or is a longer assumed hold a useful bias
   toward committed motion? How would you test that without retraining from
   scratch?
 \item \emph{Pursuit.} A scalar field over positions cannot express ``step
   aside because it is chasing you''; enemies during patterns are our largest
   killer. Would you condition the field on the candidate action, add an
   explicit pursuit channel, or move to a learned head over field features?
-\item \emph{Lower tail.} Q1 is 30\% of the mean. Is the next gain more likely
+\item \emph{Lower tail.} Q1 is a third of the mean. Is the next gain more likely
   from representation (short-term memory), objective (score in the reward),
   or exposure (more late-game, high-score patterns in training)?
 \item \emph{Selection.} Given one lineage and hours per run, what is the
@@ -490,19 +553,21 @@ We would especially value opinions on the following.
 \end{enumerate}
 
 \section{Conclusion}
-A field-only PPO controller for Dodge reaches a mean of 3,922 alive frames
-and a worst-quarter mean of 1,180 on the hardest setting, and more training
-measurably helped. Decision frequency again matters more than many training
-updates, but in the direction of the rate the policy was trained for. Death
-telemetry points at enemies that close in while patterns are active, not at
-the rectangles themselves and not at the anti-camping guard. We offer the
+A field-only PPO controller for Dodge reaches a mean of 8,888 alive frames
+and a worst-quarter mean of 2,902 on the hardest setting over 1,024 uncapped
+games, and more training measurably helped: the best checkpoint outlasts an
+earlier one by 5,477 frames. Decision frequency again matters more than many
+training updates, but in the direction of the rate the policy was trained
+for, and argmax now clearly beats sampling. Death telemetry points at enemies
+that close in while patterns are active, not at the rectangles themselves and
+not at the anti-camping guard. We offer the
 setup and numbers as an honest, partly negative record and invite critique.
 
 \section*{Availability}
-The toolchain (cartridge extractor, PICO-8 runtime, environment, training
-dashboard) is at \url{https://github.com/LaunchSpark/DodgeAI}. It contains no
-game content; the cartridge must be obtained from the original
-release~\cite{artridge}. Selected checkpoints are tracked in the repository.
+The toolchain (environment, policies, training dashboard, and the evaluation
+and figure scripts) is at \url{https://github.com/LaunchSpark/DodgeAI}. It
+contains no game content: the game runs on Turner's native port, installed
+separately, and the original cartridge is from~\cite{artridge}. Selected checkpoints are tracked in the repository.
 
 \section*{Acknowledgment}
 Experiments and this draft were prepared with an AI coding agent (Claude)

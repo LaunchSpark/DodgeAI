@@ -47,7 +47,7 @@ def main(argv=None):
         n_steps=64, batch_size=minibatch_size(64, args.architecture),
         n_epochs=settings["n_epochs"], gamma=settings["gamma"],
         vf_coef=settings["vf_coef"], target_kl=settings["target_kl"],
-        ent_coef=settings["ent_coef"],
+        ent_coef=settings["ent_coef"], max_grad_norm=settings["max_grad_norm"],
         seed=args.seed, device="cpu",
         policy_kwargs=policy_kwargs(args.architecture),
     )

@@ -254,8 +254,8 @@ export function EvaluateDialog({ state, trigger }: { state: State; trigger: Reac
         <DialogHeader>
           <DialogTitle>Evaluate the live policy</DialogTitle>
           <DialogDescription>
-            The paper's protocol: a frozen copy plays one game on each fixed seed from 1,000,000,
-            capped at 18,000 frames, with the current game settings. Training carries on.
+            A frozen copy plays one game on each fixed seed from 1,000,000, until it dies,
+            with the current game settings. Training carries on.
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-4 py-2">

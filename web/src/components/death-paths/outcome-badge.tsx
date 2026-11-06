@@ -13,7 +13,7 @@ export function OutcomeBadge({ appearance, long = false }: { appearance: Appeara
     )
   }
   if (appearance.outcome === "unfinished") {
-    return <Badge variant="outline">{long ? "Reached the frame cap" : "unfinished"}</Badge>
+    return <Badge variant="outline">{long ? "Cut off by the time limit" : "unfinished"}</Badge>
   }
   return <Badge variant="secondary">{long ? "Survived" : "survived"}</Badge>
 }

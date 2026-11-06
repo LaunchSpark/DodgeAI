@@ -1198,6 +1198,11 @@ def test_v2_carries_its_own_hyperparameters():
         == (0.995, 10, 0.5, None)
     assert (v2["gamma"], v2["n_epochs"], v2["vf_coef"], v2["target_kl"]) \
         == (0.99, 4, 1.0, 0.02)
+    # v1 keeps SB3's clip; v2's looser clip was measured off its own value
+    # loss and must not leak back into the baseline. Both share the default
+    # entropy bonus.
+    assert (v1["ent_coef"], v1["max_grad_norm"]) == (0.01, 0.5)
+    assert (v2["ent_coef"], v2["max_grad_norm"]) == (0.01, 2.0)
 
 
 def test_v2_splits_the_buffer_into_larger_minibatches():
@@ -1781,6 +1786,7 @@ def test_loading_applies_the_architectures_hyperparameters(tmp_path):
     # Exactly the shape found on disk: v2's network, v1's schedule and worse.
     seeded.n_epochs, seeded.batch_size = 10, 64
     seeded.target_kl, seeded.vf_coef, seeded.ent_coef = None, 0.5, 0.0
+    seeded.max_grad_norm = 0.5
     seeded.save(stale)
 
     loaded = session._load_model(stale, env)
@@ -1792,6 +1798,7 @@ def test_loading_applies_the_architectures_hyperparameters(tmp_path):
     assert loaded.vf_coef == want["vf_coef"] == 1.0
     assert loaded.batch_size == minibatch_size(1 * 64, "velocity-flow-v2")
     assert loaded.ent_coef == want["ent_coef"]
+    assert loaded.max_grad_norm == want["max_grad_norm"] == 2.0
     assert loaded.gamma == want["gamma"]
 
 
@@ -1832,6 +1839,7 @@ def test_a_seeded_checkpoint_is_born_with_its_architectures_schedule(tmp_path):
     assert data["target_kl"] == want["target_kl"]
     assert data["vf_coef"] == want["vf_coef"]
     assert data["ent_coef"] == want["ent_coef"]
+    assert data["max_grad_norm"] == want["max_grad_norm"]
 
 
 def test_the_cli_trainer_uses_the_architecture_table(tmp_path, monkeypatch):
@@ -1871,3 +1879,4 @@ def test_the_cli_trainer_uses_the_architecture_table(tmp_path, monkeypatch):
     assert captured["target_kl"] == want["target_kl"] == 0.02
     assert captured["vf_coef"] == want["vf_coef"] == 1.0
     assert captured["batch_size"] == minibatch_size(8 * 256, "velocity-flow-v2") == 256
+    assert captured["max_grad_norm"] == want["max_grad_norm"] == 2.0

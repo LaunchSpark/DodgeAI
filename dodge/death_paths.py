@@ -153,7 +153,7 @@ class Recording:
                 "appearances": [_public(a) for a in appearances]}
 
 
-def record(policy, seeds, *, frame_cap=18_000, progress=None, time_limit=None,
+def record(policy, seeds, *, frame_cap=None, progress=None, time_limit=None,
            clock=time.monotonic, **game_settings):
     """Play one game per seed with the trace on and return the Recording.
 
@@ -191,7 +191,9 @@ def record(policy, seeds, *, frame_cap=18_000, progress=None, time_limit=None,
         over = np.asarray(stepped["done"], dtype=bool)
         # Finished lanes run throwaway games; a death there only needs a reset.
         restart = np.flatnonzero(done & over).tolist()
-        ending = np.flatnonzero(~done & (over | (frames >= frame_cap)))
+        if frame_cap is not None:
+            over = over | (frames >= frame_cap)
+        ending = np.flatnonzero(~done & over)
         if len(ending):
             scores = engine.observe_velocity()["score"]
             for lane in ending:

@@ -24,9 +24,8 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "web" / "dist"
 PUSH_SECONDS = 1.0
 # Progress rows recorded once per PPO update rather than once per episode.
 PER_UPDATE_ROWS = ("entropy", "explained_variance")
-# The paper's protocol: fixed seeds from here, one game each, frame cap 18,000.
+# Fixed seeds from here, one game each, played until it dies.
 EVALUATION_FIRST_SEED = 1_000_000
-EVALUATION_FRAME_CAP = 18_000
 # Death-path replays play at the game's own rate.
 REPLAY_FPS = 60
 DEATH_PATH_MINUTES = 5
@@ -77,14 +76,14 @@ def _game_settings(settings):
 def evaluate_games(policy, games, settings, progress):
     from .env import play_games
     seeds = range(EVALUATION_FIRST_SEED, EVALUATION_FIRST_SEED + games)
-    return play_games(policy, seeds, frame_cap=EVALUATION_FRAME_CAP, progress=progress,
+    return play_games(policy, seeds, progress=progress,
                       **_game_settings(settings))
 
 
 def record_death_paths(policy, games, settings, progress, time_limit=None):
     from .death_paths import record
     seeds = range(EVALUATION_FIRST_SEED, EVALUATION_FIRST_SEED + games)
-    return record(policy, seeds, frame_cap=EVALUATION_FRAME_CAP, progress=progress,
+    return record(policy, seeds, progress=progress,
                   time_limit=time_limit, **_game_settings(settings))
 
 

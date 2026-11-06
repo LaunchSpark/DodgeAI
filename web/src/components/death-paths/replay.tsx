@@ -37,7 +37,7 @@ function summary(a: Appearance) {
     parts.push(killer.fyou_spawned === null ? "guard origin unknown"
       : killer.fyou_spawned ? "spawned by the anti-camping guard" : "not from the anti-camping guard")
   }
-  if (a.outcome === "unfinished") parts.push("the game hit the frame cap first")
+  if (a.outcome === "unfinished") parts.push("the time limit ran out first")
   return parts.join(" · ")
 }
 

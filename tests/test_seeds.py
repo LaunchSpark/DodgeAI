@@ -65,7 +65,7 @@ def test_the_paper_cohort_and_the_dev_cohort_are_reserved():
     start, stop = ranges["paper-eval"]
     assert start <= 1_000_000 and stop >= 1_000_512
     cohort = seeds.dev_cohort()
-    assert len(cohort) == seeds.DEV_COHORT_SIZE == 256
+    assert len(cohort) == seeds.DEV_COHORT_SIZE == 128
     assert all(seeds.is_reserved(seed) for seed in cohort)
     assert all(seeds.is_reserved(seed) for seed in range(1_000_000, 1_000_512))
     assert not seeds.is_reserved(42)

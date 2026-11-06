@@ -3,6 +3,7 @@
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from functools import partial
 import json
 import math
 import operator
@@ -27,8 +28,8 @@ from stable_baselines3.common.utils import (ConstantSchedule, explained_variance
 from .env import EVENT_FIELDS, MAX_ACTION_REPEAT, DodgeVecEnv, validate_spawn_rate_percent
 from . import schedule
 from .resume import CheckpointWriter, read_state, restore_training_state
-from .evaluate import evaluate_policy
-from .retention import (DEV_FRAME_CAP, RETAINED_DIR, RetentionGate, best_path_for,
+from .evaluate import argmax_policy, evaluate_policy
+from .retention import (RETAINED_DIR, RetentionGate, best_path_for,
                         candidate_path_for, move_legacy_retention)
 from .seeds import DEV_COHORT_SIZE, dev_cohort
 from .policies import (ARCHITECTURES, COORDINATE_INPUTS, DEFAULT_ARCHITECTURE,
@@ -40,6 +41,35 @@ from .telemetry import (DashboardSnapshot, EVENT_KEYS, LIFE_BANDS,
 
 
 RATE_WINDOW_SECONDS = 0.5
+# The Training panel's status once no scoring is in flight.
+SCORING_DONE = {"scoring": None, "scoring_progress": None,
+                "scoring_steps_per_second": None}
+
+
+def _smoothed_rate(previous, measured):
+    """The header's steps a second: one window's rate, eased into the last."""
+    return measured if previous == 0 else previous * 0.7 + measured * 0.3
+
+
+def _rate_meter(publish):
+    """An evaluation's on_step: publish(rate) once a window, smoothed.
+
+    Its steps are the dev games' decisions, counted as training counts its
+    envs' steps, so the two rates read alike.
+    """
+    window = {"started": time.monotonic(), "steps": 0, "rate": 0.0}
+
+    def on_step(decisions):
+        window["steps"] += decisions
+        now = time.monotonic()
+        elapsed = now - window["started"]
+        if elapsed < RATE_WINDOW_SECONDS:
+            return
+        window["rate"] = _smoothed_rate(window["rate"], window["steps"] / elapsed)
+        window.update(started=now, steps=0)
+        publish(window["rate"])
+
+    return on_step
 
 # Observations drawn from the rollout buffer to judge unit death against.
 DEAD_UNIT_SAMPLES = 512
@@ -48,9 +78,11 @@ DEAD_UNIT_SAMPLES = 512
 # them a load charts low for its first dozen updates: every lane starts a game
 # on the same step, so the first games to finish are the short ones.
 WARMUP_GAMES = 4
-# Steps the warm-up waits for its slowest lane, four dev-cohort caps. A lane
-# still short of its games by then has them dropped, not charted half-played.
-WARMUP_MAX_STEPS = 4 * DEV_FRAME_CAP
+# Steps the warm-up waits for its slowest lane: 288,000 frames at the usual
+# decision interval of 4, over nine times the longest training game seen. A
+# lane still short of its games by then has them dropped, not charted
+# half-played.
+WARMUP_MAX_STEPS = 72_000
 
 # Only the convolutional policies are worth moving to a GPU. Measured on a GTX
 # 1070: the hybrid-cnn update runs 5.1x faster there (7.20s -> 1.40s), while the
@@ -134,6 +166,8 @@ DEFAULT_HYPERPARAMETERS = {
     "vf_coef": 0.5,
     "target_kl": None,
     "ent_coef": 0.01,
+    # SB3's default, made explicit so an architecture can change it.
+    "max_grad_norm": 0.5,
     "minibatches_per_epoch": MINIBATCHES_PER_EPOCH,
     "max_minibatch": MAX_MINIBATCH,
 }
@@ -154,6 +188,10 @@ ARCHITECTURE_HYPERPARAMETERS = {
         "target_kl": 0.02,
         # The critic is the weak half, so its loss gets equal weight.
         "vf_coef": 1.0,
+        # 0.5 clipped every step, by 3-8x, and 87% of the norm was the value
+        # loss: a surprise death in the batch shrank the policy's share of the
+        # step with it (r = -0.82). 2.0 still catches the spikes.
+        "max_grad_norm": 2.0,
         # Eight minibatches an epoch: 256 samples at 8 envs. Re-measured on the
         # GTX 1070 with the native env, per-sample cost is flat from 256 to
         # 2048 (0.26-0.28ms a sample per epoch), so minibatch size is not what
@@ -450,18 +488,16 @@ def _finished_lanes(infos, dones):
 
 
 def _evaluate_argmax(model, seeds, *, deterministic=True, frame_cap=None,
-                     **game_settings):
+                     stop_after=None, progress=None, on_step=None, **game_settings):
     """evaluate_model without its RNG save-and-restore.
 
     That restore is right on the training thread and wrong off it: run beside
     training, it would rewind the generators training is drawing from. Argmax
     play draws nothing, so there is nothing to protect.
     """
-    def policy(observations):
-        actions, _ = model.predict(observations, deterministic=True)
-        return actions
-
-    return evaluate_policy(policy, seeds, frame_cap=frame_cap, **game_settings)
+    return evaluate_policy(argmax_policy(model), seeds, frame_cap=frame_cap,
+                           stop_after=stop_after, progress=progress, on_step=on_step,
+                           **game_settings)
 
 
 class DashboardCallback(BaseCallback):
@@ -527,11 +563,8 @@ class DashboardCallback(BaseCallback):
             data = self.session.data
             data.elapsed_seconds += elapsed
             if rate_window >= RATE_WINDOW_SECONDS:
-                measured = self._rate_steps / rate_window
-                data.steps_per_second = (
-                    measured if data.steps_per_second == 0
-                    else data.steps_per_second * 0.7 + measured * 0.3
-                )
+                data.steps_per_second = _smoothed_rate(
+                    data.steps_per_second, self._rate_steps / rate_window)
                 self._rate_started = now
                 self._rate_steps = 0
             data.rollout_progress = (self.n_calls % self.session.rollout_steps) / self.session.rollout_steps
@@ -782,6 +815,9 @@ class PPOTrainingSession:
         self._game_settings = {}
         # The dev-cohort scoring in flight, if any; see _score_dev_cohort.
         self._scoring = None
+        # On: a scoring runs on its own thread beside training. The engine
+        # steps without the GIL, so the two only share the CPU and GPU, and
+        # training's update phase, all GPU, overlaps the scoring's games.
         self.score_in_background = True
         if autostart and architecture is not None:
             self.start()
@@ -831,6 +867,7 @@ class PPOTrainingSession:
             gae_lambda=0.95,
             clip_range=0.2,
             ent_coef=settings["ent_coef"],
+            max_grad_norm=settings["max_grad_norm"],
             verbose=0,
             tensorboard_log=str(self.logs_dir),
             seed=self.seed,
@@ -889,6 +926,7 @@ class PPOTrainingSession:
                     "vf_coef": settings["vf_coef"],
                     "target_kl": settings["target_kl"],
                     "ent_coef": settings["ent_coef"],
+                    "max_grad_norm": settings["max_grad_norm"],
                     "tensorboard_log": str(self.logs_dir),
                 },
             )
@@ -1227,22 +1265,24 @@ class PPOTrainingSession:
             }
         return config
 
-    def _retention_gate(self):
+    def _retention_gate(self, progress=None, on_step=None):
         name = self.active_model_name or self.model_architecture
         return RetentionGate(best_path_for(self.model_dir, name),
                              game_settings=self._game_settings,
                              seeds=dev_cohort(DEV_COHORT_SIZE),
-                             evaluate=_evaluate_argmax)
+                             evaluate=partial(_evaluate_argmax, progress=progress,
+                                              on_step=on_step),
+                             load=lambda path: PPO.load(path, device=self.device))
 
     def _score_dev_cohort(self, model):
         """On schedule, start scoring the held-out cohort; keep the best so far.
 
-        The candidate is saved with its sidecars and scored on its own thread,
-        from a copy loaded off disk, so training -- and every other request
-        served at this boundary, Watch and Save included -- carries on during
-        the minutes a scoring takes. A boundary that falls while the last
-        scoring is still running skips its turn, so the candidate file is never
-        overwritten under a scoring.
+        The candidate is saved with its sidecars and scored, by default right
+        here on the training thread, so training waits the minutes a scoring
+        takes and the header shows its progress. With score_in_background it
+        is scored on its own thread instead and training carries on; a
+        boundary that falls while that scoring is still running skips its
+        turn, so the candidate file is never overwritten under a scoring.
         """
         if not schedule.exists(self.schedule_path):
             return
@@ -1261,16 +1301,54 @@ class PPOTrainingSession:
         model.save(candidate)
         self._write_sidecars(model, candidate)
         with self.lock:
-            self.schedule_status = {**self.schedule_status, "scoring": update}
+            self.schedule_status = {**self.schedule_status, "scoring": update,
+                                    "scoring_progress": 0.0,
+                                    "scoring_steps_per_second": 0.0}
         if not self.score_in_background:
-            self._score_candidate(candidate, update)
+            self._score_paused(candidate, update)
             return
+        # The header stays training's; the scoring's progress and rate go to
+        # the Training panel's status instead.
+        def progress(finished, count):
+            self._set_scoring_status(scoring_progress=finished / count)
+
+        on_step = _rate_meter(
+            lambda rate: self._set_scoring_status(scoring_steps_per_second=rate))
         self._scoring = threading.Thread(target=self._score_candidate,
-                                         args=(candidate, update),
+                                         args=(candidate, update, progress, on_step),
                                          name="dodge-dev-cohort", daemon=True)
         self._scoring.start()
 
-    def _score_candidate(self, candidate, update):
+    def _set_scoring_status(self, **values):
+        with self.lock:
+            self.schedule_status = {**self.schedule_status, **values}
+
+    def _score_paused(self, candidate, update):
+        """Score the candidate with training waiting, its progress in the header."""
+        def progress(finished, count):
+            with self.lock:
+                self.data.rollout_progress = finished / count
+
+        def publish(rate):
+            with self.lock:
+                self.data.steps_per_second = rate
+
+        on_step = _rate_meter(publish)
+
+        with self.lock:
+            resume = self.data.status
+            self.data.status = "scoring dev cohort"
+            self.data.progress_phase = "dev cohort"
+            self.data.rollout_progress = 0.0
+            self.data.steps_per_second = 0.0
+        try:
+            self._score_candidate(candidate, update, progress, on_step)
+        finally:
+            with self.lock:
+                if self.data.status == "scoring dev cohort":
+                    self.data.status = resume
+
+    def _score_candidate(self, candidate, update, progress=None, on_step=None):
         """Score one saved candidate and act on the verdict.
 
         Enough scorings in a row without a new best step the learning rate down
@@ -1280,10 +1358,11 @@ class PPOTrainingSession:
         """
         try:
             scored = PPO.load(candidate, device=self.device)
-            outcome = self._retention_gate().consider(scored, candidate, update=update)
+            outcome = self._retention_gate(progress, on_step).consider(
+                scored, candidate, update=update)
         except Exception as error:
             with self.lock:
-                self.schedule_status = {**self.schedule_status, "scoring": None}
+                self.schedule_status = {**self.schedule_status, **SCORING_DONE}
             self._emit(SessionEvent("schedule", False,
                                     f"Dev cohort scoring failed: {error}",
                                     candidate, update))
@@ -1310,7 +1389,7 @@ class PPOTrainingSession:
         with self.lock:
             self.schedule_status = {
                 **self.schedule_status,
-                "scoring": None,
+                **SCORING_DONE,
                 "best_mean": outcome["best_mean"],
                 "since_best": since_best,
                 "last": {"update": update, "mean": dev["mean"], "q1": dev["q1"],

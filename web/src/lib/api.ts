@@ -139,6 +139,10 @@ export interface TrainingStatus {
   gamma?: number
   since_best?: number
   next_scoring?: number | null
+  // The update being scored on the dev cohort, while a scoring is in flight.
+  scoring?: number | null
+  scoring_progress?: number | null
+  scoring_steps_per_second?: number | null
   best_mean?: number | null
   last?: { update: number; mean: number; q1: number; promoted: boolean }
 }

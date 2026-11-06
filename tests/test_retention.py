@@ -66,13 +66,16 @@ def test_the_first_candidate_is_retained_and_copied_whole(tmp_path):
         assert copy.read_bytes() == source.read_bytes()
     record = json.loads((tmp_path / "run-best.retention.json").read_text())
     assert record["candidate"] == str(candidate) and record["update"] == 60
-    assert record["dev"]["mean"] == 100 and len(record["games"]) == 256
+    from dodge.seeds import DEV_COHORT_SIZE
+    assert record["dev"]["mean"] == 100 and len(record["games"]) == DEV_COHORT_SIZE
     # Scored on the fixed dev cohort, argmax, with training lives dropped.
     seeds, kwargs = calls[0]
     from dodge.seeds import dev_cohort
     assert seeds == dev_cohort()
     assert kwargs["deterministic"] is True
     assert kwargs["step_frames"] == 4 and "lives" not in kwargs
+    # Played until 90% of the cohort has ended, and no further.
+    assert kwargs["stop_after"] == -(-9 * len(seeds) // 10)
 
 
 def test_only_an_improvement_is_promoted(tmp_path):
@@ -88,6 +91,61 @@ def test_only_an_improvement_is_promoted(tmp_path):
     assert gate.best_mean == 120
     history = (tmp_path / "run-best.history.jsonl").read_text().splitlines()
     assert [json.loads(line)["promoted"] for line in history] == [True, False, False, True]
+
+
+def test_the_last_tenth_is_cut_at_the_length_of_the_ninetieth_percentile(tmp_path):
+    from dodge.retention import RetentionGate
+
+    calls = []
+
+    def evaluate(model, seeds, **kwargs):
+        calls.append(kwargs)
+        return EvalResult(seeds=list(seeds), frames=np.arange(1.0, 11.0),
+                          scores=np.zeros(10), died=[True] * 9 + [False])
+
+    gate = RetentionGate(tmp_path / "run-best.zip", game_settings=GAME,
+                         seeds=list(range(2_000_000, 2_000_010)), evaluate=evaluate)
+    gate.consider(object(), fake_candidate(tmp_path, "a", b"a"))
+    assert calls[0]["stop_after"] == 9
+    record = json.loads((tmp_path / "run-best.retention.json").read_text())
+    assert record["finish_fraction"] == 0.9
+
+
+def test_a_best_scored_under_other_rules_is_rescored_before_it_is_compared(tmp_path):
+    from dodge.retention import RetentionGate
+
+    # A best kept under the old rules: 256 seeds, no cut, mean 9,000.
+    evaluate, _ = scripted_scores(9_000)
+    old = RetentionGate(tmp_path / "run-best.zip", game_settings=GAME,
+                        seeds=list(range(2_000_000, 2_000_256)),
+                        finish_fraction=None, evaluate=evaluate)
+    old.consider(object(), fake_candidate(tmp_path, "old", b"old"), update=24_000)
+
+    loaded = []
+
+    def load(path):
+        loaded.append(path.read_bytes())
+        return object()
+
+    # Rescored at 7,000 under the new rules; a 7,500 candidate now beats it.
+    evaluate, calls = scripted_scores(7_000, 7_500)
+    gate = RetentionGate(tmp_path / "run-best.zip", game_settings=GAME,
+                         seeds=list(range(2_000_000, 2_000_128)),
+                         evaluate=evaluate, load=load)
+    outcome = gate.consider(object(), fake_candidate(tmp_path, "new", b"new"))
+    assert loaded == [b"old"]
+    assert [len(seeds) for seeds, _ in calls] == [128, 128]
+    assert outcome["promoted"] and gate.best_mean == 7_500
+    history = [json.loads(line) for line in
+               (tmp_path / "run-best.history.jsonl").read_text().splitlines()]
+    assert history[-1]["previous_best_mean"] == 7_000
+    # Once rescored, the record matches and is not rescored again.
+    evaluate, calls = scripted_scores(7_000)
+    again = RetentionGate(tmp_path / "run-best.zip", game_settings=GAME,
+                          seeds=list(range(2_000_000, 2_000_128)),
+                          evaluate=evaluate, load=load)
+    assert not again.consider(object(), fake_candidate(tmp_path, "x", b"x"))["promoted"]
+    assert len(loaded) == 1 and len(calls) == 1
 
 
 def test_the_best_so_far_survives_a_restart(tmp_path):

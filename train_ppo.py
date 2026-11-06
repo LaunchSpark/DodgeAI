@@ -12,12 +12,13 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.save_util import load_from_zip_file
 
+from dodge.evaluate import preserved_rng
 from dodge.lineage import checkpoint_path, jsonable, sidecar_paths
 from dodge.policies import (ARCHITECTURES, DEFAULT_ARCHITECTURE,
                             architecture_from_kwargs, policy_class, policy_kwargs)
 from dodge.resume import (DEFAULT_SEGMENT_UPDATES, CheckpointWriter,
                           SegmentCallback, load_checkpoint)
-from dodge.retention import (DEV_FRAME_CAP, RetentionGate, best_path_for,
+from dodge.retention import (RetentionGate, best_path_for,
                              move_legacy_retention)
 from dodge.seeds import DEV_COHORT_SIZE, dev_cohort
 from dodge.training import (GPU_ARCHITECTURES, SCALE_PRESETS, hyperparameters,
@@ -149,8 +150,8 @@ def parse_args(argv=None):
                              "retained/<name>-best.zip if its mean improves (default off)")
     parser.add_argument("--dev-seeds", type=int, default=DEV_COHORT_SIZE,
                         help=f"dev cohort size for --retain-every (default {DEV_COHORT_SIZE})")
-    parser.add_argument("--dev-frame-cap", type=int, default=DEV_FRAME_CAP,
-                        help=f"frame cap of a dev game (default {DEV_FRAME_CAP})")
+    parser.add_argument("--dev-frame-cap", type=int, default=None,
+                        help="frame cap of a dev game (default none: games run until they die)")
     parser.add_argument("--checkpoint-updates", type=int,
                         default=DEFAULT_CHECKPOINT_UPDATES, metavar="N",
                         help="also checkpoint every N PPO updates, between segment "
@@ -241,6 +242,7 @@ def main(argv=None):
                 gae_lambda=0.95,
                 clip_range=0.2,
                 ent_coef=settings["ent_coef"],
+                max_grad_norm=settings["max_grad_norm"],
                 verbose=1,
                 tensorboard_log=str(args.logs_dir),
                 seed=args.seed,
@@ -260,12 +262,18 @@ def main(argv=None):
         print(f"Segment boundary at update {callback.updates}: abandoned "
               f"{callback.training_env.num_envs} games, saved {path}")
 
+    def load_untouched(path):
+        # Building a model draws its initial weights from torch's generator.
+        with preserved_rng():
+            return PPO.load(path, device=model.device)
+
     hooks = [save_boundary]
     if args.retain_every:
         gate = RetentionGate(best_path_for(args.models_dir, model_name),
                              game_settings=env.game_settings,
                              seeds=dev_cohort(args.dev_seeds),
-                             frame_cap=args.dev_frame_cap)
+                             frame_cap=args.dev_frame_cap,
+                             load=load_untouched)
 
         def retain(callback):
             if callback.updates % args.retain_every:

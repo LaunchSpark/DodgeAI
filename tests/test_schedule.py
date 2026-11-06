@@ -93,7 +93,8 @@ def test_a_plateau_steps_the_rate_down_and_a_new_best_resets_it(tmp_path, monkey
                 return {"promoted": promoted, "best_mean": best["mean"],
                         "dev": {"mean": mean, "q1": mean / 2}}
 
-        monkeypatch.setattr(session, "_retention_gate", lambda: Gate())
+        monkeypatch.setattr(session, "_retention_gate",
+                            lambda progress=None, on_step=None: Gate())
         schedule.save(TrainingConfig(learning_rate=3e-4, retain_every=1, patience=2),
                       session.schedule_path)
         events = []
@@ -133,35 +134,102 @@ def test_scoring_is_off_between_boundaries_and_without_a_file(tmp_path, monkeypa
         env.close()
 
 
-def test_scoring_runs_beside_training_and_skips_while_busy(tmp_path, monkeypatch):
-    import threading
-
+def test_a_paused_scoring_shows_its_progress_in_the_header(tmp_path, monkeypatch):
     session, model, env = _session(tmp_path, monkeypatch)
-    session.score_in_background = True
-    release = threading.Event()
-    calls = []
+    seen = []
+
+    now = [100.0]
 
     class Gate:
+        def __init__(self, progress, on_step):
+            self.progress = progress
+            self.on_step = on_step
+
+        def consider(self, scored, candidate, *, update=None):
+            seen.append((session.data.status, session.data.progress_phase))
+            self.progress(1, 4)
+            seen.append(session.data.rollout_progress)
+            # Decisions a second, measured over the dashboard's rate window
+            # like training's: 128 over the first half second, then 64 over
+            # the next, smoothed.
+            seen.append(session.data.steps_per_second)
+            for at, decisions in ((100.25, 64), (100.5, 64), (101.0, 32)):
+                now[0] = at
+                self.on_step(decisions)
+            seen.append(session.data.steps_per_second)
+            return {"promoted": True, "best_mean": 1.0,
+                    "dev": {"mean": 1.0, "q1": 1.0}}
+
+    from dodge import training
+    try:
+        monkeypatch.setattr(training.time, "monotonic", lambda: now[0])
+        monkeypatch.setattr(session, "_retention_gate",
+                            lambda progress=None, on_step=None: Gate(progress, on_step))
+        monkeypatch.setattr(session, "_emit", lambda event: None)
+        schedule.save(TrainingConfig(retain_every=1), session.schedule_path)
+        session.data.status = "training"
+        model.completed_updates = 1
+        session._score_dev_cohort(model)  # returns only once scored
+        assert session._scoring is None
+        assert seen == [("scoring dev cohort", "dev cohort"), 0.25, 0.0,
+                        pytest.approx(256 * 0.7 + 64 * 0.3)]
+        assert session.data.status == "training"
+        assert session.schedule_status["last"]["update"] == 1
+    finally:
+        env.close()
+
+
+def test_scoring_runs_beside_training_and_skips_while_busy(tmp_path, monkeypatch):
+    import threading
+    from dodge import training
+    from dodge.training import PPOTrainingSession
+
+    assert PPOTrainingSession(model_dir=tmp_path, autostart=False,
+                              device="cpu").score_in_background is True
+    session, model, env = _session(tmp_path, monkeypatch)
+    session.score_in_background = True
+    reported, release = threading.Event(), threading.Event()
+    calls = []
+    now = [100.0]
+
+    class Gate:
+        def __init__(self, progress, on_step):
+            self.progress = progress
+            self.on_step = on_step
+
         def consider(self, scored, candidate, *, update=None):
             calls.append(update)
             assert scored is not model  # a copy loaded off disk
+            self.progress(1, 4)
+            now[0] = 100.5
+            self.on_step(64)
+            reported.set()
             release.wait(10)
             return {"promoted": True, "best_mean": 1.0,
                     "dev": {"mean": 1.0, "q1": 1.0}}
 
     try:
-        monkeypatch.setattr(session, "_retention_gate", lambda: Gate())
+        monkeypatch.setattr(training.time, "monotonic", lambda: now[0])
+        monkeypatch.setattr(session, "_retention_gate",
+                            lambda progress=None, on_step=None: Gate(progress, on_step))
         monkeypatch.setattr(session, "_emit", lambda event: None)
         schedule.save(TrainingConfig(retain_every=1), session.schedule_path)
+        session.data.status = "training"
         model.completed_updates = 1
         session._score_dev_cohort(model)  # returns while the gate is blocked
         assert session.schedule_status["scoring"] == 1
+        # Its progress and rate are its own; the header stays training's.
+        assert reported.wait(10)
+        assert session.schedule_status["scoring_progress"] == 0.25
+        assert session.schedule_status["scoring_steps_per_second"] == 128.0
+        assert session.data.status == "training"
         model.completed_updates = 2
         session._score_dev_cohort(model)  # still busy: skipped
         release.set()
         session._scoring.join(10)
         assert calls == [1]
         assert session.schedule_status["scoring"] is None
+        assert session.schedule_status["scoring_progress"] is None
         assert session.schedule_status["last"]["update"] == 1
     finally:
         release.set()

@@ -88,16 +88,23 @@ def engine_settings(game_settings):
     }
 
 
-def evaluate_policy(policy, seeds, *, frame_cap=None, **game_settings):
+def evaluate_policy(policy, seeds, *, frame_cap=None, stop_after=None, progress=None,
+                    on_step=None, **game_settings):
     """Play one game per seed with `policy(observations) -> actions`.
 
     `game_settings` are make_engine's arguments. A game ends at its death or
-    once it has run `frame_cap` frames. Results come back in seed order.
+    once it has run `frame_cap` frames. With `stop_after`, the evaluation
+    itself ends once that many games have: every lane steps together, so the
+    games still playing all stop at the same length, alive, and are counted
+    at it. `progress(finished, count)`, if given, is called as games end,
+    `count` being the games waited for, and `on_step(decisions)` after every
+    step with the number of games it moved. Results come back in seed order.
     """
     seeds = np.asarray(list(seeds), dtype=np.uint32)
     count = len(seeds)
     if count == 0:
         raise ValueError("no seeds to evaluate")
+    wait_for = count if stop_after is None else min(count, int(stop_after))
     engine = make_engine(**game_settings)
     engine.reset_ml_batch(seeds)
     alive = np.ones(count, dtype=bool)
@@ -114,6 +121,8 @@ def evaluate_policy(policy, seeds, *, frame_cap=None, **game_settings):
         stepped = engine.step_batch_active(actions, alive)
         frames[np.asarray(stepped["lane_ids"], dtype=np.int64)] += \
             np.asarray(stepped["frames_advanced"], dtype=np.int64)
+        if on_step is not None:
+            on_step(len(lanes))
         state = engine.observe_velocity()
         ended = state["dead"].astype(bool)
         if frame_cap is not None:
@@ -125,6 +134,13 @@ def evaluate_policy(policy, seeds, *, frame_cap=None, **game_settings):
             causes[lane] = (DEATH_CAUSES.get(int(state["death_cause"][lane]))
                             if died[lane] else None)
         alive &= ~finished
+        ended = count - int(alive.sum())
+        if progress is not None and finished.any():
+            progress(min(ended, wait_for), wait_for)
+        if ended >= wait_for:
+            for lane in np.flatnonzero(alive):
+                scores[lane] = float(state["score"][lane])
+            break
     return EvalResult(seeds=[int(seed) for seed in seeds], frames=frames,
                       scores=scores, died=[bool(d) for d in died], causes=causes)
 
@@ -157,12 +173,53 @@ class preserved_rng:
         return False
 
 
-def evaluate_model(model, seeds, *, deterministic=True, frame_cap=None,
-                   **game_settings):
-    """Evaluate an SB3 model, argmax by default, without touching its RNG."""
+# The smallest batch argmax_policy pads to. Below it a forward costs about the
+# same whatever the batch, so smaller sizes would only cost more graphs.
+MIN_PADDED_BATCH = 16
+
+
+def padded_batch(n):
+    """The batch argmax_policy runs `n` observations at: a power of two, >= 16."""
+    return max(MIN_PADDED_BATCH, 1 << (int(n) - 1).bit_length())
+
+
+def argmax_policy(model):
+    """`model`'s argmax actions, through its policy's forward at padded batches.
+
+    SB3's predict goes through get_distribution, never the policy's forward,
+    so it misses the velocity policies' CUDA graphs, and the batch shrinks by
+    one every time a game ends, so every size would be new to cuDNN's
+    autotuner too. Padding to a power of two -- by repeating the last
+    observation; no layer mixes samples -- leaves a cohort of 128 four sizes,
+    each captured once. The actions are predict's: the argmax of the same
+    probabilities.
+    """
+    import torch
+
+    network = model.policy
+
     def policy(observations):
-        actions, _ = model.predict(observations, deterministic=deterministic)
-        return actions
+        n = len(observations)
+        rows = np.minimum(np.arange(padded_batch(n)), n - 1)
+        network.set_training_mode(False)
+        with torch.no_grad():
+            inputs = torch.as_tensor(np.asarray(observations)[rows], device=network.device)
+            actions, _, _ = network(inputs, deterministic=True)
+        return actions[:n].cpu().numpy()
+
+    return policy
+
+
+def evaluate_model(model, seeds, *, deterministic=True, frame_cap=None, stop_after=None,
+                   progress=None, on_step=None, **game_settings):
+    """Evaluate an SB3 model, argmax by default, without touching its RNG."""
+    if deterministic:
+        policy = argmax_policy(model)
+    else:
+        def policy(observations):
+            actions, _ = model.predict(observations, deterministic=False)
+            return actions
 
     with preserved_rng():
-        return evaluate_policy(policy, seeds, frame_cap=frame_cap, **game_settings)
+        return evaluate_policy(policy, seeds, frame_cap=frame_cap, stop_after=stop_after,
+                               progress=progress, on_step=on_step, **game_settings)
