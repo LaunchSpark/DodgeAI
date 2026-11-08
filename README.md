@@ -1,5 +1,16 @@
 # DodgeAI
 
+> **This repository is archived.** Development continues in
+> [TaylorTurnerIT/dodge-native](https://github.com/TaylorTurnerIT/dodge-native),
+> where this project's Python code lives under `learning/` (the trainer, dashboard,
+> web UI, death paths and SpaceBot), running on that repository's engine
+> (`dodge_rl`). The best checkpoint is published there as the release
+> [velocity-flow-v2-best-u24000](https://github.com/TaylorTurnerIT/dodge-native/releases/tag/velocity-flow-v2-best-u24000).
+> Code released here stays under its MIT license; the code in dodge-native is
+> licensed CC BY-NC-SA 4.0. Results recorded with this repository's engine came from
+> a version that let kamikaze blasts destroy enemies, which the original cartridge
+> does not, so they are optimistic compared with dodge-native.
+
 A toolchain for training a reinforcement-learning agent to play the PICO-8 game
 `dodge`, and for watching and playing it locally.
 
